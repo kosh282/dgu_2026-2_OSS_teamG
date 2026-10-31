@@ -6,20 +6,19 @@
 
 - `integration/contracts.py`: 공통 이벤트 필드와 주요 이벤트별 payload 검사. 알려지지 않은 이벤트도 공통 형식에 맞으면 보존
 - `integration/service.py`: 세션 생성·공통 시계·이벤트 수신, 현재 상태, 프런트용 스냅샷, 시간 구간 조회, JSON 저장/재열기
-- `demo.py`: 합성 전사·메모를 연결하고 스냅샷과 저장/재열기를 보여 주는 실행 예제. 세션 JSON은 임시 폴더에 저장됐다가 예제 종료 시 지워짐
+- `integration/demo.py`: 합성 전사·메모를 연결하고 스냅샷과 저장/재열기를 보여 주는 실행 예제. 세션 JSON은 임시 폴더에 저장됐다가 예제 종료 시 지워짐
 
 평가 모델은 아직 선택하지 않았습니다. `participation_model`이 없으면 시작 시 `analysis_status`에 `model_not_configured`를 기록하고, 스냅샷의 `status.model`을 `unavailable`로 표시합니다. `engagement_window`의 공통 틀과 모델 ID/버전은 검사하되 모델별 출력·점수의 세부 형식은 고정하지 않았습니다.
 
 ## 시작 방법
 
-PowerShell에서 이 폴더로 이동한 후 실행합니다.
+PowerShell에서 저장소 루트 폴더로 이동한 후 실행합니다.
 
 ```powershell
-cd 통합부
-python demo.py
+python -m integration.demo
 ```
 
-Python 실행 명령은 팀 환경에 따라 `py -3 demo.py`로 바꿀 수 있습니다. 별도의 pip 설치는 필요하지 않습니다.
+Python 실행 명령은 팀 환경에 따라 `py -3 -m integration.demo`로 바꿀 수 있습니다. 별도의 pip 설치는 필요하지 않습니다.
 
 ## 각 파트 연결 예시
 

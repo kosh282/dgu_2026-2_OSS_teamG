@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 from uuid import uuid4
-from integration import IntegrationService
+from . import IntegrationService
 
 
 def main():
