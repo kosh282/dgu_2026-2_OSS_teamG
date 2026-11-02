@@ -1,0 +1,10 @@
+{
+  "session": {"title": "공개SW프로젝트 실습"},
+  "events": [
+    {"schema_version":"1.0","session_id":"demo","event_id":"e1","event_type":"engagement_window","start_ms":0,"end_ms":60000,"created_ms":60000,"payload":{"score":75},"quality":{},"provenance":{}},
+    {"schema_version":"1.0","session_id":"demo","event_id":"e2","event_type":"engagement_window","start_ms":60000,"end_ms":120000,"created_ms":120000,"payload":{"score":61},"quality":{},"provenance":{}},
+    {"schema_version":"1.0","session_id":"demo","event_id":"e3","event_type":"engagement_window","start_ms":120000,"end_ms":180000,"created_ms":180000,"payload":{"score":38},"quality":{},"provenance":{}},
+    {"schema_version":"1.0","session_id":"demo","event_id":"e4","event_type":"note_created","start_ms":140000,"end_ms":140000,"created_ms":145000,"payload":{"text":"핵심 개념 다시 설명하기"},"quality":{},"provenance":{}},
+    {"schema_version":"1.0","session_id":"demo","event_id":"e5","event_type":"resource_suggestion","start_ms":160000,"end_ms":160000,"created_ms":165000,"payload":{"title":"강의 자료 p.4 · 개념 설명","evidence":"핵심 개념 설명","source":"실습 자료"},"quality":{},"provenance":{}}
+  ]
+}
