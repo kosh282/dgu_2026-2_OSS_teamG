@@ -7,8 +7,8 @@
 현재 컴퓨터에서는 Python 3.14 전용 `.venv`에 `requirements-integrated.txt`의 버전을 설치했습니다. 다른 환경에서는 해당 파일을 사용해 별도 가상환경에 설치하세요. 기존 `requirements.txt`는 Python 3.10 기반 팀원 EyeGestures 실험용으로 유지합니다.
 
 ```powershell
-python -m venv members/HaMMenEE/eye_analysis/.venv
-members/HaMMenEE/eye_analysis/.venv/Scripts/python.exe -m pip install -r members/HaMMenEE/eye_analysis/requirements-integrated.txt
+python -m venv video_recognition/.venv
+video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-integrated.txt
 ```
 
 MediaPipe 공식 Face Landmarker 모델은 `models/face_landmarker.task`에 준비했습니다. 모델 파일을 커밋하고 원격에 올리면 저장소를 내려받을 때 함께 제공됩니다. 파일 출처는 [MediaPipe 공식 모델](https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task)입니다. 다른 `.task` 모델도 Git에 추가할 수 있으며, `.venv`는 계속 제외됩니다.
@@ -18,13 +18,25 @@ MediaPipe 공식 Face Landmarker 모델은 `models/face_landmarker.task`에 준�
 저장소 루트에서 실행합니다. 첫 명령으로 핸들을 확인하고 두 번째 명령에 선택한 숫자를 넣습니다.
 
 ```powershell
-members/HaMMenEE/eye_analysis/.venv/Scripts/python.exe -m members.HaMMenEE.eye_analysis.integrated_analysis --list
-members/HaMMenEE/eye_analysis/.venv/Scripts/python.exe -m members.HaMMenEE.eye_analysis.integrated_analysis --hwnd 12345 --intermediate vision-intermediate.jsonl --session session.json
+video_recognition/.venv/Scripts/python.exe -m video_recognition.integrated_analysis --list
+video_recognition/.venv/Scripts/python.exe -m video_recognition.integrated_analysis --hwnd 12345 --intermediate vision-intermediate.jsonl --session session.json
 ```
 
 `Ctrl+C`로 종료합니다. 중간 결과 경로는 선택 사항이며 지정하면 JSONL로 저장됩니다. 최종 세션 JSON에는 이 특징이 포함되지 않지만 중간 파일은 자동 삭제되지 않으므로 보관과 삭제를 직접 관리하세요. 현행 공유 계약은 개인별 중간 특징을 로그에 저장하지 않는다고 명시하므로 이 선택적 실험 저장에 대해서는 팀 합의가 필요합니다.
 
 창의 보이는 화면 영역을 캡처하므로 가려진 내용도 함께 캡처되며 최소화된 창은 처리할 수 없습니다. 배율·다중 모니터·작은 참가자 타일에서의 동작과 다중 얼굴 정확도는 실제 수업 환경에서 검증해야 합니다. 모델 입력은 콜백 자리만 있으며 참여 모델은 연결되지 않았습니다.
+
+## 웹캠으로 직접 시험하기
+
+저장소 루트에서 실행하면 웹캠 영상 창과 분석 결과 창이 열립니다.
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
+```
+
+웹캠 영상 창이 다른 창에 가려지지 않도록 두고 카메라를 바라보세요. 종료하려면 창을 선택한 뒤 `Q`를 누르거나 터미널에서 `Ctrl+C`를 누릅니다. 다른 카메라를 쓰려면 `--camera 1`, 10초 뒤 자동 종료하려면 `--duration 10`을 추가합니다.
+
+결과 창에는 얼굴 수와 MediaPipe가 반환한 얼굴별 기준점 개수, 코와 턱의 x·y·z 좌표가 표시됩니다. x·y는 영상 크기에 대한 정규화 좌표이고 z는 MediaPipe의 상대 깊이 값입니다. 눈 개방 비율과 머리 각도는 이 기준점에서 별도로 계산한 실험값입니다. 얼굴 순서는 프레임마다 바뀔 수 있습니다. 이 시험은 웹캠 영상·기준점·분석 결과를 파일로 저장하지 않습니다.
 
 ## 기존 EyeGestures 실험
 
