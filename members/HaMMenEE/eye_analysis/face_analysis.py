@@ -1,146 +1,88 @@
+"""팀원 얼굴 분석을 수업 창의 여러 얼굴에 적용하는 공통 분석기."""
+from pathlib import Path
 
-import cv2
-import mediapipe as mp
-import numpy as np
-
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-
-MODEL_PATH = "models/face_landmarker.task"
-
-base_options = python.BaseOptions(
-    model_asset_path=MODEL_PATH
-)
-
-options = vision.FaceLandmarkerOptions(
-    base_options=base_options,
-    running_mode=vision.RunningMode.VIDEO,
-    num_faces=1
-)
-
-detector = vision.FaceLandmarker.create_from_options(options)
-
-cap = cv2.VideoCapture(0)
-
-timestamp = 0
-
-# 눈의 위아래 간격 / 좌우 간격을 이용한 눈 개방 비율
-def eye_ratio(landmarks, indices, w, h):
-    points = np.array([
-        [landmarks[i].x * w, landmarks[i].y * h]
-        for i in indices
-    ])
-
-    vertical1 = np.linalg.norm(points[1] - points[5])
-    vertical2 = np.linalg.norm(points[2] - points[4])
-    horizontal = np.linalg.norm(points[0] - points[3])
-
-    return (vertical1 + vertical2) / (2.0 * horizontal)
-
-
-# Face Landmarker의 눈 주변 랜드마크 인덱스
 LEFT_EYE = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE = [33, 160, 158, 133, 153, 144]
+# 실행 위치가 달라도 영상 담당 폴더의 같은 모델을 읽는다.
+DEFAULT_MODEL = Path(__file__).resolve().parent / 'models' / 'face_landmarker.task'
 
-while cap.isOpened():
-    ret, frame = cap.read()
 
-    if not ret:
-        break
+def eye_ratio(landmarks, indices, width, height):
+    """팀원 코드의 눈 위아래 거리 / 좌우 거리 계산."""
+    import numpy as np
+    # 정규화 좌표를 실제 픽셀로 변환해 기존 눈 개방 비율 계산을 유지한다.
+    points = np.array([
+        [landmarks[i].x * width, landmarks[i].y * height]
+        for i in indices
+    ])
+    horizontal = np.linalg.norm(points[0] - points[3])
+    if horizontal <= 1e-9:
+        return None
+    vertical = np.linalg.norm(points[1] - points[5]) + np.linalg.norm(points[2] - points[4])
+    return float(vertical / (2 * horizontal))
 
-    h, w, _ = frame.shape
 
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    mp_image = mp.Image(
-        image_format=mp.ImageFormat.SRGB,
-        data=rgb
+def head_angles(landmarks, width, height):
+    """기존 solvePnP 머리 방향 추정. 보정 전 실험값이며 참여도 판정이 아니다."""
+    import cv2
+    import numpy as np
+    # 코·턱·양쪽 눈과 입의 2D 위치를 기존 얼굴 모형과 대응시킨다.
+    image_points = np.array(
+        [[landmarks[i].x * width, landmarks[i].y * height]
+         for i in (1, 152, 33, 263, 61, 291)],
+        dtype=np.float64,
     )
+    model_points = np.array(
+        [[0, 0, 0], [0, -330, -65], [-225, 170, -135],
+         [225, 170, -135], [-150, -150, -125], [150, -150, -125]],
+        dtype=np.float64,
+    )
+    camera = np.array([[width, 0, width / 2], [0, width, height / 2], [0, 0, 1]], dtype=np.float64)
+    ok, rotation, _ = cv2.solvePnP(model_points, image_points, camera, np.zeros((4, 1)))
+    if not ok:
+        return None
+    matrix, _ = cv2.Rodrigues(rotation)
+    angles = cv2.RQDecomp3x3(matrix)[0]
+    return {key: float(value) for key, value in zip(('pitch', 'yaw', 'roll'), angles)}
 
-    timestamp += 33
-    result = detector.detect_for_video(mp_image, timestamp)
 
-    if result.face_landmarks:
-        landmarks = result.face_landmarks[0]
-
-        left_ratio = eye_ratio(landmarks, LEFT_EYE, w, h)
-        right_ratio = eye_ratio(landmarks, RIGHT_EYE, w, h)
-
-        avg_ratio = (left_ratio + right_ratio) / 2
-
-        # 임계값은 개인별 보정이 필요함
-        eye_status = "OPEN" if avg_ratio > 0.20 else "CLOSED"
-
-        # 머리 방향 추정용 얼굴 기준점
-        image_points = np.array([
-            [landmarks[1].x * w, landmarks[1].y * h],       # 코
-            [landmarks[152].x * w, landmarks[152].y * h],   # 턱
-            [landmarks[33].x * w, landmarks[33].y * h],     # 왼쪽 눈 바깥
-            [landmarks[263].x * w, landmarks[263].y * h],   # 오른쪽 눈 바깥
-            [landmarks[61].x * w, landmarks[61].y * h],     # 입 왼쪽
-            [landmarks[291].x * w, landmarks[291].y * h]    # 입 오른쪽
-        ], dtype=np.float64)
-
-        model_points = np.array([
-            [0, 0, 0],
-            [0, -330, -65],
-            [-225, 170, -135],
-            [225, 170, -135],
-            [-150, -150, -125],
-            [150, -150, -125]
-        ], dtype=np.float64)
-
-        focal_length = w
-        camera_matrix = np.array([
-            [focal_length, 0, w / 2],
-            [0, focal_length, h / 2],
-            [0, 0, 1]
-        ], dtype=np.float64)
-
-        dist_coeffs = np.zeros((4, 1))
-
-        success, rotation_vector, translation_vector = cv2.solvePnP(
-            model_points,
-            image_points,
-            camera_matrix,
-            dist_coeffs
+class FaceAnalyzer:
+    """프레임 단위 다중 얼굴 분석. 순서는 개인 식별이나 추적 정보가 아니다."""
+    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20):
+        import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+        self.mp = mp
+        # Windows의 한글 경로에서도 읽도록 Python에서 모델 바이트를 전달한다.
+        base_options = python.BaseOptions(model_asset_buffer=Path(model_path).read_bytes())
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=max_faces,
         )
+        self.detector = vision.FaceLandmarker.create_from_options(options)
+        self.last_timestamp = -1
 
-        if success:
-            rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+    def analyze(self, frame):
+        import cv2
+        rgb = cv2.cvtColor(frame.image, cv2.COLOR_BGR2RGB)
+        # MediaPipe는 증가하는 시각을 요구한다. 공통 캡처 시각은 별도로 유지한다.
+        timestamp = max(frame.capture_ms, self.last_timestamp + 1)
+        self.last_timestamp = timestamp
+        result = self.detector.detect_for_video(
+            self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), timestamp)
+        # 원본은 첫 얼굴 하나만 사용했지만 수업 창에서는 검출된 모든 얼굴을 처리한다.
+        # 배열의 순서는 매 프레임 바뀔 수 있으므로 참가자 ID로 사용하면 안 된다.
+        faces = []
+        for points in result.face_landmarks:
+            left = eye_ratio(points, LEFT_EYE, frame.width, frame.height)
+            right = eye_ratio(points, RIGHT_EYE, frame.width, frame.height)
+            openness = (left + right) / 2 if left is not None and right is not None else None
+            faces.append({
+                'eye_openness': openness,
+                'head_angles_degrees': head_angles(points, frame.width, frame.height),
+            })
+        return faces
 
-            angles, _, _, _, _, _ = cv2.RQDecomp3x3(rotation_matrix)
-
-            pitch, yaw, roll = angles
-
-            if yaw < -15:
-                head_direction = "LEFT"
-            elif yaw > 15:
-                head_direction = "RIGHT"
-            elif pitch < -15:
-                head_direction = "UP"
-            elif pitch > 15:
-                head_direction = "DOWN"
-            else:
-                head_direction = "FRONT"
-
-            cv2.putText(
-                frame, f"Head: {head_direction}",
-                (20, 40), cv2.FONT_HERSHEY_SIMPLEX,
-                0.8, (0, 255, 0), 2
-            )
-
-        cv2.putText(
-            frame, f"Eyes: {eye_status} ({avg_ratio:.2f})",
-            (20, 80), cv2.FONT_HERSHEY_SIMPLEX,
-            0.8, (0, 255, 255), 2
-        )
-
-    cv2.imshow("Eye and Head Analysis", frame)
-
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-detector.close()
-cv2.destroyAllWindows()
+    def close(self):
+        self.detector.close()
