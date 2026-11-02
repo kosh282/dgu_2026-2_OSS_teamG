@@ -1,8 +1,10 @@
 """팀원 얼굴 분석을 수업 창의 여러 얼굴에 적용하는 공통 분석기."""
 from pathlib import Path
+import math
 
 LEFT_EYE = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE = [33, 160, 158, 133, 153, 144]
+EXPRESSION_KEYS = {'mouthSmileLeft', 'mouthSmileRight', 'browInnerUp', 'jawOpen'}
 # 실행 위치가 달라도 영상 담당 폴더의 같은 모델을 읽는다.
 DEFAULT_MODEL = Path(__file__).resolve().parent / 'models' / 'face_landmarker.task'
 
@@ -20,6 +22,26 @@ def eye_ratio(landmarks, indices, width, height):
         return None
     vertical = np.linalg.norm(points[1] - points[5]) + np.linalg.norm(points[2] - points[4])
     return float(vertical / (2 * horizontal))
+
+
+def points_in_frame(landmarks, indices):
+    """필요한 기준점이 화면 안에 있고 유한한지 확인한다. 정확도 검증은 아니다."""
+    return all(
+        math.isfinite(landmarks[index].x) and math.isfinite(landmarks[index].y)
+        and 0 <= landmarks[index].x <= 1 and 0 <= landmarks[index].y <= 1
+        for index in indices
+    )
+
+
+def periodic_angles(angles):
+    """각도 경계에서 값이 끊기지 않도록 각 축의 sin/cos를 함께 전달한다."""
+    if angles is None or not all(math.isfinite(angles[axis]) for axis in ('pitch', 'yaw', 'roll')):
+        return None
+    return {
+        axis: {'sin': math.sin(math.radians(angles[axis])),
+               'cos': math.cos(math.radians(angles[axis]))}
+        for axis in ('pitch', 'yaw', 'roll')
+    }
 
 
 def head_angles(landmarks, width, height):
@@ -59,6 +81,7 @@ class FaceAnalyzer:
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_faces=max_faces,
+            output_face_blendshapes=True,
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
         self.last_timestamp = -1
@@ -82,13 +105,39 @@ class FaceAnalyzer:
         # 원본은 첫 얼굴 하나만 사용했지만 수업 창에서는 검출된 모든 얼굴을 처리한다.
         # 배열의 순서는 매 프레임 바뀔 수 있으므로 참가자 ID로 사용하면 안 된다.
         faces = []
-        for points in result.face_landmarks:
-            left = eye_ratio(points, LEFT_EYE, frame.width, frame.height)
-            right = eye_ratio(points, RIGHT_EYE, frame.width, frame.height)
+        for index, points in enumerate(result.face_landmarks):
+            eye_observable = points_in_frame(points, LEFT_EYE + RIGHT_EYE)
+            pose_observable = points_in_frame(points, (1, 152, 33, 263, 61, 291))
+            left = eye_ratio(points, LEFT_EYE, frame.width, frame.height) if eye_observable else None
+            right = eye_ratio(points, RIGHT_EYE, frame.width, frame.height) if eye_observable else None
             openness = (left + right) / 2 if left is not None and right is not None else None
+            angles = head_angles(points, frame.width, frame.height) if pose_observable else None
+            orientation = periodic_angles(angles)
+            if orientation is None:
+                angles = None
+            # 얼굴 경계 밖의 점을 포함한 형태 점수는 관측 불가로 둔다.
+            expression_observable = points_in_frame(points, (1, 13, 14, 33, 61, 105, 133, 263, 291, 334, 362))
+            expression = {
+                category.category_name: float(category.score)
+                for category in (result.face_blendshapes[index] if result.face_blendshapes else [])
+                if category.category_name in EXPRESSION_KEYS
+                and math.isfinite(category.score)
+            } if expression_observable else {}
+            if expression.keys() != EXPRESSION_KEYS:
+                expression = {}
+            reasons = []
+            if openness is None or angles is None or not expression:
+                reasons.append('insufficient_observation')
             faces.append({
                 'eye_openness': openness,
-                'head_angles_degrees': head_angles(points, frame.width, frame.height),
+                'head_angles_degrees': angles,
+                'head_orientation_periodic': orientation,
+                # 코의 화면 내 상대 위치. 프레임 간 이동량 계산에만 사용한다.
+                'head_position': ({'x': float(points[1].x), 'y': float(points[1].y)}
+                                  if points_in_frame(points, (1,)) else None),
+                # 감정 분류가 아닌 MediaPipe의 얼굴 근육 형태 점수다.
+                'expression_blendshapes': expression if expression else None,
+                'quality': {'status': 'partial' if reasons else 'valid', 'reason_codes': reasons},
             })
         return faces
 

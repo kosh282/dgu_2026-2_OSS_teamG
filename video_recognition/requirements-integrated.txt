@@ -1,5 +1,6 @@
 # Python 3.14에서 공통 수업 창 영상 경로를 검증한 버전
 mediapipe==0.10.35
-opencv-contrib-python==5.0.0.93
+opencv-python==5.0.0.93
 numpy==2.5.4
 Pillow==13.0.0
+windows-capture==2.0.1; sys_platform == 'win32'
