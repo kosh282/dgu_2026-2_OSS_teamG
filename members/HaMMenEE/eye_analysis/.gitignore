@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+analysis_result.json
+*.task
+.DS_Store
+.venv/
