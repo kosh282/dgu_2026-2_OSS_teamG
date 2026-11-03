@@ -88,6 +88,8 @@ class FaceAnalyzer:
         # 시험 화면에서만 원본 좌표를 볼 수 있도록 보관한다. 기본 분석은 보관하지 않는다.
         self.show_landmarks = show_landmarks
         self.last_landmarks = []
+        # 얼굴 배열 순서는 프레임마다 달라질 수 있으므로, 후처리기가 임시 위치 추적에 쓸 중심점도 함께 보관한다.
+        self.last_face_centers = []
 
     def analyze(self, frame):
         import cv2
@@ -102,6 +104,11 @@ class FaceAnalyzer:
              for points in result.face_landmarks]
             if self.show_landmarks else []
         )
+        self.last_face_centers = [
+            (float(sum(point.x for point in points) / len(points)),
+             float(sum(point.y for point in points) / len(points)))
+            for points in result.face_landmarks if points
+        ]
         # 원본은 첫 얼굴 하나만 사용했지만 수업 창에서는 검출된 모든 얼굴을 처리한다.
         # 배열의 순서는 매 프레임 바뀔 수 있으므로 참가자 ID로 사용하면 안 된다.
         faces = []
@@ -130,6 +137,9 @@ class FaceAnalyzer:
                 reasons.append('insufficient_observation')
             faces.append({
                 'eye_openness': openness,
+                # 좌우 EAR를 따로 보존해 후처리 설정을 바꾸거나 다른 깜빡임 판정기를 꽂을 수 있게 한다.
+                'eye_aspect_ratio_left': left,
+                'eye_aspect_ratio_right': right,
                 'head_angles_degrees': angles,
                 'head_orientation_periodic': orientation,
                 # 코의 화면 내 상대 위치. 프레임 간 이동량 계산에만 사용한다.
