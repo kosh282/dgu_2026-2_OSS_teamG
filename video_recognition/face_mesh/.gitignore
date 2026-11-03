@@ -1,0 +1,31 @@
+# Model bundle (downloaded on first run)
+models/
+*.task
+
+# Generated output
+*_mesh.jpg
+*_mesh.png
+*_mesh.mp4
+snapshot_*.jpg
+*.jsonl
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Packaging / test artifacts
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+*_timeline.png
