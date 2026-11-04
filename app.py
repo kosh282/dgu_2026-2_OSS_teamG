@@ -266,6 +266,7 @@ def live_page():
             if st.button('개발자 모드 끄기' if enabled else '개발자 모드 켜기'):
                 live.set_developer_preview(not enabled)
                 st.rerun()
+            st.caption('별도 OpenCV 창이 열립니다. Vision relative yaw는 보정 전, Model relative yaw는 yaw 보정 후 모델 입력값입니다.')
 
 
 def review_page():

@@ -76,6 +76,81 @@ def result_panel(window, landmarks=None, face_page=0, model_result=None):
     return render_feature_panel(window, face_page=face_page, model_result=model_result)
 
 
+class DeveloperPreviewOutput:
+    """웹캠 데모와 프런트 개발자 모드가 공유하는 두 창 출력·키보드 처리기."""
+
+    def __init__(self, max_preview_size=(720, 540)):
+        self.max_preview_size = max_preview_size
+        self.show_landmarks = True
+        self.show_tessellation = False
+        self.face_page = 0
+        self.overlay_smoother = LandmarkOverlaySmoother()
+        self.windows_ready = False
+        self.result_panel_shape = None
+
+    def render(self, frame, result, face_analyzer, pose_analyzer, model_result):
+        """웹캠 데모에서 사용하던 캡처 프리뷰와 텍스트 결과를 함께 그린다."""
+        if frame is None:
+            return {"key": -1, "quit": False, "calibrate": False,
+                    "show_landmarks": self.show_landmarks}
+
+        if not self.windows_ready:
+            cv2.namedWindow(CAPTURE_WINDOW, cv2.WINDOW_NORMAL)
+            cv2.namedWindow(RESULT_WINDOW, cv2.WINDOW_NORMAL)
+            height, width = frame.shape[:2]
+            max_width, max_height = self.max_preview_size
+            scale = min(1.0, max_width / max(width, 1), max_height / max(height, 1))
+            cv2.resizeWindow(
+                CAPTURE_WINDOW,
+                max(320, int(width * scale)), max(240, int(height * scale)),
+            )
+            self.windows_ready = True
+
+        preview = render_video_frame(
+            frame, result, face_analyzer.last_landmarks, pose_analyzer.last_landmarks,
+            self.overlay_smoother, show_overlay=self.show_landmarks,
+            show_tessellation=self.show_tessellation,
+        )
+        panel = result_panel(result, face_page=self.face_page, model_result=model_result)
+        panel_shape = (panel.shape[1], panel.shape[0])
+        if panel_shape != self.result_panel_shape:
+            cv2.resizeWindow(RESULT_WINDOW, *panel_shape)
+            self.result_panel_shape = panel_shape
+        cv2.imshow(CAPTURE_WINDOW, preview)
+        cv2.imshow(RESULT_WINDOW, panel)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord('v'), ord('V')):
+            self.show_landmarks = not self.show_landmarks
+        elif key in (ord('m'), ord('M')):
+            self.show_tessellation = not self.show_tessellation
+        elif key == ord('['):
+            self.face_page = max(0, self.face_page - 1)
+        elif key == ord(']'):
+            face_count = len(result.get('features', {}).get('faces', []))
+            page_count = max(1, (face_count + 1) // 2)
+            self.face_page = (self.face_page + 1) % page_count
+
+        return {
+            "key": key,
+            "quit": key in (ord('q'), ord('Q')),
+            "calibrate": key in (ord('c'), ord('C')),
+            "show_landmarks": self.show_landmarks,
+        }
+
+    def close(self):
+        """공유 출력 창을 닫는다. 여러 번 호출해도 안전하다."""
+        if self.windows_ready:
+            for name in (CAPTURE_WINDOW, RESULT_WINDOW):
+                try:
+                    cv2.destroyWindow(name)
+                except cv2.error:
+                    pass
+        self.windows_ready = False
+        self.result_panel_shape = None
+        self.overlay_smoother.reset()
+
+
 def log_debug_transition(features, model_result, previous_signature):
     """터미널에는 보정/모델 상태가 바뀔 때만 진단 한 줄을 남긴다."""
     calibration = features.get("head_calibration_diagnostics", {})
@@ -134,6 +209,7 @@ def main():
         raise SystemExit('웹캠을 열 수 없습니다. 연결과 카메라 접근 권한을 확인하세요.')
 
     analyzer = pipeline = service = sid = log_handle = None
+    developer_output = DeveloperPreviewOutput()
     try:
         ok, image = camera.read()
         if not ok:
@@ -169,63 +245,34 @@ def main():
             service, sid, preview_capture, analyzer,
             model_consumer=model_runtime, pose_analyzer=pose_analyzer,
         )
-        cv2.namedWindow(RESULT_WINDOW, cv2.WINDOW_NORMAL)
-        cv2.moveWindow(RESULT_WINDOW, 700, 40)
-        cv2.namedWindow(CAPTURE_WINDOW, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(CAPTURE_WINDOW, 480, 360)
-        cv2.moveWindow(CAPTURE_WINDOW, 20, 560)
         print('C: 정면 보정 시작 (3초), V: 기준점 표시 전환, Q 또는 Ctrl+C: 종료')
         started = time.monotonic()
-        show_overlay = True
-        show_tessellation = False
-        face_page = 0
-        overlay_smoother = LandmarkOverlaySmoother()
-        latest_face_count = 0
-        result_panel_shape = None
         last_debug_signature = None
         while not args.duration or time.monotonic() - started < args.duration:
             ok, image = camera.read()
             if not ok:
                 raise RuntimeError('웹캠 화면을 읽을 수 없습니다.')
             cv2.imshow(CAMERA_WINDOW, image)
-            # 캡처 대상 창을 표시한 뒤 실제 수업 창과 같은 경로로 읽는다.
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord('q'), ord('Q')):
-                break
-            if key in (ord('v'), ord('V')):
-                show_overlay = not show_overlay
-            if key in (ord('m'), ord('M')):
-                show_tessellation = not show_tessellation
-            if key == ord('['):
-                face_page = max(0, face_page - 1)
-            if key == ord(']'):
-                face_page = (face_page + 1) % max(1, (latest_face_count + 1) // 2)
-            if key in (ord('c'), ord('C')):
-                pipeline.head_calibration.start()
+            analyzer.show_landmarks = developer_output.show_landmarks
+            pose_analyzer.show_landmarks = developer_output.show_landmarks
             try:
                 result = pipeline.process_one()
             except FrameNotAvailable:
                 continue
             if result is None:
                 continue
-            latest_face_count = len(result['features'].get('faces', []))
             last_debug_signature = log_debug_transition(
                 result['features'], model_runtime.latest, last_debug_signature,
             )
             write_frame_log(log_handle, result, model_runtime.latest)
-            # 분석에 사용한 동일 프레임의 복사본에만 표시한다. V로 원본을 비교한다.
-            preview = render_video_frame(
-                preview_capture.last_frame, result, analyzer.last_landmarks,
-                pose_analyzer.last_landmarks, overlay_smoother,
-                show_overlay=show_overlay, show_tessellation=show_tessellation,
+            controls = developer_output.render(
+                preview_capture.last_frame, result, analyzer, pose_analyzer,
+                model_runtime.latest,
             )
-            cv2.imshow(CAPTURE_WINDOW, preview)
-            panel = result_panel(result, face_page=face_page, model_result=model_runtime.latest)
-            panel_shape = (panel.shape[1], panel.shape[0])
-            if panel_shape != result_panel_shape:
-                cv2.resizeWindow(RESULT_WINDOW, *panel_shape)
-                result_panel_shape = panel_shape
-            cv2.imshow(RESULT_WINDOW, panel)
+            if controls['calibrate']:
+                pipeline.head_calibration.start()
+            if controls['quit']:
+                break
     except KeyboardInterrupt:
         print('테스트를 종료합니다.')
     finally:
@@ -241,6 +288,7 @@ def main():
                 'ended_at_utc': datetime.now(timezone.utc).isoformat(),
             }, ensure_ascii=False) + '\n')
             log_handle.close()
+        developer_output.close()
         camera.release()
         cv2.destroyAllWindows()
 

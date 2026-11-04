@@ -164,7 +164,8 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
              f"{_number(face.get('eye_aspect_ratio_right'))}"),
             "  Raw pitch/yaw/roll: " + ", ".join(_number(raw.get(k), 1) for k in ("pitch", "yaw", "roll")) + " deg",
             "  Smoothed pitch/yaw/roll: " + ", ".join(_number(smooth.get(k), 1) for k in ("pitch", "yaw", "roll")) + " deg",
-            "  Relative pitch/yaw/roll: " + ", ".join(_number(relative.get(k), 1) for k in ("pitch", "yaw", "roll")) + " deg",
+            "  Vision relative P/Y/R (pre-model yaw adjustment): " + ", ".join(
+                _number(relative.get(k), 1) for k in ("pitch", "yaw", "roll")) + " deg",
             "  Raw relative pitch/yaw/roll (comparison): " + ", ".join(
                 _number((face.get("head_angles_relative_raw_degrees") or {}).get(k), 1)
                 for k in ("pitch", "yaw", "roll")) + " deg",

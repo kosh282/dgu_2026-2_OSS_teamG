@@ -1,24 +1,17 @@
 """한 대시보드 세션이 소유하는 영상 분석 작업."""
 import threading
-import cv2
 from integration import IntegrationService
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
 from video_recognition.pose_analysis import PoseAnalyzer
-from video_recognition.developer_view import render_feature_panel, render_video_frame
+from video_recognition.webcam_test import DeveloperPreviewOutput
 from engagement_model.runtime import EngagementRuntime, MODEL_ID, MODEL_VERSION
-from video_recognition.preview import (
-    PreviewCapture, LandmarkOverlaySmoother,
-)
+from video_recognition.preview import PreviewCapture
 
 
 # 별도 웹캠을 열지 않고, 실제 분석기에 전달한 프레임을 그대로 보여 주는 창 이름이다.
 # OpenCV 창이므로 Streamlit 페이지 안에 삽입되지 않고 Windows의 별도 창으로 열린다.
-DEBUG_CAPTURE_WINDOW = 'Developer preview - captured frame and landmarks'
-DEBUG_INFO_WINDOW = 'Developer preview - MediaPipe features'
-
-
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
@@ -35,13 +28,8 @@ class LiveSession:
         self.model_runtime = EngagementRuntime()
         # 개발자 미리보기는 필요할 때만 창을 갱신한다. 분석·세션 저장 데이터에는 영향을 주지 않는다.
         self.developer_preview = False
-        self._show_landmarks = True
-        self._show_tessellation = False
-        self._debug_face_page = 0
-        self._landmark_overlay_smoother = LandmarkOverlaySmoother()
-        # OpenCV 창은 한 번만 초기 크기를 정한다. 이후 사용자가 조절한 크기를 매 프레임 덮어쓰지 않는다.
-        self._developer_windows_ready = False
-        self._developer_info_shape = None
+        # 웹캠 데모와 동일한 출력 객체·창 이름·오버레이·키 조작을 사용한다.
+        self.developer_output = DeveloperPreviewOutput()
         self.thread = None
 
     def start(self, title):
@@ -96,10 +84,9 @@ class LiveSession:
             while not self.stop_event.is_set():
                 with self.lock:
                     preview_enabled = self.developer_preview
-                    show_landmarks = self._show_landmarks
                 # 개발자 미리보기가 꺼져 있으면 랜드마크 좌표 복사와 오버레이 준비를 생략한다.
-                face.show_landmarks = preview_enabled and show_landmarks
-                pose.show_landmarks = preview_enabled and show_landmarks
+                face.show_landmarks = preview_enabled and self.developer_output.show_landmarks
+                pose.show_landmarks = preview_enabled and self.developer_output.show_landmarks
                 try:
                     result = pipeline.process_one()
                 except FrameNotAvailable:
@@ -109,11 +96,14 @@ class LiveSession:
                 with self.lock:
                     self.latest = result
                     preview_enabled = self.developer_preview
-                    show_landmarks = self._show_landmarks
                 if preview_enabled:
-                    if self._render_developer_preview(capture.last_frame, result, face, pose, show_landmarks):
+                    controls = self._render_developer_preview(capture.last_frame, result, face, pose)
+                    if controls['calibrate']:
                         # 키 입력도 분석기와 같은 스레드에서 처리해 보정 상태를 안전하게 바꾼다.
                         pipeline.head_calibration.start()
+                    if controls['quit']:
+                        with self.lock:
+                            self.developer_preview = False
                 else:
                     self._close_developer_windows()
         except Exception as exc:
@@ -129,7 +119,6 @@ class LiveSession:
                             resource.close()
             finally:
                 self._close_developer_windows()
-                self._landmark_overlay_smoother.reset()
                 self.service.stop_session(self.sid)
 
     def stop(self):
@@ -155,71 +144,14 @@ class LiveSession:
             return self.developer_preview
 
     def _close_developer_windows(self):
-        """창이 이미 닫힌 경우도 무시하고 두 개발자 창만 정리한다."""
-        for name in (DEBUG_CAPTURE_WINDOW, DEBUG_INFO_WINDOW):
-            try:
-                cv2.destroyWindow(name)
-            except cv2.error:
-                pass
-        self._developer_windows_ready = False
-        self._developer_info_shape = None
+        """Close the shared developer preview windows."""
+        self.developer_output.close()
 
-    @staticmethod
-    def _feature_panel(result, face_page=0, model_result=None):
-        """Render the shared developer feature panel."""
-        return render_feature_panel(result, face_page=face_page, model_result=model_result)
-
-    def _render_developer_preview(self, image, result, face, pose, show_landmarks):
-        """분석에 사용된 동일 이미지에만 점을 겹쳐 그린다. 원본을 저장·변경하지 않는다."""
-        if image is None:
-            return
-        if not self._developer_windows_ready:
-            # WINDOW_NORMAL은 창 테두리를 드래그해 확대·축소할 수 있게 한다.
-            # 처음 열 때만 화면을 과도하게 가리지 않을 크기를 제안하고, 이후에는 사용자 크기를 보존한다.
-            cv2.namedWindow(DEBUG_CAPTURE_WINDOW, cv2.WINDOW_NORMAL)
-            cv2.namedWindow(DEBUG_INFO_WINDOW, cv2.WINDOW_NORMAL)
-            height, width = image.shape[:2]
-            scale = min(1.0, 720 / max(width, 1), 540 / max(height, 1))
-            cv2.resizeWindow(DEBUG_CAPTURE_WINDOW, max(320, int(width * scale)), max(240, int(height * scale)))
-            self._developer_windows_ready = True
-        with self.lock:
-            show_tessellation = self._show_tessellation
-            face_page = self._debug_face_page
-        frame = render_video_frame(
-            image, result, face.last_landmarks, pose.last_landmarks,
-            self._landmark_overlay_smoother,
-            show_overlay=show_landmarks, show_tessellation=show_tessellation,
+    def _render_developer_preview(self, image, result, face, pose):
+        """Render the same preview and feature panel as the webcam demo."""
+        return self.developer_output.render(
+            image, result, face, pose, self.model_runtime.latest,
         )
-        panel = self._feature_panel(
-            result, face_page=face_page, model_result=self.model_runtime.latest,
-        )
-        panel_shape = (panel.shape[1], panel.shape[0])
-        if panel_shape != self._developer_info_shape:
-            # 얼굴 수가 바뀔 때만 내용에 맞춰 조정해 사용자가 직접 바꾼 창 크기는 유지한다.
-            cv2.resizeWindow(DEBUG_INFO_WINDOW, *panel_shape)
-            self._developer_info_shape = panel_shape
-        cv2.imshow(DEBUG_CAPTURE_WINDOW, frame)
-        cv2.imshow(DEBUG_INFO_WINDOW, panel)
-        key = cv2.waitKey(1) & 0xFF
-        start_calibration = False
-        with self.lock:
-            if key in (ord('q'), ord('Q')):
-                self.developer_preview = False
-            elif key in (ord('v'), ord('V')):
-                self._show_landmarks = not self._show_landmarks
-            elif key in (ord('m'), ord('M')):
-                self._show_tessellation = not self._show_tessellation
-            elif key == ord('['):
-                self._debug_face_page = max(0, self._debug_face_page - 1)
-            elif key == ord(']'):
-                face_count = len(result['features'].get('faces', []))
-                page_count = max(1, (face_count + 1) // 2)
-                self._debug_face_page = (self._debug_face_page + 1) % page_count
-            elif key in (ord('c'), ord('C')):
-                # 개인 식별 없이, 현재 단일 얼굴이 이어진 3초만 임시 기준으로 사용한다.
-                # 이 보정값은 메모리에만 존재하고 최종 결과나 세션 파일에는 저장되지 않는다.
-                start_calibration = True
-        return start_calibration
 
     def snapshot(self):
         with self.lock:

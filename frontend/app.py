@@ -507,7 +507,8 @@ if active_live is not None and active_live.is_running():
         active_live.set_developer_preview(not preview_on)
         st.rerun()
     st.caption(
-        "별도 창에 실제 분석 입력 화면, 얼굴·상체 랜드마크와 특징값을 표시합니다. "
+        "별도 OpenCV 창에 실제 분석 입력 화면과 특징값을 표시합니다. 얼굴별 Vision relative yaw는 보정 전 값이며, "
+        "Model relative yaw가 데드밴드·민감도 보정을 거친 실제 모델 입력값입니다. "
         "V: 점 표시 전환 · C: 3초 정면 보정 시작 · Q: 개발자 창 숨기기"
     )
 else:
