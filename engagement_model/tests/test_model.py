@@ -12,7 +12,7 @@ def feature_window():
     """현재 VisionPipeline 형식에 맞는 최소 단일 얼굴 입력을 만듭니다."""
     return {
         "session_id": "c4b1f6c0-511a-46be-9a39-29e714654001",
-        "start_ms": 100, "end_ms": 100, "feature_version": "experimental-0.7",
+        "start_ms": 100, "end_ms": 100, "feature_version": "experimental-0.8",
         "quality": {"status": "partial", "reason_codes": ["insufficient_observation"]},
         "features": {
             "head_calibration_status": "ready", "upper_bodies": [],
@@ -25,7 +25,7 @@ def feature_window():
 
 def observation(pitch=0, yaw=0, roll=0):
     """점수 함수 시험용으로 상대 각도를 지정한 관측을 만듭니다."""
-    return Observation("test", 100, "experimental-0.7", HeadAngles(pitch, yaw, roll))
+    return Observation("test", 100, "experimental-0.8", HeadAngles(pitch, yaw, roll))
 
 
 class ConfigTests(unittest.TestCase):
@@ -53,7 +53,25 @@ class AdapterTests(unittest.TestCase):
         result = parse_feature_window(data)
         self.assertTrue(result.observable)
         self.assertEqual(result.angles, HeadAngles(0, 0, 0))
+        self.assertEqual(result.source_angles, HeadAngles(0, 0, 0))
         self.assertEqual(data, original)
+
+    def test_yaw_neutral_deadband_and_soft_sensitivity(self):
+        """작은 yaw는 완만히 줄이고 큰 좌우 회전은 대부분 보존합니다."""
+        data = feature_window()
+        data["features"]["faces"][0]["head_angles_relative_degrees"]["yaw"] = 1.5
+        deadbanded = parse_feature_window(data)
+        self.assertEqual(deadbanded.source_angles.yaw, 1.5)
+        self.assertEqual(deadbanded.angles.yaw, 0.0)
+
+        data["features"]["faces"][0]["head_angles_relative_degrees"]["yaw"] = 10.0
+        softened = parse_feature_window(data)
+        self.assertEqual(softened.angles.yaw, 6.0)
+
+        data["features"]["faces"][0]["head_angles_relative_degrees"]["yaw"] = -45.0
+        large_turn = parse_feature_window(data)
+        self.assertEqual(large_turn.source_angles.yaw, -45.0)
+        self.assertEqual(large_turn.angles.yaw, -39.75)
 
     def test_missing_and_multiple_faces(self):
         """미검출과 다중 얼굴은 0도 대신 관측 불가로 반환합니다."""
@@ -72,7 +90,7 @@ class AdapterTests(unittest.TestCase):
             if field == "calibration":
                 data["features"]["head_calibration_status"] = "waiting"
             elif field == "face_quality":
-                data["features"]["faces"][0]["quality"]["status"] = "partial"
+                data["features"]["faces"][0]["quality"]["status"] = "not_observable"
             else:
                 data["quality"]["status"] = "not_observable"
             with self.subTest(field=field):
@@ -114,7 +132,7 @@ class ScoringTests(unittest.TestCase):
         """좌우 부호와 상관없이 이탈 강도가 커지며 상한을 넘지 않습니다."""
         self.assertEqual(orientation_severity(HeadAngles(0, 30, 0)), 0)
         self.assertEqual(orientation_severity(HeadAngles(0, -45, 0)), 0.5)
-        self.assertEqual(orientation_severity(HeadAngles(-45, 0, 0)), 1)
+        self.assertEqual(orientation_severity(HeadAngles(-30, 0, 0)), 0.5)
         self.assertEqual(orientation_severity(HeadAngles(0, 180, 0)), 1)
 
     def test_persistent_away_monotonic_and_bounded(self):
@@ -128,7 +146,7 @@ class ScoringTests(unittest.TestCase):
         self.assertGreaterEqual(severe, 0)
 
     def test_down_is_deferred_even_with_side_turn_or_long_duration(self):
-        """필기 가능성은 옆 보기와 겹치거나 길어져도 기본 정책에서 감점하지 않습니다."""
+        """초기 아래 보기는 이전 안정 점수가 없으면 기준 점수를 만들지 않습니다."""
         for yaw in (0, 80):
             sample = observation(pitch=20, yaw=yaw)
             self.assertEqual(classify_orientation(sample.angles), "looking_down")

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 analysis_result.json
+demo_logs/
 .DS_Store
 .venv/

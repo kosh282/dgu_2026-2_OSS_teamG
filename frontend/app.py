@@ -227,13 +227,13 @@ with st.expander("실시간 수업 창 연결", expanded=True):
             result, error, running = live.snapshot()
             snapshot = live.service.get_dashboard_snapshot(live.sid)
             st.write(f"세션 시간: {clock(snapshot['session']['duration_ms'] / 1000)} · 영상: {snapshot['status'].get('vision', '준비 중')}")
-            st.write("참여 모델: 미설정 · STT: 미연결")
+            st.write("실험 행동 점수: 개발자 화면 확인용 · 공통 점수 이벤트/타임라인: 미연결 · STT: 미연결")
             if error:
                 st.error(f"영상 분석 오류: {error}")
             elif result:
                 features = result['features']
                 st.write(f"현재 프레임: 얼굴 후보 {len(features['faces'])}개 · 상체 후보 {len(features['upper_bodies'])}개 · 품질 {result['quality']['status']}")
-                st.caption("검출 수는 실제 참가자 수가 아니며 참여도 점수가 아닙니다.")
+                st.caption("검출 수는 실제 참가자 수가 아닙니다. 개발자 화면의 규칙 기반 실험 점수는 참여도 평가 결과가 아닙니다.")
             elif running:
                 st.info("영상 분석을 준비하고 있습니다.")
         live_status()

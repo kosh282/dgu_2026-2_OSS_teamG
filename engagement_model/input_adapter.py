@@ -26,6 +26,7 @@ class Observation:
     angles: HeadAngles | None
     reason_codes: tuple[str, ...] = ()
     transient_track_key: int | None = None
+    source_angles: HeadAngles | None = None
 
     @property
     def observable(self):
@@ -76,14 +77,17 @@ def parse_feature_window(data, config=None):
         reasons.append("baseline_unavailable")
 
     angles = None
+    source_angles = None
     track_key = None
     if len(faces) == 1:
         face = faces[0]
         if not isinstance(face, dict):
             raise ValueError("얼굴 항목은 사전이어야 합니다")
         face_quality = face.get("quality")
-        # 상체 미검출로 최상위 상태가 partial이어도 얼굴이 valid면 사용할 수 있습니다.
-        if not isinstance(face_quality, dict) or face_quality.get("status") != "valid":
+        # 이 모델은 머리 각도만 사용한다. 눈/표정 누락으로 전체 얼굴 품질이 partial이어도
+        # 유효한 상대 각도가 있으면 쓸 수 있지만, 얼굴 자체를 관측할 수 없으면 제외한다.
+        if (not isinstance(face_quality, dict)
+                or face_quality.get("status") not in {"valid", "partial"}):
             reasons.append("landmark_low_quality")
         relative = face.get("head_angles_relative_degrees")
         if not isinstance(relative, dict) or any(
@@ -94,10 +98,29 @@ def parse_feature_window(data, config=None):
         ):
             reasons.append("relative_angles_unavailable")
         elif not reasons:
-            angles = HeadAngles(**{axis: float(relative[axis]) for axis in ("pitch", "yaw", "roll")})
+            source_angles = HeadAngles(**{
+                axis: float(relative[axis]) for axis in ("pitch", "yaw", "roll")
+            })
+            yaw_magnitude = abs(source_angles.yaw)
+            if yaw_magnitude <= config.yaw_neutral_deadband_degrees:
+                model_yaw = 0.0
+            elif yaw_magnitude <= config.yaw_full_scale_start_degrees:
+                model_magnitude = (
+                    yaw_magnitude - config.yaw_neutral_deadband_degrees
+                ) * config.yaw_small_angle_scale
+                model_yaw = math.copysign(model_magnitude, source_angles.yaw)
+            else:
+                model_magnitude = (
+                    config.yaw_full_scale_start_degrees
+                    - config.yaw_neutral_deadband_degrees
+                ) * config.yaw_small_angle_scale
+                model_magnitude += yaw_magnitude - config.yaw_full_scale_start_degrees
+                model_yaw = math.copysign(model_magnitude, source_angles.yaw)
+            # 중립 부근만 완만히 압축한다. 큰 좌우 회전은 거의 그대로 유지한다.
+            angles = HeadAngles(source_angles.pitch, model_yaw, source_angles.roll)
         track_key = face.get("transient_track_key")
         if track_key is not None and (isinstance(track_key, bool)
                 or not isinstance(track_key, int) or track_key < 0):
             raise ValueError("임시 추적 키는 0 이상의 정수 또는 None이어야 합니다")
     return Observation(sid, data["start_ms"], config.feature_version,
-                       angles, tuple(dict.fromkeys(reasons)), track_key)
+                       angles, tuple(dict.fromkeys(reasons)), track_key, source_angles)

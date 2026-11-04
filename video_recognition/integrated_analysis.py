@@ -11,7 +11,7 @@ from .head_calibration import HeadCalibration
 from .pose_analysis import PoseAnalyzer
 from .window_capture import FrameNotAvailable, WindowCapture
 
-FEATURE_VERSION = 'experimental-0.7'
+FEATURE_VERSION = 'experimental-0.8'
 DEFAULT_FACE_ANALYSIS_HZ = 10.0
 DEFAULT_POSE_ANALYSIS_HZ = 5.0
 DEFAULT_MAX_ANALYSIS_DIMENSION = 1920
@@ -209,9 +209,11 @@ class VisionPipeline:
             faces = self.analyzer.analyze(frame)
             self.last_face_analysis_ms = capture_ms
             self.face_sample_times.append(capture_ms)
-            calibration_status = self.head_calibration.update(faces, capture_ms)
             faces = self.face_postprocessor.process(
                 faces, getattr(self.analyzer, 'last_face_centers', []), capture_ms)
+            # 정면 기준과 모델 입력이 같은 스무딩 각도를 쓰도록 후처리를 먼저 적용한다.
+            calibration_status = self.head_calibration.update(faces, capture_ms)
+            calibration_diagnostics = self.head_calibration.diagnostics(capture_ms)
 
             # Run pose less often and reuse its latest observation between pose samples.
             pose_due = self.pose_analyzer is not None and (
@@ -246,6 +248,7 @@ class VisionPipeline:
                     'head_movement_candidate': head_movement,
                     'upper_body_movement_candidate': body_movement,
                     'head_calibration_status': calibration_status,
+                    'head_calibration_diagnostics': calibration_diagnostics,
                     'face_postprocessing_version': POSTPROCESSING_VERSION,
                     'sampling': {
                         'target_face_hz': self.face_analysis_hz,
