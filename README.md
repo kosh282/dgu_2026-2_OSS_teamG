@@ -1,55 +1,42 @@
-# 교수자 라이브 세션 도우미
+# 수업 참여도 분석 서비스
 
-온라인 수업 중 교수자가 수업 창을 연결해 얼굴 방향과 상체 움직임 같은 영상 특징을 확인하고, 수업 메모와 세션 기록을 남길 수 있는 프로토타입입니다. 영상은 선택한 창에서 로컬로 처리합니다.
+온라인 수업 화면을 선택해 영상 특징을 분석하고, 수업 타이머·메모·세션 기록을 함께 관리하는 팀 프로젝트입니다. 영상은 선택한 창에서 로컬로 캡처합니다.
 
-현재는 창 캡처와 MediaPipe 특징 추출, 수업 타이머, 메모, 세션 JSON 저장 및 개발자용 프리뷰를 사용할 수 있습니다. 참여도 점수 모델, 음성 전사(STT), 강의 자료 검색·자동 제안은 아직 연결되지 않았으므로 화면의 검출 후보 수를 실제 참가자 수나 참여도 점수로 해석하면 안 됩니다.
+## 현재 구현 상태
 
-## 다운로드 및 설치
+- 프런트는 Streamlit 기반이며 수업 제목 입력, 창 연결, 수업 시작·종료, 메모, 세션 JSON 내보내기 기능을 제공합니다.
+- 영상 분석은 MediaPipe로 얼굴·상체 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 실험 점수를 확인할 수 있습니다.
+- 규칙 기반 실험 점수기는 영상 분석 파이프라인의 메모리 콜백에 연결되어 있습니다. 현재 한 얼굴만 점수화하며, 복수 얼굴 점수 집계와 공통 세션의 점수 구간 이벤트 및 프런트 점수 타임라인 연동은 아직 구현되지 않았습니다. 따라서 현재 점수는 최종 참여도 판단으로 해석하면 안 됩니다.
+- 음성 전사, 강의 자료 검색·추천, 수업 후 피드백의 자동 생성은 실제 처리 모듈에 연결되지 않았습니다.
+- 창 단위 캡처는 현재 Windows용입니다. macOS에서는 창 선택·캡처 기능을 사용할 수 없습니다.
 
-현재 실시간 창 캡처 기능은 Windows에서 동작합니다. Python 3.14 환경에서 확인했습니다.
+## 설치
 
-1. GitHub 저장소를 내려받고 프로젝트 폴더로 이동합니다.
+Windows에서 저장소 루트 폴더를 열고 PowerShell에서 실행합니다. Python 3.14 환경을 기준으로 의존성을 고정했습니다.
 
 ```powershell
 git clone https://github.com/kosh282/dgu_2026-2_OSS_teamG.git
 cd dgu_2026-2_OSS_teamG
-```
-
-2. 가상환경을 만들고 영상 분석 및 프런트엔드 패키지를 설치합니다.
-
-```powershell
 python -m venv video_recognition/.venv
 video_recognition/.venv/Scripts/python.exe -m pip install --upgrade pip
 video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-integrated.txt
 video_recognition/.venv/Scripts/python.exe -m pip install -r frontend/requirements.txt
 ```
 
-## 실행
-
-저장소 루트 폴더에서 아래 명령을 실행합니다.
+## 실행 및 사용
 
 ```powershell
 video_recognition/.venv/Scripts/python.exe -m streamlit run frontend/app.py
 ```
 
-브라우저에서 터미널에 표시된 로컬 주소(보통 `http://localhost:8501`)를 엽니다.
+브라우저에서 터미널에 표시된 주소(보통 `http://localhost:8501`)를 엽니다. 수업 제목을 입력하고 수업 창을 연결한 뒤 **수업 시작**을 누르면 분석과 타이머가 시작됩니다. 개발자 모드에서 영상 오버레이와 분석값을 확인할 수 있고, 수업을 마치면 세션 JSON을 내려받을 수 있습니다.
 
-## 수업 사용 방법
+## 데모
 
-1. 수업 브라우저나 프로그램을 열어 둡니다.
-2. 대시보드의 **수업 제목**을 입력하고 분석할 창을 선택한 뒤 **창 연결**을 누릅니다. 이 단계에서는 분석과 타이머가 아직 시작되지 않습니다.
-3. 라이브 세션의 **수업 시작**을 누릅니다. 선택한 창의 영상 분석과 수업 타이머가 시작됩니다.
-4. 필요한 경우 **개발자 도구**에서 개발자 모드를 켜 캡처 프레임과 랜드마크를 별도 창으로 확인합니다.
-5. 수업이 끝나면 **수업 종료**를 누르고 **공통 계약 세션 JSON 저장**을 눌러 기록을 다운로드합니다.
+웹캠 또는 캡처 창 분석 데모:
 
-수업 제목은 저장된 JSON의 `session.title`에 기록됩니다. 수업 중 작성한 메모는 같은 세션의 이벤트로 저장됩니다.
+```powershell
+video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
+```
 
-## 개발자 프리뷰 키
-
-- `V`: 얼굴 윤곽·홍채 메시와 상체 오버레이 켜기/끄기
-- `M`: 촘촘한 얼굴 삼각 메시 켜기/끄기
-- `[` / `]`: 개발자 텍스트 창에서 얼굴 데이터 페이지 이동
-- `C`: 정면 응시 기준을 약 3초 동안 임시 수집
-- `Q`: 개발자 프리뷰 창 닫기. 수업 분석은 계속됩니다.
-
-추가 정보는 [프런트엔드 안내](frontend/README.md)와 [영상 분석 안내](video_recognition/README.md)를 참고하세요.
+자세한 사용법은 [프런트 안내](frontend/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md)를 참고하세요.
