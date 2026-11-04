@@ -120,6 +120,14 @@ class DeveloperPreviewOutput:
         cv2.imshow(RESULT_WINDOW, panel)
 
         key = cv2.waitKey(1) & 0xFF
+        return self.handle_key(key, result)
+
+    def poll_key(self, result=None):
+        """Pump OpenCV window events before capturing the displayed webcam window."""
+        return self.handle_key(cv2.waitKey(1) & 0xFF, result)
+
+    def handle_key(self, key, result=None):
+        """Handle keys received before capture or after drawing the result."""
         if key in (ord('v'), ord('V')):
             self.show_landmarks = not self.show_landmarks
         elif key in (ord('m'), ord('M')):
@@ -127,7 +135,7 @@ class DeveloperPreviewOutput:
         elif key == ord('['):
             self.face_page = max(0, self.face_page - 1)
         elif key == ord(']'):
-            face_count = len(result.get('features', {}).get('faces', []))
+            face_count = len((result or {}).get('features', {}).get('faces', []))
             page_count = max(1, (face_count + 1) // 2)
             self.face_page = (self.face_page + 1) % page_count
 
@@ -253,6 +261,12 @@ def main():
             if not ok:
                 raise RuntimeError('웹캠 화면을 읽을 수 없습니다.')
             cv2.imshow(CAMERA_WINDOW, image)
+            # Pump OpenCV events before window capture so the visible source frame is current.
+            source_controls = developer_output.poll_key()
+            if source_controls["calibrate"]:
+                pipeline.head_calibration.start()
+            if source_controls["quit"]:
+                break
             analyzer.show_landmarks = developer_output.show_landmarks
             pose_analyzer.show_landmarks = developer_output.show_landmarks
             try:
