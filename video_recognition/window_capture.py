@@ -12,7 +12,7 @@ class FrameNotAvailable(Exception):
 class WindowCapture:
     """창 핸들에 연결하며 새 프레임만 전달한다. 여러 프레임이 오면 최신 프레임만 유지한다."""
 
-    def __init__(self, hwnd, timeout=0.5):
+    def __init__(self, hwnd, timeout=0.5, expected_process_id=None):
         from windows_capture import WindowsCapture
         self.user32 = ctypes.WinDLL('user32', use_last_error=True)
         self.user32.IsWindow.argtypes = [wintypes.HWND]
@@ -21,6 +21,14 @@ class WindowCapture:
         self.user32.IsIconic.restype = wintypes.BOOL
         if not self.user32.IsWindow(hwnd):
             raise ValueError('선택한 창을 찾을 수 없습니다. 창 목록을 다시 확인하세요.')
+        self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        self.user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        owner = wintypes.DWORD()
+        if not self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner)) or not owner.value:
+            raise ValueError('선택한 창의 프로세스를 확인할 수 없습니다.')
+        self.process_id = owner.value
+        if expected_process_id is not None and self.process_id != expected_process_id:
+            raise ValueError('선택한 창의 프로세스가 변경되었습니다. 수업 창을 다시 선택하세요.')
         self.hwnd = hwnd
         self.timeout = timeout
         self.condition = threading.Condition()

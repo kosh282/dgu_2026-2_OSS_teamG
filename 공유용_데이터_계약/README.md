@@ -120,9 +120,11 @@ flowchart LR
 | 이벤트 | 필수 `payload` | 처리 규칙 |
 |---|---|---|
 | `analysis_status` | `component`, `state` (`ready`, `running`, `unavailable`, `stopped`), `message` | 캡처/영상/모델/STT 등의 상태 전달. 모델 미설정이면 `unavailable`과 `model_not_configured` 사용 |
-| `engagement_window` | `model_output`, `observation`, `signals` | 모델 선정 후에만 발행. 점수·분모 규칙은 모델 합의 후 정함 |
+| `engagement_window` | `model_output`, `observation`, `signals` | 최종 점수·분모 규칙은 모델 합의 후 정함. 현재 라이브 연결 검증에는 아래의 실험 모델을 사용 |
 
 `engagement_window.payload`는 다음처럼 확장합니다.
+
+현재 라이브 세션에서는 최종 모델 합의 전 연결 확인을 위해 단일 얼굴 **실험 모델**을 사용합니다. 실험 이벤트의 0~100 출력과 시간 기준 관측 비율은 [모델 안내](../engagement_model/README.md)에 정의하며 최종 팀 공통 점수 정의가 아닙니다. 참가자 수 분모는 계속 `null`입니다.
 
 - `model_output`: `null` 또는 객체. 모델이 정해지면 `kind`(예: `continuous`/`categorical`), `value`, `scale_or_labels`를 정의하고 `provenance.model_id/model_version`과 함께 사용합니다. 숫자 범위나 라벨은 현재 미정입니다.
 - `observation`: `valid_count`, `eligible_count`, `observable_ratio`, `count_unit`을 포함합니다. `eligible_count`의 관측 단위·선정 방법이 합의되기 전에는 세 수치를 모두 `null`로 둡니다. 0으로 나눌 수 없거나 모수가 불명확할 때 `observable_ratio`는 `null`입니다. 화면에서 검출한 수를 실제 참가자 수로 간주하지 않습니다.

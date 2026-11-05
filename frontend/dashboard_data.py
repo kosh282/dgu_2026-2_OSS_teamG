@@ -14,7 +14,7 @@ def clock(ms):
 def score(event):
     payload = event['payload']
     output = payload.get('model_output') or {}
-    value = payload.get('score', payload.get('engagement_score', output.get('score', output.get('engagement_score'))))
+    value = payload.get('score', payload.get('engagement_score', output.get('value', output.get('score', output.get('engagement_score')))))
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
     return value if 0 <= value <= 100 and event['quality']['status'] != 'not_observable' else None
@@ -28,7 +28,16 @@ def overlap(event, start, end):
 def chart(windows, notes, duration, selected=None):
     fig = go.Figure()
     ordered = sorted(windows, key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))
-    fig.add_trace(go.Scatter(x=[e['start_ms'] / 1000 for e in ordered], y=[score(e) for e in ordered],
+    xs, ys = [], []
+    previous_end = None
+    for event in ordered:
+        if previous_end is not None and event['start_ms'] > previous_end:
+            xs.append(event['start_ms'] / 1000)
+            ys.append(None)
+        xs.append(event['end_ms'] / 1000)
+        ys.append(score(event))
+        previous_end = max(previous_end or 0, event['end_ms'])
+    fig.add_trace(go.Scatter(x=xs, y=ys,
                             mode='lines+markers', connectgaps=False, name='참여 점수',
                             marker={'size': 4}, line={'color': '#2457d6', 'width': 2},
                             hovertemplate='%{x:.1f}초 · %{y:.1f}점<extra></extra>'))

@@ -154,10 +154,12 @@ class IntegrationService:
             events = _ordered(list(state["events"].values()))
             active_ids = set(state["events"])
             statuses = {"model": "unavailable"} if state["config"].get("participation_model") is None else {}
+            status_messages = {}
             # 도착 순서상 마지막 상태가 현재 상태다.
             for event in state["events"].values():
                 if event["event_type"] == "analysis_status":
                     statuses[event["payload"]["component"]] = event["payload"]["state"]
+                    status_messages[event["payload"]["component"]] = event["payload"]["message"]
             def select(kind):
                 return [e for e in events if e["event_type"] == kind]
             def with_evidence_flag(event):
@@ -168,13 +170,18 @@ class IntegrationService:
             session["duration_ms"] = self.elapsed_ms(session_id)
             session["status"] = "running" if state["running"] else "stopped"
             return deepcopy({
-                "session": session, "status": statuses,
+                "session": session, "status": statuses, "status_messages": status_messages,
                 "partial_transcripts": _ordered(list(state["partials"].values())),
                 "transcripts": _ordered(list(state["transcripts"].values())),
                 "engagement_windows": select("engagement_window"), "notes": select("note_created"),
                 "suggestions": [with_evidence_flag(e) for e in select("resource_suggestion")],
                 "feedback": [with_evidence_flag(e) for e in select("post_session_feedback")],
             })
+
+    def clear_partial_transcripts(self, session_id):
+        """전사 실패 후 완료되지 않은 임시 발화를 화면에서 제거한다."""
+        with self._lock:
+            self._get(session_id)['partials'].clear()
 
     def get_events_in_range(self, session_id, start_ms, end_ms):
         """[start, end)와 겹치는 저장 대상 이벤트. 시점 이벤트는 해당 구간 안이면 포함."""

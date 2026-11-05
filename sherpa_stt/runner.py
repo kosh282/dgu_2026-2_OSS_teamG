@@ -35,6 +35,8 @@ class LiveTranscription:
         self._stop = threading.Event()
         self._finished = False
         self._stats_lock = threading.Lock()
+        self._capture_lock = threading.Lock()
+        self._capture_stopped = False
         self._audio_ms = 0.0
         self._process_s = 0.0
         self._lags = []
@@ -69,6 +71,10 @@ class LiveTranscription:
             "dropped_chunks": getattr(self._capture, "dropped_chunks", 0),
         }
 
+    def is_alive(self):
+        """전사 작업이 실제로 동작 중인지 관리자에게 알린다."""
+        return self._thread is not None and self._thread.is_alive()
+
     # 실행 ---------------------------------------------------------------
     def _make_capture(self):
         if self.source == "loopback":
@@ -96,6 +102,10 @@ class LiveTranscription:
             self._capture.start()
         except Exception as error:  # 장치 없음, 권한 거부, 드라이버 오류 등
             self.last_error = error
+            try:
+                self._stop_capture()
+            except Exception:
+                pass
             self._capture = None
             self._status("unavailable", f"오디오 입력을 열지 못했습니다: {error}", ["audio_unavailable"])
             return False
@@ -115,6 +125,7 @@ class LiveTranscription:
                 if capture_error is not None and not self._stop.is_set():
                     self.last_error = capture_error
                     self._safe_status("unavailable", f"오디오 입력이 중단되었습니다: {capture_error}", ["audio_unavailable"])
+                    self._stop_capture()
                     return
                 continue
             started = time.perf_counter()
@@ -123,6 +134,7 @@ class LiveTranscription:
             except Exception as error:
                 self.last_error = error
                 self._safe_status("unavailable", f"전사 처리 중 오류: {error}", ["unknown"])
+                self._stop_capture()
                 return
             lag = self._service.elapsed_ms(self._session_id) - chunk.end_ms
             with self._stats_lock:
@@ -138,10 +150,15 @@ class LiveTranscription:
         except Exception:
             pass
 
+    def _stop_capture(self):
+        with self._capture_lock:
+            if self._capture is not None and not self._capture_stopped:
+                self._capture.stop()
+                self._capture_stopped = True
+
     def stop(self):
         """입력을 멈추고 남은 청크와 마지막 발화를 처리한다. 여러 번 호출해도 된다."""
-        if self._capture is not None:
-            self._capture.stop()
+        self._stop_capture()
         self._stop.set()
         if self._thread is not None:
             self._thread.join()

@@ -144,24 +144,27 @@ def preparation():
     left,right = st.columns([2,1],gap='medium')
     with left:
         with st.container(border=True):
-            st.subheader('1  분석할 수업 창 선택')
+            st.subheader('1  영상 분석 설정')
             title = st.text_input('수업 제목',key='lesson_title',disabled=running,placeholder='예: 오픈소스 소프트웨어 8주차')
+            video_enabled=st.checkbox('영상 분석 사용',value=True,key='video_enabled',disabled=running)
+            model_enabled=st.checkbox('실험 행동 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
+            st.caption('실험 점수는 영상 분석 결과를 사용합니다. 수업 시작 전에 기능을 선택하세요.')
             windows=[]
             window_error=None
-            if sys.platform == 'win32':
+            if video_enabled and sys.platform == 'win32':
                 try:
                     from video_recognition.integrated_analysis import list_windows
                     windows=list_windows()
                 except Exception as exc:
                     window_error=str(exc)
-            else:
+            elif video_enabled:
                 window_error='실시간 창 캡처는 Windows 로컬 실행에서 사용할 수 있습니다.'
-            selected=st.selectbox('분석할 수업 창',windows,index=None,format_func=lambda x:x[1],disabled=running,placeholder='수업 창을 선택하세요')
-            if st.button('창 목록 새로고침',disabled=running):
+            selected=st.selectbox('분석할 수업 창',windows,index=None,format_func=lambda x:x[1],disabled=running or not video_enabled,placeholder='수업 창을 선택하세요')
+            if st.button('창 목록 새로고침',disabled=running or not video_enabled):
                 st.rerun()
             if window_error:
                 st.info(window_error)
-            elif not windows:
+            elif video_enabled and not windows:
                 st.info('표시 중이고 제목이 있는 창이 없습니다. 수업 창을 연 뒤 목록을 새로고침하세요.')
             st.caption('미리보기는 선택한 창의 현재 프레임 한 장만 표시하며 파일로 저장하지 않습니다.')
             if selected and st.button('선택한 창 미리보기',disabled=running):
@@ -210,7 +213,7 @@ def preparation():
             stt_ready,stt_missing,_=stt_readiness(audio_source)
             audio_label='사용 안 함' if not stt_enabled else ('출력 루프백' if audio_source=='loopback' else '마이크')
             model_label='미선택' if not stt_enabled else ('준비됨' if stt_ready else '준비 필요')
-            for name,state in [('영상 캡처','창 선택됨' if selected else '대기'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)','설치됨' if importlib.util.find_spec('mediapipe') else '미설치'),('참여 모델','실시간 연결 대기')]:
+            for name,state in [('영상 캡처',('창 선택됨' if selected else '대기') if video_enabled else '사용 안 함'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)',('설치됨' if importlib.util.find_spec('mediapipe') else '미설치') if video_enabled else '사용 안 함'),('참여 모델','사용' if video_enabled and model_enabled else '사용 안 함')]:
                 st.write(f'{name} · **{state}**')
             if stt_enabled and not stt_ready:
                 st.caption(stt_missing)
@@ -220,17 +223,19 @@ def preparation():
                 st.info('진행 중인 수업이 있습니다.')
                 if st.button('라이브 세션으로 이동',use_container_width=True):
                     navigate('라이브 세션')
-            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not(selected and title.strip() and consent and storage)):
+            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or not video_enabled) and title.strip() and consent and storage)):
                 try:
                     from frontend.live_session import LiveSession
-                    live=LiveSession(selected[0],audio_source=audio_source if stt_enabled else None)
+                    live=LiveSession(selected[0] if selected and video_enabled else None,
+                                     audio_source=audio_source if stt_enabled else None,
+                                     video_enabled=video_enabled, model_enabled=model_enabled)
                     live.start(title)
                     st.session_state.live=live
                     st.session_state.hidden_suggestions=set()
                     navigate('라이브 세션')
                 except Exception as exc:
                     st.error(f'수업을 시작하지 못했습니다: {exc}')
-            st.caption('수업 제목·창 선택·동의를 확인하면 영상 분석을 시작합니다. 음성 전사는 선택 사항입니다.')
+            st.caption('수업 제목과 동의를 확인하세요. 영상 사용 시 수업 창을 선택해야 합니다.')
 
 
 def live_page():
@@ -249,15 +254,10 @@ def live_page():
         a,b=st.columns(2)
         a.metric('진행 중' if live.is_running() else '수업 종료',clock(duration))
         windows=snapshot['engagement_windows']
-        model=live.model_snapshot()
-        value=model.get('score')
-        state=model.get('orientation_state')
-        label={
-            'front':'정면 관찰', 'away':'방향 이탈 관찰',
-            'looking_down':'아래 보기 관찰', 'ambiguous':'자세 판정 보류',
-            'not_observable':'관측 불가',
-        }.get(state,'분석 대기')
-        b.metric('현재 행동 점수',label,delta=None if value is None else f'{value:g}점',delta_color='off')
+        latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
+        model_status=snapshot['status'].get('model')
+        value=score(latest_window) if latest_window and model_status != 'unavailable' else None
+        b.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
         result,error,_=live.snapshot()
         if error:
             st.error(f'영상 분석 오류: {error}')
@@ -266,24 +266,31 @@ def live_page():
             st.warning(f'음성 전사 오류: {transcription_error}')
         if result:
             st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
-        if model.get('status') == 'input_error':
-            st.warning('참여 모델이 영상 특징 형식을 처리하지 못했습니다: '+', '.join(model.get('reason_codes', [])))
-        elif value is None and model.get('status') == 'deferred':
-            st.caption('실험 행동 점수 보류 사유: '+', '.join(model.get('reason_codes', [])))
-        elif value is not None:
-            st.caption(f"실험 행동 점수 {value:g}점 · {model.get('model_id')} {model.get('model_version')} · 집중도나 이해도를 나타내지 않습니다.")
+        if latest_window:
+            st.caption(f"구간 {clock(latest_window['start_ms'])}~{clock(latest_window['end_ms'])} · 실험 점수는 집중도나 이해도를 나타내지 않습니다.")
+            if model_status == 'unavailable':
+                st.caption('모델 또는 영상 입력이 중단되어 최근 점수를 현재 점수로 표시하지 않습니다.')
+            elif value is None:
+                st.caption('점수 보류 사유: '+', '.join(latest_window['quality']['reason_codes']))
+                st.caption('실험 모델은 개발자 미리보기에서 얼굴 한 명이 정면을 바라보며 C 키로 기준을 수집해야 합니다.')
         with st.container(border=True):
             st.subheader('공통 타임라인')
             st.caption('계약에 저장된 engagement_window 구간과 메모를 표시합니다.')
             st.plotly_chart(chart(windows,snapshot['notes'],duration),use_container_width=True,key='live-chart')
             if not windows:
-                st.caption('최신 실험 행동 점수는 위에 표시됩니다. 구간 집계와 engagement_window 저장은 아직 연결되지 않아 타임라인에는 나타나지 않습니다.')
+                state=snapshot['status'].get('model')
+                st.caption('실험 모델을 사용하지 않거나 실행할 수 없습니다.' if state in ('stopped','unavailable') else '첫 구간을 집계하는 중입니다. 기본 설정에서는 수업 시작 후 10초가 필요합니다.')
         with st.container(border=True):
             st.subheader('강의 조교 · 자료 제안')
             resources(live.service,live.sid,snapshot)
         with st.container(border=True):
             st.subheader('실시간 전사 · 분석 상태')
-            st.caption(' · '.join(f'{key}: {value}' for key,value in snapshot['status'].items()))
+            state_labels={'running':'실행 중','ready':'준비됨','unavailable':'오류 또는 사용 불가','stopped':'꺼짐 또는 종료'}
+            names={'vision':'영상','model':'실험 점수','stt':'음성 전사'}
+            st.caption(' · '.join(f"{names.get(key,key)}: {state_labels.get(value,value)}" for key,value in snapshot['status'].items()))
+            for component, state in snapshot['status'].items():
+                if state == 'unavailable' and snapshot.get('status_messages', {}).get(component):
+                    st.caption(f"{names.get(component,component)}: {snapshot['status_messages'][component]}")
             for event in snapshot['transcripts'][-8:]:
                 event_text(event)
             for event in snapshot['partial_transcripts']:
@@ -319,7 +326,7 @@ def live_page():
                 st.error(f'수업 종료·저장 실패: {exc}')
         with st.expander('개발자 도구'):
             enabled=live.developer_preview_enabled()
-            if st.button('개발자 모드 끄기' if enabled else '개발자 모드 켜기'):
+            if st.button('개발자 모드 끄기' if enabled else '개발자 모드 켜기', disabled=not live.video_enabled):
                 live.set_developer_preview(not enabled)
                 st.rerun()
 
@@ -339,13 +346,17 @@ def review_page():
     duration=session['duration_ms']
     st.caption(f"{session['title']} · 길이 {clock(duration)}")
     windows=snapshot['engagement_windows']
-    measured=[(score(e),max(1,e['end_ms']-e['start_ms'])) for e in windows if score(e) is not None]
+    ordered_windows=sorted(windows,key=lambda e:(e['start_ms'],e['end_ms']))
+    has_overlap=any(b['start_ms'] < a['end_ms'] for a,b in zip(ordered_windows,ordered_windows[1:]))
+    measured=[(score(e),max(1,e['end_ms']-e['start_ms'])) for e in windows if score(e) is not None] if not has_overlap else []
     average=sum(s*w for s,w in measured)/sum(w for _,w in measured) if measured else None
-    ratios=[(e['payload'].get('observation',{}).get('observable_ratio'),max(1,e['end_ms']-e['start_ms'])) for e in windows]
+    ratios=[(e['payload'].get('observation',{}).get('observable_ratio'),max(1,e['end_ms']-e['start_ms'])) for e in windows] if not has_overlap else []
     ratios=[(r,w) for r,w in ratios if r is not None]
     columns=st.columns(4)
     for column,label,value in zip(columns,['수업 전체 참여 점수','분석 가능률','자료 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '측정 불가',f'{sum(r*w for r,w in ratios)/sum(w for _,w in ratios):.0%}' if ratios else '측정 불가',f"{len(snapshot['suggestions'])}건",f"{len(snapshot['notes'])}개"]):
         column.metric(label,value)
+    if has_overlap:
+        st.caption('이동 구간은 서로 겹치므로 전체 평균과 전체 분석 가능률을 계산하지 않습니다.')
     range_key=f'range-{sid}'
     chart_key=f'review-chart-{sid}'
     def select_chart_range():

@@ -1,9 +1,11 @@
 """한 대시보드 세션이 소유하는 영상 분석 작업."""
 import threading
+import time
 import cv2
 import numpy as np
 from integration import IntegrationService
-from engagement_model.runtime import EngagementRuntime
+from engagement_model.runtime import EngagementRuntime, MODEL_ID, MODEL_VERSION
+from engagement_model.window_publisher import WindowPublisher
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
@@ -17,25 +19,31 @@ from video_recognition.preview import (
 # OpenCV 창이므로 Streamlit 페이지 안에 삽입되지 않고 Windows의 별도 창으로 열린다.
 DEBUG_CAPTURE_WINDOW = 'Developer preview - captured frame and landmarks'
 DEBUG_INFO_WINDOW = 'Developer preview - MediaPipe features'
+RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 
 
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
-    def __init__(self, hwnd, audio_source=None):
+    def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
         self.sid = None
         self.hwnd = hwnd
+        self.video_enabled = bool(video_enabled)
+        self.model_enabled = bool(model_enabled and video_enabled)
+        if self.video_enabled and hwnd is None:
+            raise ValueError('영상 분석을 사용하려면 수업 창을 선택하세요.')
         self.audio_source = audio_source
         self.transcription = None
         self._stt_startup_error = None
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest = None
-        self.model_runtime = EngagementRuntime()
-        self.model_latest = self.model_runtime.latest
+        self.model_runtime = None
+        self.window_publisher = None
+        self.model_latest = {}
         self.error = None
         # 개발자 미리보기는 필요할 때만 창을 갱신한다. 분석·세션 저장 데이터에는 영향을 주지 않는다.
         self.developer_preview = False
@@ -47,6 +55,12 @@ class LiveSession:
         self._developer_windows_ready = False
         self._developer_info_shape = None
         self.thread = None
+        self.vision_thread = None
+        self._window_process_id = None
+        self.stt_thread = None
+        self._model_failed = False
+        self._model_retry_count = 0
+        self._model_retry_at = None
 
     def start(self, title):
         """수업 제목을 확정하고 타이머·공통 세션·영상 분석을 같은 순간에 시작한다."""
@@ -55,14 +69,11 @@ class LiveSession:
         with self.lock:
             if self.thread is not None:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
-        stt_config = stt_engine = None
+        stt_config = None
         if self.audio_source is not None:
-            from sherpa_stt.config import SttConfig
-            from sherpa_stt.engine import SherpaEngine
-            stt_config = SttConfig()
             try:
-                # 모델을 수업 시계가 시작되기 전에 읽어 세션 구간을 로딩 시간만큼 밀지 않는다.
-                stt_engine = SherpaEngine(stt_config)
+                from sherpa_stt.config import SttConfig
+                stt_config = SttConfig()
             except Exception as exc:
                 self._stt_startup_error = exc
         with self.lock:
@@ -70,34 +81,26 @@ class LiveSession:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
             self.sid = self.service.start_session(title.strip(), config={
                 'config_version': 'initial',
-                'participation_model': None,
+                'participation_model': {'model_id': MODEL_ID, 'model_version': MODEL_VERSION} if self.model_enabled else None,
                 'stt_model': stt_config.public_info() if stt_config else None,
             })
             self.stop_event.clear()
-        if self.audio_source is not None:
-            if stt_engine is None:
-                message = f'STT 모델을 준비하지 못했습니다: {self._stt_startup_error}'
-                self._report_stt_unavailable(message, 'model_not_configured')
-            else:
-                try:
-                    from sherpa_stt.runner import LiveTranscription
-                    self.transcription = LiveTranscription(
-                        self.service, self.sid, stt_config,
-                        source=self.audio_source, engine=stt_engine,
-                    )
-                    self.transcription.start()
-                except Exception as exc:
-                    self._stt_startup_error = exc
-                    self._report_stt_unavailable(f'STT를 시작하지 못했습니다: {exc}', 'audio_unavailable')
+        if not self.video_enabled:
+            self._component_status('vision', 'stopped', '영상 분석을 사용하지 않습니다.', 'vision')
+        if not self.model_enabled:
+            self._model_status('stopped', '실험 점수 모델을 사용하지 않습니다.')
+        if self.audio_source is None:
+            self._component_status('stt', 'stopped', '음성 전사를 사용하지 않습니다.', 'speech')
+        self._stt_config = stt_config
         with self.lock:
-            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread = threading.Thread(target=self._run, name='session-coordinator', daemon=True)
             self.thread.start()
 
     def _report_stt_unavailable(self, message, reason):
         event = self.service.make_event(
             self.sid, 'analysis_status',
             {'component': 'stt', 'state': 'unavailable', 'message': message},
-            0, 0, 'speech', quality_status='not_observable', reason_codes=[reason],
+            self.service.elapsed_ms(self.sid), self.service.elapsed_ms(self.sid), 'speech', quality_status='not_observable', reason_codes=[reason],
         )
         self.service.receive_event(event)
 
@@ -116,17 +119,103 @@ class LiveSession:
         return self.service.elapsed_ms(sid) / 1000 if sid is not None else 0
 
     def _run(self):
-        face = pose = capture = pipeline = None
+        """수업 생명주기는 각 분석 작업의 성공 여부와 별도로 유지한다."""
+        if self.video_enabled:
+            self.vision_thread = threading.Thread(target=self._supervise_vision, name='vision-analysis', daemon=True)
+            self.vision_thread.start()
+        if self.audio_source is not None:
+            self.stt_thread = threading.Thread(target=self._supervise_stt, name='stt-supervisor', daemon=True)
+            self.stt_thread.start()
+        self.stop_event.wait()
+        if self.vision_thread is not None:
+            self.vision_thread.join()
+        if self.stt_thread is not None:
+            self.stt_thread.join()
+        self.service.stop_session(self.sid)
+
+    def _supervise_vision(self):
+        for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):
+            with self.lock:
+                self.error = None
+            self._model_failed = False
+            self._model_retry_count = 0
+            self._model_retry_at = None
+            try:
+                self._run_vision()
+            except Exception as exc:
+                with self.lock:
+                    self.error = str(exc)
+            if self.stop_event.is_set():
+                return
+            if self.error is None:
+                with self.lock:
+                    self.error = '영상 분석이 예상과 달리 종료되었습니다.'
+            if attempt == len(RETRY_DELAYS_SECONDS):
+                self._component_status('vision', 'unavailable', f'재시도 횟수 초과: {self.error}', 'vision', ['retry_exhausted'])
+                return
+            delay = RETRY_DELAYS_SECONDS[attempt]
+            self._component_status('vision', 'unavailable', f'{delay:g}초 후 재시작 ({attempt + 1}/{len(RETRY_DELAYS_SECONDS)}): {self.error}', 'vision', ['retrying'])
+            if self.stop_event.wait(delay):
+                return
+
+    def _supervise_stt(self):
+        for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):
+            runner = None
+            try:
+                if self._stt_config is None:
+                    from sherpa_stt.config import SttConfig
+                    self._stt_config = SttConfig()
+                from sherpa_stt.runner import LiveTranscription
+                runner = LiveTranscription(self.service, self.sid, self._stt_config, source=self.audio_source)
+                with self.lock:
+                    self.transcription = runner
+                if not runner.start():
+                    raise RuntimeError(str(runner.last_error or '전사 시작 실패'))
+                self._stt_startup_error = None
+                while not self.stop_event.wait(0.2):
+                    if not runner.is_alive():
+                        raise RuntimeError(str(runner.last_error or '전사 작업이 종료되었습니다'))
+                return
+            except Exception as exc:
+                self._stt_startup_error = exc
+                if runner is not None and runner.last_error is None:
+                    runner.last_error = exc
+            finally:
+                if runner is not None:
+                    try:
+                        runner.stop()
+                    except Exception as exc:
+                        self._stt_startup_error = exc
+                if not self.stop_event.is_set():
+                    self.service.clear_partial_transcripts(self.sid)
+            if self.stop_event.is_set():
+                return
+            if attempt == len(RETRY_DELAYS_SECONDS):
+                self._report_stt_unavailable(f'STT 재시도 횟수 초과: {self._stt_startup_error}', 'retry_exhausted')
+                return
+            delay = RETRY_DELAYS_SECONDS[attempt]
+            self._report_stt_unavailable(f'STT {delay:g}초 후 재시작 ({attempt + 1}/{len(RETRY_DELAYS_SECONDS)}): {self._stt_startup_error}', 'retrying')
+            if self.stop_event.wait(delay):
+                return
+
+    def _run_vision(self):
+        face = pose = window = capture = pipeline = None
         try:
             # 좌표는 개발자 창을 위해서만 메모리에 유지하며 JSON 이벤트나 최종 세션에는 넣지 않는다.
             face = FaceAnalyzer(show_landmarks=True)
             pose = PoseAnalyzer(show_landmarks=True)
-            capture = PreviewCapture(WindowCapture(self.hwnd))
+            window = WindowCapture(self.hwnd, expected_process_id=self._window_process_id)
+            if self._window_process_id is None:
+                self._window_process_id = getattr(window, 'process_id', None)
+            capture = PreviewCapture(window)
+            if self.model_enabled:
+                self._start_model()
             pipeline = VisionPipeline(
                 self.service, self.sid, capture, face,
-                model_consumer=self.model_runtime, pose_analyzer=pose,
+                model_consumer=self._consume_model if self.model_enabled else None, pose_analyzer=pose,
             )
             while not self.stop_event.is_set():
+                self._maybe_restart_model()
                 with self.lock:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
@@ -136,12 +225,15 @@ class LiveSession:
                 try:
                     result = pipeline.process_one()
                 except FrameNotAvailable:
+                    self._advance_model()
                     continue
                 if result is None:
+                    self._advance_model()
                     continue
                 with self.lock:
                     self.latest = result
-                    self.model_latest = self.model_runtime.latest
+                    if self.model_runtime is not None:
+                        self.model_latest = self.model_runtime.latest
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
                 if preview_enabled:
@@ -153,24 +245,99 @@ class LiveSession:
         except Exception as exc:
             with self.lock:
                 self.error = str(exc)
+            if self.model_enabled and not self._model_failed:
+                self._model_status('unavailable', f'영상 입력이 중단되었습니다: {exc}', ['analysis_failed'])
         finally:
             try:
                 if pipeline:
                     pipeline.close()
                 else:
-                    for resource in (capture, pose, face):
+                    for resource in (capture or window, pose, face):
                         if resource:
                             resource.close()
+            except Exception as exc:
+                with self.lock:
+                    if self.error is None:
+                        self.error = f'영상 자원 종료 실패: {exc}'
             finally:
                 self._close_developer_windows()
                 self._landmark_overlay_smoother.reset()
-                if self.transcription is not None:
-                    try:
-                        # 마지막 확정 전사를 세션 종료 전에 같은 통합 서비스로 발행한다.
-                        self.transcription.stop()
-                    except Exception as exc:
-                        self._stt_startup_error = exc
-                self.service.stop_session(self.sid)
+                try:
+                    if self.window_publisher is not None and not self._model_failed:
+                        self.window_publisher.finish(self.service.elapsed_ms(self.sid))
+                    if self.model_enabled and self.error is None and not self._model_failed:
+                        self._model_status('stopped', '실험 모델 분석을 종료했습니다.')
+                except Exception as exc:
+                    with self.lock:
+                        self.error = f'마지막 모델 구간 저장 실패: {exc}'
+                if self.error is not None:
+                    self._component_status('vision', 'unavailable', f'영상 분석 오류: {self.error}', 'vision', ['analysis_failed'])
+
+    def _consume_model(self, feature):
+        if self._model_failed:
+            return
+        try:
+            self.window_publisher(feature)
+        except Exception as exc:
+            self._fail_model(exc)
+
+    def _advance_model(self):
+        if self.window_publisher is None or self._model_failed:
+            return
+        try:
+            self.window_publisher.advance(self.service.elapsed_ms(self.sid))
+        except Exception as exc:
+            self._fail_model(exc)
+
+    def _fail_model(self, error):
+        self._model_failed = True
+        if self._model_retry_count < len(RETRY_DELAYS_SECONDS):
+            delay = RETRY_DELAYS_SECONDS[self._model_retry_count]
+            self._model_retry_count += 1
+            self._model_retry_at = time.monotonic() + delay
+            message = f'모델 {delay:g}초 후 재시작 ({self._model_retry_count}/{len(RETRY_DELAYS_SECONDS)}): {error}'
+            reason = 'retrying'
+        else:
+            self._model_retry_at = None
+            message = f'모델 재시도 횟수 초과: {error}'
+            reason = 'retry_exhausted'
+        self._model_status('unavailable', message, [reason])
+
+    def _start_model(self):
+        try:
+            self.model_runtime = EngagementRuntime()
+            self.window_publisher = WindowPublisher(
+                self.service, self.sid, self.model_runtime,
+                start_ms=self.service.elapsed_ms(self.sid),
+            )
+            self._model_failed = False
+            self._model_retry_at = None
+            self._model_status('running', '단일 얼굴 실험 모델이 실행 중입니다.')
+        except Exception as exc:
+            self._fail_model(exc)
+
+    def _maybe_restart_model(self):
+        if (self._model_failed and self._model_retry_at is not None
+                and time.monotonic() >= self._model_retry_at and not self.stop_event.is_set()):
+            self._start_model()
+
+    def _component_status(self, component, state, message, module, reasons=None):
+        now = self.service.elapsed_ms(self.sid)
+        event = self.service.make_event(
+            self.sid, 'analysis_status', {'component': component, 'state': state, 'message': message},
+            now, now, module, quality_status='not_observable' if state == 'unavailable' else 'valid',
+            reason_codes=reasons,
+        )
+        self.service.receive_event(event)
+
+    def _model_status(self, state, message, reasons=None):
+        now = self.service.elapsed_ms(self.sid)
+        event = self.service.make_event(
+            self.sid, 'analysis_status', {'component': 'model', 'state': state, 'message': message},
+            now, now, 'model', quality_status='not_observable' if state == 'unavailable' else 'valid',
+            reason_codes=reasons, model_id=MODEL_ID, model_version=MODEL_VERSION,
+        )
+        self.service.receive_event(event)
 
     def stop(self):
         if not self.has_started():
@@ -178,7 +345,7 @@ class LiveSession:
         self.stop_event.set()
         self.thread.join(timeout=10)
         if self.thread.is_alive():
-            raise RuntimeError('영상 분석이 아직 종료되지 않았습니다.')
+            raise RuntimeError('분석 작업을 종료하는 중입니다. 잠시 후 다시 시도하세요.')
 
     def set_developer_preview(self, enabled):
         """개발자용 원본 프레임·랜드마크 창의 표시 여부를 바꾼다.
@@ -350,5 +517,5 @@ class LiveSession:
         with self.lock:
             runner = self.transcription
             startup_error = self._stt_startup_error
-        error = runner.last_error if runner is not None else startup_error
+        error = (runner.last_error if runner is not None else None) or startup_error
         return str(error) if error is not None else None

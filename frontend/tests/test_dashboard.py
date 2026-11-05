@@ -20,13 +20,23 @@ class DashboardTests(unittest.TestCase):
             return dict(event_id=eid,start_ms=180000,end_ms=190000,payload={'model_output':{'score':value}},quality={'status':'valid'})
         windows=[event(70,'a'),event(None,'b')]
         fig=chart(windows,[],7200000)
-        self.assertEqual(list(fig.data[0].x),[180,180])
+        self.assertEqual(list(fig.data[0].x),[190,190])
         self.assertEqual(list(fig.data[0].y),[70,None])
         self.assertEqual(fig.layout.xaxis.range[1],7200)
 
     def test_unknown_score_is_not_zero(self):
         for value in [None,True,float('nan'),101,-1,'70']:
             self.assertIsNone(score({'payload':{'score':value},'quality':{'status':'valid'}}))
+
+    def test_contract_model_output_value(self):
+        event = {'payload': {'model_output': {'kind': 'continuous', 'value': 73.5}}, 'quality': {'status': 'valid'}}
+        self.assertEqual(score(event), 73.5)
+
+    def test_chart_does_not_join_missing_interval(self):
+        def event(start, end, eid):
+            return dict(event_id=eid, start_ms=start, end_ms=end, payload={'model_output': {'value': 80}}, quality={'status': 'valid'})
+        fig = chart([event(0, 1000, 'a'), event(3000, 4000, 'b')], [], 4000)
+        self.assertEqual(list(fig.data[0].y), [80, None, 80])
 
     def test_overlap_includes_crossing_transcript(self):
         self.assertTrue(overlap({'start_ms':100,'end_ms':500},200,300))
@@ -68,6 +78,7 @@ class DashboardTests(unittest.TestCase):
                 def has_started(self): return True
                 def is_running(self): return False
                 def snapshot(self): return None,None,False
+                def transcription_error(self): return None
             app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20)
             app.session_state['live']=FakeLive()
             app.session_state['page']='라이브 세션'
@@ -91,6 +102,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(app.metric[0].value,'측정 불가')
         app.text_input[0].set_value('없는문장검색어').run()
         self.assertFalse(app.exception)
+
+    def test_can_prepare_audio_without_video_window(self):
+        from streamlit.testing.v1 import AppTest
+        app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20).run()
+        next(c for c in app.checkbox if c.label=='영상 분석 사용').uncheck().run()
+        next(c for c in app.checkbox if c.label=='실시간 음성 전사 사용').check().run()
+        next(t for t in app.text_input if t.label=='수업 제목').set_value('음성 수업').run()
+        next(c for c in app.checkbox if c.label.startswith('수업 영상·음성')).check().run()
+        next(c for c in app.checkbox if c.label.startswith('전사·메모')).check().run()
+        self.assertFalse(app.exception)
+        self.assertFalse(next(b for b in app.button if b.label=='세션 시작').disabled)
 
 if __name__=='__main__':
     unittest.main()
