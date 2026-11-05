@@ -1,6 +1,7 @@
 """한 대시보드 세션이 소유하는 영상 분석 작업."""
 import threading
 import time
+from pathlib import Path
 import cv2
 import numpy as np
 from integration import IntegrationService
@@ -20,12 +21,13 @@ from video_recognition.preview import (
 DEBUG_CAPTURE_WINDOW = 'Developer preview - captured frame and landmarks'
 DEBUG_INFO_WINDOW = 'Developer preview - MediaPipe features'
 RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+CHECKPOINT_INTERVAL_SECONDS = 15.0
 
 
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
-    def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True):
+    def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True, recovery_root=None):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
@@ -58,6 +60,9 @@ class LiveSession:
         self.vision_thread = None
         self._window_process_id = None
         self.stt_thread = None
+        self.recovery_root = Path(recovery_root) if recovery_root is not None else None
+        self.checkpoint_error = None
+        self.checkpoint_thread = None
         self._model_failed = False
         self._model_retry_count = 0
         self._model_retry_at = None
@@ -126,12 +131,34 @@ class LiveSession:
         if self.audio_source is not None:
             self.stt_thread = threading.Thread(target=self._supervise_stt, name='stt-supervisor', daemon=True)
             self.stt_thread.start()
+        if self.recovery_root is not None:
+            self.checkpoint_thread = threading.Thread(target=self._checkpoint_loop, name='session-checkpoint', daemon=True)
+            self.checkpoint_thread.start()
         self.stop_event.wait()
         if self.vision_thread is not None:
             self.vision_thread.join()
         if self.stt_thread is not None:
             self.stt_thread.join()
+        if self.checkpoint_thread is not None:
+            self.checkpoint_thread.join()
         self.service.stop_session(self.sid)
+
+    def _checkpoint_loop(self):
+        """진행 중 세션을 복구 전용 경로에 저장한다. 원본 미디어는 포함하지 않는다."""
+        while not self.stop_event.is_set():
+            try:
+                self.service.save_session(self.sid, self.recovery_root / f'{self.sid}.json')
+                with self.lock:
+                    self.checkpoint_error = None
+            except Exception as exc:
+                with self.lock:
+                    self.checkpoint_error = str(exc)
+            if self.stop_event.wait(CHECKPOINT_INTERVAL_SECONDS):
+                break
+
+    def checkpoint_status(self):
+        with self.lock:
+            return self.checkpoint_error
 
     def _supervise_vision(self):
         for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):

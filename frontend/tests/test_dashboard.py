@@ -79,6 +79,7 @@ class DashboardTests(unittest.TestCase):
                 def is_running(self): return False
                 def snapshot(self): return None,None,False
                 def transcription_error(self): return None
+                def checkpoint_status(self): return None
             app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20)
             app.session_state['live']=FakeLive()
             app.session_state['page']='라이브 세션'

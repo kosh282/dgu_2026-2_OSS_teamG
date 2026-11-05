@@ -42,6 +42,7 @@ def persist_live():
     if live and live.has_started() and not live.is_running() and st.session_state.saved_sid != live.sid:
         try:
             files.save(live.service, live.sid)
+            files.clear_recovery(live.sid)
             st.session_state.saved_sid = live.sid
         except (OSError, ValueError) as exc:
             st.error(f'수업 저장 실패: {exc}')
@@ -55,6 +56,21 @@ with st.sidebar:
             navigate(name)
     st.divider()
     st.caption('지난 수업 목록')
+    for recovery_sid, recovery in files.recoveries():
+        if active() and active().is_running() and active().sid == recovery_sid:
+            continue
+        if st.button(f"복구: {recovery['title']}", key=f'recover-{recovery_sid}', use_container_width=True):
+            try:
+                service, sid = files.load(files.recovery_path(recovery_sid))
+                if files.path(sid).exists():
+                    st.warning('같은 ID의 저장 기록이 있어 복구 파일을 유지합니다. 두 파일을 비교해 주세요.')
+                else:
+                    files.save(service, sid)
+                    files.clear_recovery(sid)
+                    st.session_state.review = service, sid
+                    navigate('사후 검토')
+            except Exception as exc:
+                st.error(f'수업 복구 실패: {exc}')
     for sid, session in files.list():
         if sid is None:
             st.caption(session['title'])
@@ -228,7 +244,8 @@ def preparation():
                     from frontend.live_session import LiveSession
                     live=LiveSession(selected[0] if selected and video_enabled else None,
                                      audio_source=audio_source if stt_enabled else None,
-                                     video_enabled=video_enabled, model_enabled=model_enabled)
+                                     video_enabled=video_enabled, model_enabled=model_enabled,
+                                     recovery_root=files.root / '.recovery')
                     live.start(title)
                     st.session_state.live=live
                     st.session_state.hidden_suggestions=set()
@@ -264,6 +281,9 @@ def live_page():
         transcription_error=live.transcription_error()
         if transcription_error:
             st.warning(f'음성 전사 오류: {transcription_error}')
+        checkpoint_error=live.checkpoint_status()
+        if checkpoint_error:
+            st.warning(f'수업 복구용 저장 실패: {checkpoint_error}')
         if result:
             st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
         if latest_window:
@@ -319,6 +339,7 @@ def live_page():
             try:
                 live.stop()
                 files.save(live.service,live.sid)
+                files.clear_recovery(live.sid)
                 st.session_state.saved_sid=live.sid
                 st.session_state.review=live.service,live.sid
                 navigate('사후 검토')

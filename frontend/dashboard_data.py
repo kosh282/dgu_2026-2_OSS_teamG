@@ -70,6 +70,23 @@ class SessionFiles:
     def save(self, service, sid):
         return service.save_session(sid, self.path(sid))
 
+    def recovery_path(self, sid):
+        return self.root / '.recovery' / f'{UUID(sid)}.json'
+
+    def clear_recovery(self, sid):
+        self.recovery_path(sid).unlink(missing_ok=True)
+
+    def recoveries(self):
+        result = []
+        for path in (self.root / '.recovery').glob('*.json'):
+            try:
+                service, sid = self.load(path)
+                if path == self.recovery_path(sid):
+                    result.append((sid, service.get_dashboard_snapshot(sid)['session']))
+            except Exception:
+                continue
+        return result
+
     def load(self, path):
         service = IntegrationService()
         sid = service.load_session(path)

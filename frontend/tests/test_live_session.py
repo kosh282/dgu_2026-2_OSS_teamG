@@ -1,5 +1,7 @@
 import threading
 import time
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -283,6 +285,32 @@ class LiveSessionIsolationTests(unittest.TestCase):
             started = time.monotonic()
             live.stop()
             self.assertLess(time.monotonic() - started, 2)
+
+    def test_running_checkpoint_can_be_loaded_after_interruption(self):
+        from integration import IntegrationService
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('frontend.live_session.CHECKPOINT_INTERVAL_SECONDS', 0.01):
+            live = LiveSession(None, video_enabled=False, recovery_root=directory)
+            live.start('복구 수업')
+            try:
+                event = live.service.make_event(live.sid, 'note_created', {'text': '중간 메모', 'linked_event_ids': []}, 0, 0, 'ui')
+                live.service.receive_event(event)
+                path = Path(directory) / f'{live.sid}.json'
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    try:
+                        reader = IntegrationService()
+                        sid = reader.load_session(path)
+                        if reader.get_dashboard_snapshot(sid)['notes']:
+                            break
+                    except (OSError, ValueError):
+                        pass
+                    threading.Event().wait(0.01)
+                else:
+                    self.fail('메모가 복구 파일에 기록되지 않았습니다')
+                self.assertEqual(reader.get_dashboard_snapshot(sid)['notes'][0]['payload']['text'], '중간 메모')
+            finally:
+                live.stop()
 
 
 if __name__ == '__main__':
