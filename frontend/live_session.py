@@ -3,6 +3,7 @@ import threading
 import cv2
 import numpy as np
 from integration import IntegrationService
+from engagement_model.runtime import EngagementRuntime
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
@@ -21,15 +22,20 @@ DEBUG_INFO_WINDOW = 'Developer preview - MediaPipe features'
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
-    def __init__(self, hwnd):
+    def __init__(self, hwnd, audio_source=None):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
         self.sid = None
         self.hwnd = hwnd
+        self.audio_source = audio_source
+        self.transcription = None
+        self._stt_startup_error = None
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest = None
+        self.model_runtime = EngagementRuntime()
+        self.model_latest = self.model_runtime.latest
         self.error = None
         # 개발자 미리보기는 필요할 때만 창을 갱신한다. 분석·세션 저장 데이터에는 영향을 주지 않는다.
         self.developer_preview = False
@@ -49,10 +55,51 @@ class LiveSession:
         with self.lock:
             if self.thread is not None:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
-            self.sid = self.service.start_session(title.strip())
+        stt_config = stt_engine = None
+        if self.audio_source is not None:
+            from sherpa_stt.config import SttConfig
+            from sherpa_stt.engine import SherpaEngine
+            stt_config = SttConfig()
+            try:
+                # 모델을 수업 시계가 시작되기 전에 읽어 세션 구간을 로딩 시간만큼 밀지 않는다.
+                stt_engine = SherpaEngine(stt_config)
+            except Exception as exc:
+                self._stt_startup_error = exc
+        with self.lock:
+            if self.thread is not None:
+                raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
+            self.sid = self.service.start_session(title.strip(), config={
+                'config_version': 'initial',
+                'participation_model': None,
+                'stt_model': stt_config.public_info() if stt_config else None,
+            })
             self.stop_event.clear()
+        if self.audio_source is not None:
+            if stt_engine is None:
+                message = f'STT 모델을 준비하지 못했습니다: {self._stt_startup_error}'
+                self._report_stt_unavailable(message, 'model_not_configured')
+            else:
+                try:
+                    from sherpa_stt.runner import LiveTranscription
+                    self.transcription = LiveTranscription(
+                        self.service, self.sid, stt_config,
+                        source=self.audio_source, engine=stt_engine,
+                    )
+                    self.transcription.start()
+                except Exception as exc:
+                    self._stt_startup_error = exc
+                    self._report_stt_unavailable(f'STT를 시작하지 못했습니다: {exc}', 'audio_unavailable')
+        with self.lock:
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
+
+    def _report_stt_unavailable(self, message, reason):
+        event = self.service.make_event(
+            self.sid, 'analysis_status',
+            {'component': 'stt', 'state': 'unavailable', 'message': message},
+            0, 0, 'speech', quality_status='not_observable', reason_codes=[reason],
+        )
+        self.service.receive_event(event)
 
     def has_started(self):
         with self.lock:
@@ -75,7 +122,10 @@ class LiveSession:
             face = FaceAnalyzer(show_landmarks=True)
             pose = PoseAnalyzer(show_landmarks=True)
             capture = PreviewCapture(WindowCapture(self.hwnd))
-            pipeline = VisionPipeline(self.service, self.sid, capture, face, pose_analyzer=pose)
+            pipeline = VisionPipeline(
+                self.service, self.sid, capture, face,
+                model_consumer=self.model_runtime, pose_analyzer=pose,
+            )
             while not self.stop_event.is_set():
                 with self.lock:
                     preview_enabled = self.developer_preview
@@ -91,6 +141,7 @@ class LiveSession:
                     continue
                 with self.lock:
                     self.latest = result
+                    self.model_latest = self.model_runtime.latest
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
                 if preview_enabled:
@@ -113,6 +164,12 @@ class LiveSession:
             finally:
                 self._close_developer_windows()
                 self._landmark_overlay_smoother.reset()
+                if self.transcription is not None:
+                    try:
+                        # 마지막 확정 전사를 세션 종료 전에 같은 통합 서비스로 발행한다.
+                        self.transcription.stop()
+                    except Exception as exc:
+                        self._stt_startup_error = exc
                 self.service.stop_session(self.sid)
 
     def stop(self):
@@ -282,3 +339,16 @@ class LiveSession:
     def snapshot(self):
         with self.lock:
             return self.latest, self.error, self.thread is not None and self.thread.is_alive()
+
+    def model_snapshot(self):
+        """현재 분석 특징에서 계산한 최신 실험 점수의 복사본을 반환한다."""
+        with self.lock:
+            return dict(self.model_latest)
+
+    def transcription_error(self):
+        """오디오 초기화 또는 전사 중 발생한 오류를 화면에 전달한다."""
+        with self.lock:
+            runner = self.transcription
+            startup_error = self._stt_startup_error
+        error = runner.last_error if runner is not None else startup_error
+        return str(error) if error is not None else None

@@ -92,6 +92,25 @@ def add_note(service, sid, text, at, linked=None):
     service.receive_event(event)
 
 
+def stt_readiness(source):
+    """선택한 오디오 입력에 필요한 패키지와 로컬 모델 파일을 확인한다."""
+    from sherpa_stt.config import SttConfig
+    from sherpa_stt.engine import find_transducer_files
+
+    missing = []
+    if importlib.util.find_spec('sherpa_onnx') is None:
+        missing.append('sherpa-onnx 패키지')
+    audio_package = 'soundcard' if source == 'loopback' else 'sounddevice'
+    if importlib.util.find_spec(audio_package) is None:
+        missing.append(f'{audio_package} 패키지')
+    config = SttConfig()
+    try:
+        find_transducer_files(Path(config.model_dir))
+    except (FileNotFoundError, OSError) as exc:
+        missing.append(f'한국어 모델 파일 ({exc})')
+    return not missing, ', '.join(missing), config
+
+
 def resources(service, sid, snapshot, readonly=False):
     suggestions = [e for e in snapshot['suggestions'] if e['event_id'] not in st.session_state.hidden_suggestions]
     if not suggestions:
@@ -142,6 +161,8 @@ def preparation():
                 st.rerun()
             if window_error:
                 st.info(window_error)
+            elif not windows:
+                st.info('표시 중이고 제목이 있는 창이 없습니다. 수업 창을 연 뒤 목록을 새로고침하세요.')
             st.caption('미리보기는 선택한 창의 현재 프레임 한 장만 표시하며 파일로 저장하지 않습니다.')
             if selected and st.button('선택한 창 미리보기',disabled=running):
                 capture=None
@@ -156,23 +177,43 @@ def preparation():
                         capture.close()
         with st.container(border=True):
             st.subheader('2  수업 음성 입력')
-            st.checkbox('시스템 음성 수집',disabled=True)
-            st.checkbox('교수자 마이크도 함께 수집',disabled=True)
-            st.caption('음성 입력·STT 모듈 미연결 · 입력 레벨을 측정하지 않습니다.')
+            stt_enabled=st.checkbox('실시간 음성 전사 사용',key='stt_enabled',disabled=running)
+            audio_source=st.selectbox(
+                '음성 입력 방식', ['loopback','microphone'],
+                format_func=lambda value: '시스템 출력 음성 (루프백)' if value=='loopback' else '교수자 마이크',
+                key='stt_source', disabled=running or not stt_enabled,
+            )
+            if stt_enabled:
+                ready,missing,stt_config=stt_readiness(audio_source)
+                if ready:
+                    st.success('전사 패키지와 한국어 모델을 찾았습니다.')
+                else:
+                    st.warning('전사 시작 전 준비가 필요합니다: '+missing)
+                if audio_source=='loopback':
+                    st.caption('기본 출력 장치의 모든 소리를 받습니다. 선택한 Zoom 창의 소리만 분리하지 않습니다.')
+                else:
+                    st.caption('기본 마이크 입력을 받습니다. 시스템 출력 소리와 동시 수집은 지원하지 않습니다.')
+            else:
+                st.caption('선택 입력은 수업 세션의 공통 시계로 전사해 계약 이벤트로 전달합니다. 원본 음성 파일은 저장하지 않습니다.')
         with st.container(border=True):
             st.subheader('3  강의 자료 업로드 (선택)')
             st.file_uploader('PDF · PPT 강의 자료',type=['pdf','ppt','pptx'],accept_multiple_files=True,key='materials',disabled=running)
             st.caption('선택한 자료는 현재 브라우저 세션에만 보관됩니다. 검색 모듈 연결 전에는 자동 자료 제안에 사용되지 않습니다.')
         with st.container(border=True):
             st.subheader('4  동의·저장 안내')
-            consent=st.checkbox('촬영·분석에 동의한 수업입니다',key='consent',disabled=running)
+            consent=st.checkbox('수업 영상·음성 수집과 분석에 동의한 수업입니다',key='consent',disabled=running)
             storage=st.checkbox('전사·메모·집계를 로컬 JSON으로 저장하고 세션 삭제로 제거함을 확인했습니다',key='storage',disabled=running)
             st.caption('동의를 거부하거나 철회해도 수업 참여에 불이익이 없습니다.')
     with right:
         with st.container(border=True):
             st.subheader('점검 요약')
-            for name,state in [('영상 캡처','창 선택됨' if selected else '대기'),('수업 음성','미연결'),('전사 모델 (sherpa-onnx)','미연결'),('영상 분석 모델 (MediaPipe)','설치됨' if importlib.util.find_spec('mediapipe') else '미설치'),('참여 모델','실시간 연결 대기')]:
+            stt_ready,stt_missing,_=stt_readiness(audio_source)
+            audio_label='사용 안 함' if not stt_enabled else ('출력 루프백' if audio_source=='loopback' else '마이크')
+            model_label='미선택' if not stt_enabled else ('준비됨' if stt_ready else '준비 필요')
+            for name,state in [('영상 캡처','창 선택됨' if selected else '대기'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)','설치됨' if importlib.util.find_spec('mediapipe') else '미설치'),('참여 모델','실시간 연결 대기')]:
                 st.write(f'{name} · **{state}**')
+            if stt_enabled and not stt_ready:
+                st.caption(stt_missing)
             st.caption('설치 여부는 실제 모델 구동 성공 여부와 다릅니다.')
         with st.container(border=True):
             if running:
@@ -182,14 +223,14 @@ def preparation():
             elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not(selected and title.strip() and consent and storage)):
                 try:
                     from frontend.live_session import LiveSession
-                    live=LiveSession(selected[0])
+                    live=LiveSession(selected[0],audio_source=audio_source if stt_enabled else None)
                     live.start(title)
                     st.session_state.live=live
                     st.session_state.hidden_suggestions=set()
                     navigate('라이브 세션')
                 except Exception as exc:
                     st.error(f'수업을 시작하지 못했습니다: {exc}')
-            st.caption('수업 제목·창 선택·동의를 확인하면 영상 분석을 시작합니다. 음성 없이도 시작할 수 있습니다.')
+            st.caption('수업 제목·창 선택·동의를 확인하면 영상 분석을 시작합니다. 음성 전사는 선택 사항입니다.')
 
 
 def live_page():
@@ -208,20 +249,35 @@ def live_page():
         a,b=st.columns(2)
         a.metric('진행 중' if live.is_running() else '수업 종료',clock(duration))
         windows=snapshot['engagement_windows']
-        value=score(windows[-1]) if windows else None
-        label='측정 불가' if value is None else ('좋음' if value>=70 else '보통' if value>=40 else '나쁨')
-        b.metric('현재 참여 상태',label,delta=None if value is None else f'{value:g}점',delta_color='off')
+        model=live.model_snapshot()
+        value=model.get('score')
+        state=model.get('orientation_state')
+        label={
+            'front':'정면 관찰', 'away':'방향 이탈 관찰',
+            'looking_down':'아래 보기 관찰', 'ambiguous':'자세 판정 보류',
+            'not_observable':'관측 불가',
+        }.get(state,'분석 대기')
+        b.metric('현재 행동 점수',label,delta=None if value is None else f'{value:g}점',delta_color='off')
         result,error,_=live.snapshot()
         if error:
             st.error(f'영상 분석 오류: {error}')
+        transcription_error=live.transcription_error()
+        if transcription_error:
+            st.warning(f'음성 전사 오류: {transcription_error}')
         if result:
             st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
+        if model.get('status') == 'input_error':
+            st.warning('참여 모델이 영상 특징 형식을 처리하지 못했습니다: '+', '.join(model.get('reason_codes', [])))
+        elif value is None and model.get('status') == 'deferred':
+            st.caption('실험 행동 점수 보류 사유: '+', '.join(model.get('reason_codes', [])))
+        elif value is not None:
+            st.caption(f"실험 행동 점수 {value:g}점 · {model.get('model_id')} {model.get('model_version')} · 집중도나 이해도를 나타내지 않습니다.")
         with st.container(border=True):
             st.subheader('공통 타임라인')
-            st.caption('참여 점수 0–100 · 좋음 ≥70 · 보통 40–69 · 나쁨 <40')
+            st.caption('계약에 저장된 engagement_window 구간과 메모를 표시합니다.')
             st.plotly_chart(chart(windows,snapshot['notes'],duration),use_container_width=True,key='live-chart')
             if not windows:
-                st.caption('참여 모델의 engagement_window 이벤트가 들어오면 그래프와 현재 상태가 함께 갱신됩니다.')
+                st.caption('최신 실험 행동 점수는 위에 표시됩니다. 구간 집계와 engagement_window 저장은 아직 연결되지 않아 타임라인에는 나타나지 않습니다.')
         with st.container(border=True):
             st.subheader('강의 조교 · 자료 제안')
             resources(live.service,live.sid,snapshot)
