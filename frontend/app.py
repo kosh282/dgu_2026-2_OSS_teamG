@@ -19,12 +19,12 @@ for key, value in {'page':'세션 시작 준비','live':None,'review':None,'save
 
 st.markdown('''<style>
 .stApp{background:#f5f6f7;color:#1f2328} [data-testid="stSidebar"]{background:white;border-right:1px solid #c9ced4}
-.block-container{padding:24px;max-width:1440px} h1{font-size:24px!important;padding-top:0!important} h3{font-size:16px!important}
+.block-container{padding:64px 24px 24px;max-width:1440px} h1{font-size:24px!important;padding-top:0!important} h3{font-size:16px!important}
 [data-testid="stVerticalBlockBorderWrapper"]>div{background:white;border-radius:8px}
 [data-testid="stBaseButton-primary"]{background:#1f2328;border-color:#1f2328;color:white}
 [data-testid="stMetric"]{background:white;border:1px solid #c9ced4;border-radius:8px;padding:12px}
 [data-testid="stMetricValue"]{font-size:22px} button{min-height:42px} .stCaption{color:#57606a}
-@media(max-width:640px){.block-container{padding:16px}}
+@media(max-width:640px){.block-container{padding:64px 16px 16px}}
 </style>''', unsafe_allow_html=True)
 
 
