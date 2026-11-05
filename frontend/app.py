@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frontend.live_session import LiveSession
+from frontend.live_session import LiveSession, STT_SOURCES
 from video_recognition.integrated_analysis import list_windows
 
 st.set_page_config(page_title="교수자 라이브 세션", page_icon="📊", layout="centered", initial_sidebar_state="collapsed")
@@ -208,6 +208,13 @@ with st.expander("실시간 수업 창 연결", expanded=True):
                                                disabled=live.has_started())
         if not live.has_started():
             st.success("수업 창이 연결되었습니다. 아래에서 제목을 확인하고 수업을 시작하세요.")
+            # 수업 시작 순간의 선택이 세션 설정(stt_model.source)에 기록된다.
+            stt_options = list(STT_SOURCES)
+            live.stt_source = st.selectbox(
+                "음성 전사(STT) 입력", stt_options, index=stt_options.index(live.stt_source),
+                format_func=lambda key: STT_SOURCES[key],
+                help="수업 음성: 스피커로 나오는 수업 프로그램·영상 소리(PC 전체 출력, 창 단위 분리 아님). "
+                     "마이크: 교수자 발화. 첫 수업 시작 때 STT 모델을 불러오는 데 몇 초 걸립니다.")
             if st.button("연결 해제"):
                 st.session_state.live_session = None
                 st.rerun()
@@ -227,7 +234,12 @@ with st.expander("실시간 수업 창 연결", expanded=True):
             result, error, running = live.snapshot()
             snapshot = live.service.get_dashboard_snapshot(live.sid)
             st.write(f"세션 시간: {clock(snapshot['session']['duration_ms'] / 1000)} · 영상: {snapshot['status'].get('vision', '준비 중')}")
-            st.write("실험 행동 점수: 개발자 화면 확인용 · 공통 점수 이벤트/타임라인: 미연결 · STT: 미연결")
+            stt = live.stt_info()
+            stt_state = snapshot['status'].get('stt', '준비 중') if stt['source'] else '사용 안 함'
+            st.write(f"실험 행동 점수: 개발자 화면 확인용 · 공통 점수 이벤트/타임라인: 미연결 · "
+                     f"STT({stt['label']}): {stt_state}")
+            if stt['error']:
+                st.warning(f"STT를 사용할 수 없습니다: {stt['error']}")
             if error:
                 st.error(f"영상 분석 오류: {error}")
             elif result:
@@ -437,8 +449,29 @@ if st.session_state.suggestions:
 else:
     st.caption("현재 표시할 자료 제안이 없어.")
 
-if st.session_state.source != "예시 데이터":
+@st.fragment(run_every=1 if (st.session_state.live_session is not None and
+                              st.session_state.live_session.is_running()) else None)
+def transcript_panel():
+    """실시간 세션이면 통합 서비스의 전사를, 아니면 불러온 JSON의 전사를 표시한다.
+
+    전사 시각은 영상 분석과 같은 세션 공통 시계 기준이다.
+    """
+    active_live = st.session_state.live_session
     st.markdown('<div class="section-title" style="margin-top:24px">분석 상태와 전사</div>', unsafe_allow_html=True)
+    if active_live is not None and active_live.has_started():
+        snapshot = active_live.service.get_dashboard_snapshot(active_live.sid)
+        st.caption(" · ".join(f"{component}: {state}" for component, state in snapshot['status'].items()))
+        finals = snapshot['transcripts']
+        partials = snapshot['partial_transcripts']
+        if not finals and not partials:
+            st.caption("아직 확정된 전사가 없습니다." if active_live.stt_source else "STT를 사용하지 않는 수업입니다.")
+        for event in finals[-30:]:
+            st.write(f"{event_time(event['start_ms'])} · {event['payload']['text']}")
+        for event in partials:
+            st.caption(f"{event_time(event['start_ms'])} · {event['payload']['text']} …(인식 중)")
+        if len(finals) > 30:
+            st.caption(f"최근 30건만 표시합니다. 전체 {len(finals)}건은 세션 JSON에 저장됩니다.")
+        return
     for component, state in st.session_state.component_status.items():
         st.write(f"{component}: {state}")
     if st.session_state.transcripts:
@@ -446,6 +479,10 @@ if st.session_state.source != "예시 데이터":
             st.write(f"{event_time(transcript['time_ms'])} · {transcript['text']}")
     else:
         st.caption("저장된 확정 전사가 없습니다.")
+
+
+if st.session_state.source != "예시 데이터":
+    transcript_panel()
 
 st.markdown('<div class="section-title" style="margin-top:24px">교수자 메모</div>', unsafe_allow_html=True)
 note_live = st.session_state.live_session
@@ -492,7 +529,7 @@ if st.session_state.live_session is None:
     st.caption("내보내기는 프로토타입 형식이며 공통 세션 계약과 아직 호환되지 않습니다.")
     st.download_button("⬇️ 세션 JSON 내보내기", json.dumps(export,ensure_ascii=False,indent=2),
                        file_name="lecturer_session.json", mime="application/json", use_container_width=True)
-st.caption("참여 모델, STT와 자료 검색은 아직 연결되지 않았습니다.")
+st.caption("참여 모델 점수 이벤트와 자료 검색은 아직 연결되지 않았습니다. STT는 실시간 수업 세션에서만 동작합니다.")
 
 # 개발자 확인 기능은 일반 수업 조작과 분리해 화면의 맨 아래에 둔다.
 st.divider()

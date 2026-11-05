@@ -50,6 +50,7 @@ class SherpaEngine:
             raise ImportError("sherpa-onnx가 설치되지 않았습니다. sherpa_stt/requirements.txt를 설치하세요") from error
         files = find_transducer_files(config.model_dir)
         self._sample_rate_hz = config.sample_rate_hz
+        self._stream_rates = {}
         self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
             **files,
             num_threads=config.num_threads,
@@ -64,10 +65,17 @@ class SherpaEngine:
         )
 
     def create_stream(self):
-        return self._recognizer.create_stream()
+        stream = self._recognizer.create_stream()
+        # 사라진 이전 스트림과 id가 겹칠 수 있으므로 새 스트림 기록을 비운다.
+        self._stream_rates.pop(id(stream), None)
+        return stream
 
     def accept_waveform(self, stream, sample_rate_hz, samples):
         # 모델 샘플레이트와 다르면 sherpa-onnx가 내부에서 리샘플링한다.
+        # 한 스트림의 입력 샘플레이트가 바뀌면 sherpa-onnx가 프로세스를 종료하므로 막는다.
+        previous = self._stream_rates.setdefault(id(stream), sample_rate_hz)
+        if previous != sample_rate_hz:
+            raise ValueError(f"한 스트림의 샘플레이트는 바꿀 수 없습니다: {previous} -> {sample_rate_hz}")
         stream.accept_waveform(sample_rate_hz, samples)
 
     def decode(self, stream):
@@ -112,5 +120,7 @@ class SherpaEngine:
     def input_finished(self, stream):
         # 마지막 프레임까지 디코딩되도록 꼬리 무음을 넣는다(sherpa-onnx 예제와 같은 0.66초).
         # 인식기 내부 처리용이며 이벤트 시각에는 반영하지 않는다.
-        stream.accept_waveform(self._sample_rate_hz, np.zeros(int(0.66 * self._sample_rate_hz), dtype=np.float32))
+        # 이 스트림에 들어온 샘플레이트와 같게 넣어야 한다.
+        rate = self._stream_rates.pop(id(stream), self._sample_rate_hz)
+        stream.accept_waveform(rate, np.zeros(int(0.66 * rate), dtype=np.float32))
         stream.input_finished()

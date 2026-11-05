@@ -7,7 +7,8 @@
 - 프런트는 Streamlit 기반이며 수업 제목 입력, 창 연결, 수업 시작·종료, 메모, 세션 JSON 내보내기 기능을 제공합니다.
 - 영상 분석은 MediaPipe로 얼굴·상체 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 실험 점수를 확인할 수 있습니다.
 - 규칙 기반 실험 점수기는 영상 분석 파이프라인의 메모리 콜백에 연결되어 있습니다. 현재 한 얼굴만 점수화하며, 복수 얼굴 점수 집계와 공통 세션의 점수 구간 이벤트 및 프런트 점수 타임라인 연동은 아직 구현되지 않았습니다. 따라서 현재 점수는 최종 참여도 판단으로 해석하면 안 됩니다.
-- 음성 전사, 강의 자료 검색·추천, 수업 후 피드백의 자동 생성은 실제 처리 모듈에 연결되지 않았습니다.
+- 음성 전사는 sherpa-onnx 한국어 스트리밍 모델로 실시간 수업 세션에 연결되어 있습니다. 입력은 수업 음성(스피커 출력 루프백), 마이크, 끄기 중에서 고릅니다. 확정 전사는 영상 분석과 같은 세션 시계로 기록되어 화면과 세션 JSON에 함께 남습니다. 루프백은 선택한 창의 소리만 분리하지 않고 PC 전체 출력을 받습니다. 실제 수업 음성에서의 정확도(CER)와 장시간 동작은 아직 검증하지 않았습니다. 자세한 내용은 [STT 안내](sherpa_stt/README.md)를 참고하세요.
+- 강의 자료 검색·추천, 수업 후 피드백의 자동 생성은 실제 처리 모듈에 연결되지 않았습니다.
 - 창 단위 캡처는 현재 Windows용입니다. macOS에서는 창 선택·캡처 기능을 사용할 수 없습니다.
 
 ## 설치
@@ -21,7 +22,12 @@ python -m venv video_recognition/.venv
 video_recognition/.venv/Scripts/python.exe -m pip install --upgrade pip
 video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-integrated.txt
 video_recognition/.venv/Scripts/python.exe -m pip install -r frontend/requirements.txt
+# 음성 전사(STT): 패키지와 한국어 모델(약 420MB, git 제외)
+video_recognition/.venv/Scripts/python.exe -m pip install -r sherpa_stt/requirements.txt
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.download_model
 ```
+
+STT 패키지나 모델이 없어도 앱은 실행됩니다. 이때 수업을 시작하면 STT만 `unavailable`로 표시되고 영상 분석은 계속됩니다.
 
 ## 실행 및 사용
 
@@ -29,7 +35,7 @@ video_recognition/.venv/Scripts/python.exe -m pip install -r frontend/requiremen
 video_recognition/.venv/Scripts/python.exe -m streamlit run frontend/app.py
 ```
 
-브라우저에서 터미널에 표시된 주소(보통 `http://localhost:8501`)를 엽니다. 수업 제목을 입력하고 수업 창을 연결한 뒤 **수업 시작**을 누르면 분석과 타이머가 시작됩니다. 개발자 모드에서 영상 오버레이와 분석값을 확인할 수 있고, 수업을 마치면 세션 JSON을 내려받을 수 있습니다.
+브라우저에서 터미널에 표시된 주소(보통 `http://localhost:8501`)를 엽니다. 수업 제목을 입력하고 수업 창을 연결한 뒤 **음성 전사(STT) 입력**을 고르고 **수업 시작**을 누르면 영상 분석, 음성 전사, 타이머가 같은 세션 시계로 시작됩니다. 개발자 모드에서 영상 오버레이와 분석값을 확인할 수 있고, 수업을 마치면 세션 JSON을 내려받을 수 있습니다.
 
 ## 데모
 
@@ -39,4 +45,11 @@ video_recognition/.venv/Scripts/python.exe -m streamlit run frontend/app.py
 video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
 ```
 
-자세한 사용법은 [프런트 안내](frontend/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md)를 참고하세요.
+음성 전사 단독 데모(스피커 출력 또는 마이크):
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo --source microphone
+```
+
+자세한 사용법은 [프런트 안내](frontend/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md), [STT 안내](sherpa_stt/README.md)를 참고하세요.

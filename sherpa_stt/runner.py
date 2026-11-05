@@ -132,6 +132,10 @@ class LiveTranscription:
                 if len(self._lags) > 36000:  # 약 1시간 분량만 유지
                     del self._lags[:6000]
 
+    def is_running(self):
+        """전사 스레드가 동작 중인지. 오류로 멈췄거나 stop() 후에는 False."""
+        return self._thread is not None and self._thread.is_alive()
+
     def _safe_status(self, *args):
         try:
             self._status(*args)
