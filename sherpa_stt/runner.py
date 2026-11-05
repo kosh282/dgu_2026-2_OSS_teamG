@@ -40,6 +40,7 @@ class LiveTranscription:
         self._audio_ms = 0.0
         self._process_s = 0.0
         self._lags = []
+        self._last_lag_ms = None
         self.last_error = None
 
     # 상태 ---------------------------------------------------------------
@@ -62,13 +63,18 @@ class LiveTranscription:
         with self._stats_lock:
             lags = sorted(self._lags)
             audio_ms, process_s = self._audio_ms, self._process_s
+            latest_lag = self._last_lag_ms
         def pct(p):
             return lags[min(len(lags) - 1, int(len(lags) * p))] if lags else None
         return {
             "source": self.source, "audio_seconds": round(audio_ms / 1000, 2),
             "rtf": round(process_s * 1000 / audio_ms, 3) if audio_ms else None,
             "lag_ms_p50": pct(0.5), "lag_ms_p95": pct(0.95), "lag_ms_max": lags[-1] if lags else None,
+            "lag_ms_latest": latest_lag,
             "dropped_chunks": getattr(self._capture, "dropped_chunks", 0),
+            "input_overflows": getattr(self._capture, "overflow_count", 0),
+            "discontinuities": getattr(self._capture, "discontinuity_count", 0),
+            "queue_size": self._capture.chunks.qsize() if self._capture is not None else None,
         }
 
     def is_alive(self):
@@ -117,6 +123,8 @@ class LiveTranscription:
 
     def _loop(self):
         chunks = self._capture.chunks
+        reported_input_errors = 0
+        lagging = False
         while not self._stop.is_set() or not chunks.empty():
             try:
                 chunk = chunks.get(timeout=0.1)
@@ -130,6 +138,14 @@ class LiveTranscription:
                 continue
             started = time.perf_counter()
             try:
+                input_errors = (getattr(self._capture, 'overflow_count', 0)
+                                + getattr(self._capture, 'discontinuity_count', 0))
+                if input_errors > reported_input_errors:
+                    self._transcriber.report_status(
+                        'running', f'오디오 장치 불연속 누적 {input_errors}회',
+                        reason_codes=['audio_unavailable'], quality_status='not_observable',
+                    )
+                    reported_input_errors = input_errors
                 self._transcriber.accept_chunk(chunk)
             except Exception as error:
                 self.last_error = error
@@ -137,10 +153,18 @@ class LiveTranscription:
                 self._stop_capture()
                 return
             lag = self._service.elapsed_ms(self._session_id) - chunk.end_ms
+            if (lag >= 2000) != lagging:
+                lagging = lag >= 2000
+                self._transcriber.report_status(
+                    'running', f"오디오 처리 {'지연' if lagging else '지연 해소'}: {lag}ms",
+                    reason_codes=['processing_delayed'] if lagging else [],
+                    quality_status='partial' if lagging else 'valid',
+                )
             with self._stats_lock:
                 self._process_s += time.perf_counter() - started
                 self._audio_ms += chunk.end_ms - chunk.start_ms
                 self._lags.append(lag)
+                self._last_lag_ms = lag
                 if len(self._lags) > 36000:  # 약 1시간 분량만 유지
                     del self._lags[:6000]
 

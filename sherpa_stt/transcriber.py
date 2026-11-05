@@ -134,13 +134,15 @@ class SherpaTranscriber:
                 raise ValueError("청크 시각이 이전 청크보다 과거입니다")
             samples = to_mono_float32(chunk)
             events = []
-            if self._last_end_ms is not None and chunk.start_ms - self._last_end_ms > self._max_gap_ms:
+            missing_ids = self._last_chunk_id is not None and chunk.chunk_id > self._last_chunk_id + 1
+            timed_gap = self._last_end_ms is not None and chunk.start_ms - self._last_end_ms > self._max_gap_ms
+            if self._last_end_ms is not None and (missing_ids or timed_gap):
                 gap_start = self._last_end_ms
                 events += self._finalize(gap_start)
                 events.append(self.report_status(
-                    "running", f"오디오 입력 공백 {chunk.start_ms - gap_start}ms",
+                    "running", f"오디오 입력 누락: 시간 공백 {max(0, chunk.start_ms - gap_start)}ms, 청크 번호 누락 {missing_ids}",
                     reason_codes=["audio_unavailable"], quality_status="not_observable",
-                    start_ms=gap_start, end_ms=chunk.start_ms))
+                    start_ms=gap_start, end_ms=max(gap_start, chunk.start_ms)))
             self._last_chunk_id = chunk.chunk_id
             if self._segment_start_ms is None:
                 self._segment_start_ms = chunk.start_ms

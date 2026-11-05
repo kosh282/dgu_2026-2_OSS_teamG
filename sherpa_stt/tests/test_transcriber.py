@@ -126,6 +126,13 @@ class TranscriberTests(unittest.TestCase):
         self.service.stop_session(self.sid)
         self.assertEqual(len(self.service.get_dashboard_snapshot(self.sid)["transcripts"]), 1)
 
+    def test_missing_single_chunk_reports_discontinuity(self):
+        t = self.make([('앞 발화', False), ('', False)])
+        t.accept_chunk(chunk(self.sid, 0, 0, 100))
+        events = t.accept_chunk(chunk(self.sid, 2, 200, 300))
+        self.assertEqual([event['event_type'] for event in events], ['transcript_final', 'analysis_status'])
+        self.assertEqual(events[1]['quality']['reason_codes'], ['audio_unavailable'])
+
     def test_rejects_wrong_session_and_non_increasing_ids(self):
         t = self.make([("", False)] * 3)
         with self.assertRaises(ValueError):

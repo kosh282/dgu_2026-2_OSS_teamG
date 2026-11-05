@@ -284,6 +284,16 @@ def live_page():
         checkpoint_error=live.checkpoint_status()
         if checkpoint_error:
             st.warning(f'수업 복구용 저장 실패: {checkpoint_error}')
+        diagnostics=live.diagnostics()
+        stt_stats=diagnostics['stt']
+        if stt_stats:
+            dropped=stt_stats['dropped_chunks']
+            device_errors=stt_stats['input_overflows'] + stt_stats['discontinuities']
+            if dropped or device_errors:
+                st.warning(f'음성 입력 누락 가능: 버린 청크 {dropped}개 · 장치 불연속 {device_errors}회')
+            st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
+        if diagnostics['video_result_age_ms'] is not None:
+            st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
         if result:
             st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
         if latest_window:

@@ -80,6 +80,7 @@ class DashboardTests(unittest.TestCase):
                 def snapshot(self): return None,None,False
                 def transcription_error(self): return None
                 def checkpoint_status(self): return None
+                def diagnostics(self): return {'stt': None, 'video_result_age_ms': None}
             app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20)
             app.session_state['live']=FakeLive()
             app.session_state['page']='라이브 세션'

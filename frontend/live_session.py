@@ -160,6 +160,14 @@ class LiveSession:
         with self.lock:
             return self.checkpoint_error
 
+    def diagnostics(self):
+        """수집량과 지연은 개인 데이터 없이 현재 프로세스에서만 확인한다."""
+        with self.lock:
+            runner, latest = self.transcription, self.latest
+        stt = runner.stats() if runner is not None else None
+        age = max(0, self.service.elapsed_ms(self.sid) - latest['start_ms']) if latest else None
+        return {'stt': stt, 'video_result_age_ms': age}
+
     def _supervise_vision(self):
         for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):
             with self.lock:
