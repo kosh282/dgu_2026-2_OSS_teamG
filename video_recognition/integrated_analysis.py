@@ -65,22 +65,37 @@ def list_windows():
     user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
     user32.EnumWindows.restype = wintypes.BOOL
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
     user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
     user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
     # 원본 웹캠 고정 입력 대신 사용자가 수업 창을 선택할 수 있게 목록을 만든다.
     found = []
+    callback_errors = []
 
     @callback_type
     def collect(hwnd, _):
-        if user32.IsWindowVisible(hwnd):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length:
-                title = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, title, length + 1)
-                found.append((hwnd, title.value))
+        try:
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length:
+                    title = ctypes.create_unicode_buffer(length + 1)
+                    copied = user32.GetWindowTextW(hwnd, title, length + 1)
+                    if copied:
+                        found.append((hwnd, title.value))
+        except Exception as exc:
+            # ctypes 콜백 밖으로 예외를 전파할 수 없어 수집 후 호출자에게 알린다.
+            callback_errors.append(exc)
+            return False
         return True
-    if not user32.EnumWindows(collect, 0):
-        raise OSError(ctypes.get_last_error(), '창 목록 조회에 실패했습니다')
+    ctypes.set_last_error(0)
+    completed = user32.EnumWindows(collect, 0)
+    error_code = ctypes.get_last_error()
+    if callback_errors:
+        raise RuntimeError(f'창 정보를 읽지 못했습니다: {callback_errors[0]}') from callback_errors[0]
+    if not completed and error_code:
+        raise OSError(error_code, '창 목록 조회에 실패했습니다')
     return found
 
 

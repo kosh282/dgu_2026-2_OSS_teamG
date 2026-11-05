@@ -1,0 +1,8 @@
+# sherpa_stt 추가 패키지.
+# Python 3.13 임시 venv에서 설치·실행 확인(Windows 11). 통합 환경(Python 3.14)은 아직 검증하지 않았다.
+sherpa-onnx==2.0.1
+# 마이크 입력
+sounddevice==0.5.6
+# Windows 출력 장치 루프백(수업 프로그램·영상 음성)
+SoundCard==0.4.6
+numpy
