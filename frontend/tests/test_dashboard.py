@@ -75,23 +75,37 @@ class DashboardTests(unittest.TestCase):
                 def __init__(self):
                     self.service=service
                     self.sid=sid
+                    self.running=False
+                    self.video_enabled=False
                 def has_started(self): return True
-                def is_running(self): return False
+                def is_running(self): return self.running
                 def snapshot(self): return None,None,False
                 def transcription_error(self): return None
                 def checkpoint_status(self): return None
-                def diagnostics(self): return {'stt': None, 'video_result_age_ms': None}
+                def diagnostics(self):
+                    return {'stt': {'dropped_chunks': 0, 'input_overflows': 1, 'discontinuities': 0,
+                                    'lag_ms_latest': 54, 'queue_size': 0, 'rtf': 0.3},
+                            'video_result_age_ms': None}
+                def developer_preview_enabled(self): return False
             app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20)
             app.session_state['live']=FakeLive()
             app.session_state['page']='라이브 세션'
             app.session_state['saved_sid']=sid
             app.run()
             self.assertFalse(app.exception)
-            self.assertEqual(app.metric[1].value,'측정 불가')
+            self.assertEqual(next(m for m in app.metric if m.label=='최근 실험 구간 점수').value,'측정 불가')
+            self.assertTrue(any('수업 종료 · 진행 시간' in caption.value for caption in app.caption))
             next(t for t in app.text_input if t.label=='메모 입력').set_value('라이브 메모')
             next(b for b in app.button if b.label=='메모 저장').click().run()
             self.assertFalse(app.exception)
             self.assertTrue(any(e['payload']['text']=='라이브 메모' for e in service.get_dashboard_snapshot(sid)['notes']))
+            app.session_state['live'].running=True
+            app.run()
+            self.assertFalse(app.exception)
+            elements=list(app)
+            stop_index=next(i for i, element in enumerate(elements) if element.type=='button' and element.label=='수업 종료')
+            warning_index=next(i for i, element in enumerate(elements) if element.type=='warning' and '음성 입력 누락 가능' in element.value)
+            self.assertLess(stop_index, warning_index)
 
     def test_empty_and_sample_ui(self):
         from streamlit.testing.v1 import AppTest

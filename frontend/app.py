@@ -267,15 +267,19 @@ def live_page():
     def panel():
         snapshot=live.service.get_dashboard_snapshot(live.sid)
         duration=snapshot['session']['duration_ms']
-        st.caption(snapshot['session']['title'])
+        status='진행 중' if live.is_running() else '수업 종료'
+        st.caption(f"{snapshot['session']['title']} · {status} · 진행 시간 {clock(duration)}")
         a,b=st.columns(2)
-        a.metric('진행 중' if live.is_running() else '수업 종료',clock(duration))
+        with a:
+            with st.container(border=True):
+                st.subheader('강의 조교 · 자료 제안')
+                resources(live.service,live.sid,snapshot)
         windows=snapshot['engagement_windows']
         latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
         model_status=snapshot['status'].get('model')
         value=score(latest_window) if latest_window and model_status != 'unavailable' else None
         b.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
-        result,error,_=live.snapshot()
+        _,error,_=live.snapshot()
         if error:
             st.error(f'영상 분석 오류: {error}')
         transcription_error=live.transcription_error()
@@ -284,25 +288,6 @@ def live_page():
         checkpoint_error=live.checkpoint_status()
         if checkpoint_error:
             st.warning(f'수업 복구용 저장 실패: {checkpoint_error}')
-        diagnostics=live.diagnostics()
-        stt_stats=diagnostics['stt']
-        if stt_stats:
-            dropped=stt_stats['dropped_chunks']
-            device_errors=stt_stats['input_overflows'] + stt_stats['discontinuities']
-            if dropped or device_errors:
-                st.warning(f'음성 입력 누락 가능: 버린 청크 {dropped}개 · 장치 불연속 {device_errors}회')
-            st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
-        if diagnostics['video_result_age_ms'] is not None:
-            st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
-        if result:
-            st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
-        if latest_window:
-            st.caption(f"구간 {clock(latest_window['start_ms'])}~{clock(latest_window['end_ms'])} · 실험 점수는 집중도나 이해도를 나타내지 않습니다.")
-            if model_status == 'unavailable':
-                st.caption('모델 또는 영상 입력이 중단되어 최근 점수를 현재 점수로 표시하지 않습니다.')
-            elif value is None:
-                st.caption('점수 보류 사유: '+', '.join(latest_window['quality']['reason_codes']))
-                st.caption('실험 모델은 개발자 미리보기에서 얼굴 한 명이 정면을 바라보며 C 키로 기준을 수집해야 합니다.')
         with st.container(border=True):
             st.subheader('공통 타임라인')
             st.caption('계약에 저장된 engagement_window 구간과 메모를 표시합니다.')
@@ -310,9 +295,6 @@ def live_page():
             if not windows:
                 state=snapshot['status'].get('model')
                 st.caption('실험 모델을 사용하지 않거나 실행할 수 없습니다.' if state in ('stopped','unavailable') else '첫 구간을 집계하는 중입니다. 기본 설정에서는 수업 시작 후 10초가 필요합니다.')
-        with st.container(border=True):
-            st.subheader('강의 조교 · 자료 제안')
-            resources(live.service,live.sid,snapshot)
         with st.container(border=True):
             st.subheader('실시간 전사 · 분석 상태')
             state_labels={'running':'실행 중','ready':'준비됨','unavailable':'오류 또는 사용 불가','stopped':'꺼짐 또는 종료'}
@@ -355,6 +337,36 @@ def live_page():
                 navigate('사후 검토')
             except Exception as exc:
                 st.error(f'수업 종료·저장 실패: {exc}')
+
+    @st.fragment(run_every=1 if live.is_running() else None)
+    def diagnostics_panel():
+        snapshot=live.service.get_dashboard_snapshot(live.sid)
+        windows=snapshot['engagement_windows']
+        latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
+        model_status=snapshot['status'].get('model')
+        value=score(latest_window) if latest_window and model_status != 'unavailable' else None
+        result,_,_=live.snapshot()
+        diagnostics=live.diagnostics()
+        stt_stats=diagnostics['stt']
+        if stt_stats:
+            dropped=stt_stats['dropped_chunks']
+            device_errors=stt_stats['input_overflows'] + stt_stats['discontinuities']
+            if dropped or device_errors:
+                st.warning(f'음성 입력 누락 가능: 버린 청크 {dropped}개 · 장치 불연속 {device_errors}회')
+            st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
+        if diagnostics['video_result_age_ms'] is not None:
+            st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
+        if result:
+            st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
+        if latest_window:
+            st.caption(f"구간 {clock(latest_window['start_ms'])}~{clock(latest_window['end_ms'])} · 실험 점수는 집중도나 이해도를 나타내지 않습니다.")
+            if model_status == 'unavailable':
+                st.caption('모델 또는 영상 입력이 중단되어 최근 점수를 현재 점수로 표시하지 않습니다.')
+            elif value is None:
+                st.caption('점수 보류 사유: '+', '.join(latest_window['quality']['reason_codes']))
+                st.caption('실험 모델은 개발자 미리보기에서 얼굴 한 명이 정면을 바라보며 C 키로 기준을 수집해야 합니다.')
+    diagnostics_panel()
+    if live.is_running():
         with st.expander('개발자 도구'):
             enabled=live.developer_preview_enabled()
             if st.button('개발자 모드 끄기' if enabled else '개발자 모드 켜기', disabled=not live.video_enabled):
