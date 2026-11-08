@@ -23,6 +23,22 @@ DEBUG_INFO_WINDOW = 'Developer preview - MediaPipe features'
 RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 CHECKPOINT_INTERVAL_SECONDS = 15.0
 
+_stt_engine_lock = threading.Lock()
+_stt_engines = {}
+
+
+def _load_stt_engine(config):
+    """STT 모델은 설정별로 한 번만 불러와 이후 수업과 재시작에서 재사용한다(첫 로드 약 5초).
+
+    인식기 상태는 스트림마다 따로 있으므로 엔진 하나를 여러 세션이 순서대로 써도 된다.
+    """
+    with _stt_engine_lock:
+        engine = _stt_engines.get(config)
+        if engine is None:
+            from sherpa_stt.engine import SherpaEngine
+            engine = _stt_engines[config] = SherpaEngine(config)
+        return engine
+
 
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
@@ -39,6 +55,7 @@ class LiveSession:
             raise ValueError('영상 분석을 사용하려면 수업 창을 선택하세요.')
         self.audio_source = audio_source
         self.transcription = None
+        self._stt_engine = None
         self._stt_startup_error = None
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -75,10 +92,14 @@ class LiveSession:
             if self.thread is not None:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
         stt_config = None
+        self._stt_engine = None
         if self.audio_source is not None:
             try:
                 from sherpa_stt.config import SttConfig
                 stt_config = SttConfig()
+                # 수업 시계가 시작되기 전에 모델을 불러, 로드 시간 동안 수업 앞부분 음성을 놓치지 않게 한다.
+                # 실패하면 기존처럼 STT 작업이 스스로 로드를 시도하고 unavailable/재시작을 알린다.
+                self._stt_engine = _load_stt_engine(stt_config)
             except Exception as exc:
                 self._stt_startup_error = exc
         with self.lock:
@@ -87,7 +108,8 @@ class LiveSession:
             self.sid = self.service.start_session(title.strip(), config={
                 'config_version': 'initial',
                 'participation_model': {'model_id': MODEL_ID, 'model_version': MODEL_VERSION} if self.model_enabled else None,
-                'stt_model': stt_config.public_info() if stt_config else None,
+                # source: 루프백(스피커 출력) 또는 마이크. 장치 이름·경로는 넣지 않는다.
+                'stt_model': {**stt_config.public_info(), 'source': self.audio_source} if stt_config else None,
             })
             self.stop_event.clear()
         if not self.video_enabled:
@@ -201,7 +223,14 @@ class LiveSession:
                     from sherpa_stt.config import SttConfig
                     self._stt_config = SttConfig()
                 from sherpa_stt.runner import LiveTranscription
-                runner = LiveTranscription(self.service, self.sid, self._stt_config, source=self.audio_source)
+                if self._stt_engine is None:
+                    # 시작 전 로드에 실패했으면 재시도마다 다시 불러 본다.
+                    try:
+                        self._stt_engine = _load_stt_engine(self._stt_config)
+                    except Exception:
+                        pass  # 아래 runner.start()가 같은 오류를 unavailable로 알린다.
+                runner = LiveTranscription(self.service, self.sid, self._stt_config,
+                                           source=self.audio_source, engine=self._stt_engine)
                 with self.lock:
                     self.transcription = runner
                 if not runner.start():

@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 import tempfile
@@ -35,6 +36,46 @@ class FakeTranscription:
 
 
 class LiveSessionIsolationTests(unittest.TestCase):
+    def setUp(self):
+        # 테스트마다 STT 엔진 캐시를 비워 가짜 엔진이 다른 테스트로 새지 않게 한다.
+        engines = patch('frontend.live_session._stt_engines', {})
+        engines.start()
+        self.addCleanup(engines.stop)
+
+    def test_stt_engine_loads_before_session_and_is_reused(self):
+        loaded, engines = [], []
+
+        def fake_engine(config):
+            loaded.append(config)
+            return object()
+
+        class RecordingTranscription(FakeTranscription):
+            def __init__(self, service, sid, *args, engine=None, **kwargs):
+                super().__init__(service, sid)
+                engines.append((engine, service.elapsed_ms(sid)))
+
+        with patch('sherpa_stt.engine.SherpaEngine', side_effect=fake_engine), \
+             patch('sherpa_stt.runner.LiveTranscription', RecordingTranscription):
+            for _ in range(2):
+                live = LiveSession(None, audio_source='loopback', video_enabled=False)
+                live.start('test')
+                self.addCleanup(lambda live=live: live.stop() if live.is_running() else None)
+                deadline = time.monotonic() + 2
+                while live.transcription is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                live.stop()
+                with tempfile.TemporaryDirectory() as folder:
+                    path = live.service.save_session(live.sid, Path(folder) / 'session.json')
+                    saved = json.loads(Path(path).read_text(encoding='utf-8'))
+                self.assertEqual(saved['config']['stt_model']['source'], 'loopback')
+                # STT 작업은 세션 시계가 막 시작된 시점에 엔진을 받는다(로드 시간이 수업에 섞이지 않음).
+                self.assertLess(engines[-1][1], 1000)
+        # 두 수업이 한 번 불러온 같은 엔진을 쓴다.
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(len(engines), 2)
+        self.assertIsNotNone(engines[0][0])
+        self.assertIs(engines[0][0], engines[1][0])
+
     def test_video_failure_does_not_stop_stt_or_session(self):
         failure = threading.Event()
 
@@ -73,7 +114,8 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 live.stop_event.wait(0.01)
                 return None
 
-        with patch('sherpa_stt.runner.LiveTranscription', side_effect=RuntimeError('STT failed')), \
+        with patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
+             patch('sherpa_stt.runner.LiveTranscription', side_effect=RuntimeError('STT failed')), \
              patch('frontend.live_session.FaceAnalyzer', FakeResource), \
              patch('frontend.live_session.PoseAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
@@ -248,6 +290,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 self.stopped = True
 
         with patch('frontend.live_session.RETRY_DELAYS_SECONDS', (0.01, 0.01, 0.01)), \
+             patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
              patch('sherpa_stt.runner.LiveTranscription', SometimesFails):
             live = LiveSession(None, audio_source='microphone', video_enabled=False)
             live.start('test')
