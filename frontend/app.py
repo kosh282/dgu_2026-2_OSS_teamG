@@ -1,4 +1,5 @@
 """Figma lecturer dashboard: preparation, live session and post-session review."""
+import hashlib
 import importlib.util
 import os
 import sys
@@ -13,7 +14,9 @@ from frontend.dashboard_data import SessionFiles, chart, clock, overlap, score
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
 files = SessionFiles(os.environ.get('LECTURER_SESSION_DIR', str(Path.home() / 'lecturer_dashboard' / 'sessions')))
-for key, value in {'page':'세션 시작 준비','live':None,'review':None,'saved_sid':None,'hidden_suggestions':set()}.items():
+for key, value in {'page':'세션 시작 준비','live':None,'review':None,'saved_sid':None,'hidden_suggestions':set(),
+                   'assistant':None,'assistant_error':None,'material_cache':{},'material_index':None,
+                   'assistant_result':None}.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -127,10 +130,54 @@ def stt_readiness(source):
     return not missing, ', '.join(missing), config
 
 
+def material_index(uploaded):
+    """업로드한 강의 자료를 페이지 단위로 읽어 검색 색인을 만든다. 자료는 브라우저 세션 메모리에만 둔다."""
+    from ai_agent import MaterialError, MaterialIndex, load_material
+    loaded, errors = [], []
+    cache = st.session_state.material_cache
+    for file in uploaded or []:
+        data = file.getvalue()
+        key = (file.name, hashlib.sha256(data).hexdigest())
+        if key not in cache:
+            try:
+                cache[key] = load_material(file.name, data)
+            except MaterialError as exc:
+                cache[key] = exc
+        item = cache[key]
+        if isinstance(item, Exception):
+            errors.append(f'{file.name}: {item}')
+        else:
+            loaded.append(item)
+    return MaterialIndex(loaded), errors
+
+
+def material_summary(index, errors):
+    for error in errors:
+        st.warning(error)
+    if index.materials:
+        empty = sum(m.empty_pages for m in index.materials)
+        st.caption(f'자료 {len(index.materials)}개 · {index.page_count}쪽을 읽었습니다.'
+                   + (f' 텍스트가 없는 {empty}쪽(스캔 이미지 등)은 검색하지 않습니다.' if empty else ''))
+
+
+def claude_option(key):
+    """Claude 사용 선택. 기본은 꺼짐이며 켜면 전송 범위를 안내한다."""
+    from ai_agent import claude_ready
+    ready = claude_ready()
+    enabled = st.checkbox('Claude로 제안·피드백 문장 작성 (선택)', key=key, disabled=not ready)
+    if not ready:
+        st.caption('anthropic 패키지가 없어 로컬 검색 결과만 사용합니다.')
+    elif enabled:
+        has_key = bool(os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('ANTHROPIC_AUTH_TOKEN'))
+        st.caption('확정 전사·메모·관련 자료 페이지 텍스트가 Anthropic API로 전송됩니다. 원본 영상·음성과 얼굴 특징은 보내지 않습니다. '
+                   + ('API 키를 찾았습니다.' if has_key else 'API 키 환경 변수가 없습니다. `ant auth login` 프로필이 없으면 로컬 결과로 대체됩니다.'))
+    return enabled
+
+
 def resources(service, sid, snapshot, readonly=False):
     suggestions = [e for e in snapshot['suggestions'] if e['event_id'] not in st.session_state.hidden_suggestions]
     if not suggestions:
-        st.caption('현재 표시할 자료 제안이 없습니다. 자료 검색 모듈의 이벤트를 기다립니다.')
+        st.caption('현재 표시할 자료 제안이 없습니다. 강의 자료를 올리면 강의 조교가 최근 전사와 비교해 제안합니다.')
     for event in suggestions:
         payload = event['payload']
         with st.container(border=True):
@@ -138,7 +185,9 @@ def resources(service, sid, snapshot, readonly=False):
             st.write(payload['title'])
             st.write(payload['description'])
             source = payload['source']
-            st.caption(f"출처: {source['document_name']} · {source.get('page') or '페이지 미지정'}쪽")
+            by = '강의 조교 · Claude 작성' if str(event['provenance'].get('model_id') or '').startswith('claude') else '강의 조교 · 로컬 검색'
+            st.caption(f"출처: {source['document_name']} · {source.get('page') or '페이지 미지정'}쪽"
+                       + (f" · {by} · 근거 전사 {len(payload['evidence_event_ids'])}문장" if event['provenance']['module'] == 'assistant' else ''))
             if event.get('evidence_needs_refresh'):
                 st.warning('근거 전사가 수정되었습니다. 자료 제안을 다시 확인하세요.')
             if not readonly:
@@ -215,9 +264,13 @@ def preparation():
             else:
                 st.caption('선택 입력은 수업 세션의 공통 시계로 전사해 계약 이벤트로 전달합니다. 원본 음성 파일은 저장하지 않습니다.')
         with st.container(border=True):
-            st.subheader('3  강의 자료 업로드 (선택)')
-            st.file_uploader('PDF · PPT 강의 자료',type=['pdf','ppt','pptx'],accept_multiple_files=True,key='materials',disabled=running)
-            st.caption('선택한 자료는 현재 브라우저 세션에만 보관됩니다. 검색 모듈 연결 전에는 자동 자료 제안에 사용되지 않습니다.')
+            st.subheader('3  강의 자료 · 강의 조교 (선택)')
+            uploaded=st.file_uploader('PDF · PPTX 강의 자료',type=['pdf','ppt','pptx'],accept_multiple_files=True,key='materials',disabled=running)
+            index,errors=material_index(uploaded)
+            material_summary(index,errors)
+            claude_option('assistant_claude')
+            st.caption('강의 조교는 수업 중 최근 확정 전사와 자료 페이지를 비교해 자료를 제안합니다(음성 전사 필요). '
+                       '자료는 현재 브라우저 세션 메모리에만 두며 파일로 저장하지 않습니다. 세션 JSON에는 자료 이름·페이지 번호만 남습니다.')
         with st.container(border=True):
             st.subheader('4  동의·저장 안내')
             consent=st.checkbox('수업 영상·음성 수집과 분석에 동의한 수업입니다',key='consent',disabled=running)
@@ -229,7 +282,9 @@ def preparation():
             stt_ready,stt_missing,_=stt_readiness(audio_source)
             audio_label='사용 안 함' if not stt_enabled else ('출력 루프백' if audio_source=='loopback' else '마이크')
             model_label='미선택' if not stt_enabled else ('준비됨' if stt_ready else '준비 필요')
-            for name,state in [('영상 캡처',('창 선택됨' if selected else '대기') if video_enabled else '사용 안 함'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)',('설치됨' if importlib.util.find_spec('mediapipe') else '미설치') if video_enabled else '사용 안 함'),('참여 모델','사용' if video_enabled and model_enabled else '사용 안 함')]:
+            for name,state in [('영상 캡처',('창 선택됨' if selected else '대기') if video_enabled else '사용 안 함'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)',('설치됨' if importlib.util.find_spec('mediapipe') else '미설치') if video_enabled else '사용 안 함'),('참여 모델','사용' if video_enabled and model_enabled else '사용 안 함'),
+                               ('강의 조교',(f'자료 {len(index.materials)}개 · {index.page_count}쪽' + (' · Claude' if st.session_state.get('assistant_claude') else ' · 로컬'))
+                                if index.materials else '자료 없음 (제안 안 함)')]:
                 st.write(f'{name} · **{state}**')
             if stt_enabled and not stt_ready:
                 st.caption(stt_missing)
@@ -249,6 +304,18 @@ def preparation():
                     live.start(title)
                     st.session_state.live=live
                     st.session_state.hidden_suggestions=set()
+                    st.session_state.assistant=None
+                    st.session_state.assistant_error=None
+                    # 업로더 상태는 페이지를 옮기면 사라지므로 사후 검토에서 쓸 색인을 따로 보관한다(메모리 전용).
+                    st.session_state.material_index=index
+                    try:
+                        # 강의 조교는 같은 통합부 세션의 확정 전사를 읽어 자료 제안 이벤트를 보낸다.
+                        from ai_agent import LiveAssistant, make_writer
+                        assistant=LiveAssistant(live.service,live.sid,index,make_writer(st.session_state.get('assistant_claude',False)))
+                        assistant.start()
+                        st.session_state.assistant=assistant
+                    except Exception as exc:  # 조교 실패가 수업 시작을 막지 않는다
+                        st.session_state.assistant_error=f'강의 조교를 시작하지 못했습니다: {exc}'
                     navigate('라이브 세션')
                 except Exception as exc:
                     st.error(f'수업을 시작하지 못했습니다: {exc}')
@@ -273,6 +340,11 @@ def live_page():
         with a:
             with st.container(border=True):
                 st.subheader('강의 조교 · 자료 제안')
+                assistant_message=snapshot.get('status_messages',{}).get('assistant')
+                if st.session_state.assistant_error:
+                    st.warning(st.session_state.assistant_error)
+                elif assistant_message:
+                    st.caption(assistant_message)
                 resources(live.service,live.sid,snapshot)
         windows=snapshot['engagement_windows']
         latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
@@ -298,7 +370,7 @@ def live_page():
         with st.container(border=True):
             st.subheader('실시간 전사 · 분석 상태')
             state_labels={'running':'실행 중','ready':'준비됨','unavailable':'오류 또는 사용 불가','stopped':'꺼짐 또는 종료'}
-            names={'vision':'영상','model':'실험 점수','stt':'음성 전사'}
+            names={'vision':'영상','model':'실험 점수','stt':'음성 전사','assistant':'강의 조교'}
             st.caption(' · '.join(f"{names.get(key,key)}: {state_labels.get(value,value)}" for key,value in snapshot['status'].items()))
             for component, state in snapshot['status'].items():
                 if state == 'unavailable' and snapshot.get('status_messages', {}).get(component):
@@ -330,6 +402,8 @@ def live_page():
         if st.button('수업 종료',type='primary'):
             try:
                 live.stop()
+                if st.session_state.assistant is not None:
+                    st.session_state.assistant.stop()
                 files.save(live.service,live.sid)
                 files.clear_recovery(live.sid)
                 st.session_state.saved_sid=live.sid
@@ -451,14 +525,49 @@ def review_page():
             if not notes:
                 st.caption('저장된 메모가 없습니다.')
         with st.container(border=True):
+            st.subheader('AI 강의 조교 · 사후 분석')
+            st.caption('확정 전사와 강의 자료를 비교해 구간별 피드백을 만들고, 수업 중 제안이 없던 구간에는 수업 시각에 맞춘 자료 제안을 추가합니다. 결과는 초안이며 교수자가 검토합니다.')
+            extra=st.file_uploader('강의 자료 추가 (수업 시작 때 올린 자료는 다시 올리지 않아도 됩니다)',type=['pdf','ppt','pptx'],
+                                   accept_multiple_files=True,key=f'review-materials-{sid}')
+            from ai_agent import MaterialIndex, generate_post_session, make_writer
+            extra_index,errors=material_index(extra)
+            known={m.document_id:m for m in (st.session_state.material_index.materials if st.session_state.material_index else [])}
+            known.update({m.document_id:m for m in extra_index.materials})
+            review_index=MaterialIndex(known.values())
+            material_summary(review_index,errors)
+            if not review_index.materials:
+                st.caption('자료가 없으면 전사·메모·실험 점수만으로 피드백을 만듭니다.')
+            use_claude=claude_option(f'review-claude-{sid}')
+            if st.button('사후 피드백 · 자료 제안 생성',key=f'assistant-run-{sid}',type='primary'):
+                with st.spinner('강의 조교가 수업 기록을 정리하는 중입니다...'):
+                    try:
+                        result=generate_post_session(service,sid,review_index,make_writer(use_claude))
+                        files.save(service,sid)
+                        st.session_state.assistant_result=(sid,result)
+                    except Exception as exc:
+                        st.session_state.assistant_result=(sid,{'error':str(exc)})
+                st.rerun()
+            outcome=st.session_state.assistant_result
+            if outcome and outcome[0]==sid:
+                result=outcome[1]
+                if result.get('error'):
+                    st.error(f"사후 분석 실패: {result['error']}")
+                elif result.get('skipped'):
+                    st.info(result['skipped'])
+                else:
+                    st.success(f"피드백 {result['feedback']}건 · 자료 제안 {result['suggestions']}건을 만들었습니다.")
+                    if result.get('writer_error'):
+                        st.warning(f"Claude 작성 실패로 로컬 결과를 사용했습니다: {result['writer_error']}")
+        with st.container(border=True):
             st.subheader('사후 피드백 · 선택 구간')
             feedback=[e for e in snapshot['feedback'] if visible(e)]
             for event in feedback:
-                event_text(event)
+                st.caption(f"{clock(event['start_ms'])}–{clock(event['end_ms'])} · {'초안' if event['payload']['status']=='draft' else '검토 완료'}")
+                st.write(event['payload']['text'])
                 if event.get('evidence_needs_refresh'):
                     st.warning('근거 전사가 수정되어 피드백 재검토가 필요합니다.')
             if not feedback:
-                st.caption('저장된 피드백이 없습니다. 피드백 생성 모듈은 아직 연결되지 않았습니다.')
+                st.caption('저장된 피드백이 없습니다. 위의 AI 강의 조교로 만들 수 있습니다.')
             st.caption('관찰 신호만으로 이해 부족이나 교수법의 문제를 확정하지 않습니다.')
         with st.container(border=True):
             st.subheader('관련 자료 · 선택 구간')
