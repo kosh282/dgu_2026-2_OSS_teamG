@@ -1,0 +1,4 @@
+# Windows/macOS 웹캠의 선택적 재식별 실험. 기본 영상 분석 환경에 추가 설치한다.
+# 코드 MIT / 제공 사전학습 모델은 비상업 연구용: InsightFace 공식 라이선스 확인.
+insightface==2.1
+onnxruntime>=1.23,<2

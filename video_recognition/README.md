@@ -11,7 +11,9 @@
                                   ├─ head_calibration.py: 선택적 정면 보정
                                   ├─ model_consumer: 메모리 내 특징 전달
                                   └─ IntegrationService: 상태·세션 저장
-preview.py: 분석 입력과 기준점 표시 / webcam_test.py: 웹캠 시험
+preview.py: 분석 입력과 기준점 표시
+webcam_test.py: Windows 웹캠 창 캡처 시험
+webcam_test_mac.py: macOS 웹캠 직접 입력 시험
 ```
 
 창 캡처는 Windows Graphics Capture를 사용합니다. 얼굴과 상체 결과는 독립적으로 생성하므로 두 배열의 같은 순서가 같은 사람이라는 뜻은 아닙니다. 분석 상태 이벤트와 선택적 중간 파일 외에 프레임별 개인 특징은 최종 세션 JSON에 넣지 않습니다.
@@ -54,6 +56,64 @@ video_recognition/.venv/Scripts/python.exe -m video_recognition.integrated_analy
 
 ## 웹캠으로 직접 시험하기
 
+### macOS 웹캠 직접 입력
+
+`webcam_test_mac.py`는 Windows 창 조회·캡처를 호출하지 않고 웹캠 프레임을 분석기에 직접 전달합니다. 기존 데모와 같은 점수·각도 결과 창, 랜드마크, 정면 보정과 진단 로그를 사용합니다. 수업 창 캡처를 검증하는 데모는 아닙니다.
+
+VS Code에서 프로젝트 폴더 전체를 열고 **터미널 → 새 터미널**을 선택합니다. 아래 명령은 `video_recognition/` 폴더가 보이는 저장소 루트에서 실행합니다. Mac용 가상환경이 없다면 먼저 생성하고 통합 분석 의존성을 설치합니다. 이 데모만 실행할 때는 프런트·STT 패키지나 음성 모델을 설치할 필요가 없습니다. 의존성 설치 결과는 사용 중인 Python 버전과 Mac 환경에서 확인하세요.
+
+```bash
+python3 -m venv video_recognition/.venv
+video_recognition/.venv/bin/python -m pip install --upgrade pip
+video_recognition/.venv/bin/python -m pip install -r video_recognition/requirements-integrated.txt
+```
+
+설치가 끝났거나 이미 가상환경이 준비되어 있다면 다음 명령으로 실행합니다. Windows용 `Scripts/python.exe` 경로는 Mac에서 사용하지 않습니다.
+
+```bash
+video_recognition/.venv/bin/python -m video_recognition.webcam_test_mac
+```
+
+브라우저 페이지가 아니라 웹캠 영상·랜드마크 창과 분석 결과 창이 열립니다. 입력 흐름은 `웹캠 → 프레임 → 공통 분석기`이며, 화면이나 다른 프로그램 창을 캡처하지 않습니다. 얼굴이 한 명 보이는 상태에서 창을 선택하고 `C`를 누른 뒤 약 3초 동안 정면을 유지하세요. 유효한 샘플이 충분히 모여 보정이 완료되면 단일 얼굴용 규칙 기반 실험 점수를 확인할 수 있습니다. 보정 전이나 관측 불가 상태에서는 점수가 보류될 수 있습니다.
+
+macOS의 카메라 접근 권한을 허용하세요. OpenCV 창을 선택하고 `C`로 정면 보정, `V`로 랜드마크, `M`으로 삼각망 표시를 전환하며 `Q` 또는 터미널의 `Ctrl+C`로 종료합니다. `--camera 1`, `--duration 10`, `--log-dir /tmp/vision-logs` 옵션도 사용할 수 있습니다. 기본 진단 로그는 `video_recognition/demo_logs/`에 저장하며 원본 영상은 저장하지 않습니다. 실제 카메라·GUI 동작은 사용 장치에서 확인해야 합니다.
+
+### Windows/macOS 세션 내 얼굴 재식별 실험 (선택)
+
+동의한 테스트 참가자를 한 명씩 촬영해, 잠시 사라진 얼굴이 다시 나타났을 때 같은 임시 ID로 연결되는지 확인합니다. 기본 실행에는 재식별을 적용하지 않습니다.
+
+Windows와 macOS 데모 모두 `--reidentify`를 지원하며 같은 재식별 모듈을 사용합니다. Windows는 기존처럼 웹캠 영상 창을 캡처한 프레임을, Mac은 웹캠 직접 입력 프레임을 비교합니다. 추가 의존성은 실행할 컴퓨터의 가상환경에 설치해야 합니다.
+
+Windows (PowerShell):
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-reidentification.txt
+video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test --reidentify
+```
+
+macOS:
+
+```bash
+video_recognition/.venv/bin/python -m pip install -r video_recognition/requirements-reidentification.txt
+video_recognition/.venv/bin/python -m video_recognition.webcam_test_mac --reidentify
+```
+
+현재 Mac의 Python 3.13 / arm64 환경에서 InsightFace 2.1과 ONNX Runtime 1.31.1 설치 및 CPU 모델 로딩을 확인했습니다. Windows 데모의 옵션 켜기/끄기, 기존 창 캡처 경로 유지, 표시·로그 분리와 종료 정리는 모의 테스트로 확인했습니다. Windows 실제 장치의 설치·창 캡처·재식별 동작과 두 운영체제의 실제 카메라·정확도·처리 지연은 검증하지 않았습니다. 첫 실행은 인터넷 연결이 필요하며 `buffalo_l` 모델을 `.venv/reid-cache/models/`에 다운로드합니다. 설치 후 모델이 준비되면 얼굴 분석은 로컬 CPU에서 수행합니다. 모델 캐시는 Git에서 제외되며 얼굴 영상이나 등록 얼굴의 저장소가 아닙니다. InsightFace 코드는 MIT이지만 제공 모델은 **비상업 연구용**입니다. [공식 라이선스](https://github.com/deepinsight/insightface#license)를 확인하고 동의한 시험 참가자에게만 사용하세요.
+
+시험 순서:
+
+1. 얼굴 한 명을 정면에서 충분히 크게 보이게 합니다. 재식별은 정면 보정과 독립적이며 점수까지 확인하려면 `C`로 별도 보정합니다.
+2. 화면의 `ReID S001: new`를 확인합니다. `confirming`은 연속 관측을 확인 중이라는 뜻입니다.
+3. 잠시 화면 밖으로 나갔다가 120초 안에 돌아옵니다. 충분히 일치하면 동일 ID와 `reconnected`가 표시되고 연속 관측 시 `matched`가 표시됩니다.
+4. `deferred`는 미검출·작은 얼굴·품질 부족·복수 얼굴·애매한 일치 등의 판별 보류입니다. `waiting for next sample`은 다음 재식별 추론 대기이며 이전 판정을 재표시하지 않습니다.
+5. `Q`로 종료하면 ID와 임베딩 갤러리를 비웁니다. 재실행 후 ID는 이전 실행의 사람과 연결되지 않습니다.
+
+재식별은 초당 최대 2회 추론하며 최소 3회 연속 관측을 요구합니다. 검출 점수 0.8 이상·얼굴 박스 짧은 변 80픽셀 이상을 사용합니다. 코사인 유사도 0.5 이상과 후보 간 차이 0.1 이상일 때 기존 ID 후보로 보고, 0.3~0.5 사이는 보류합니다. 모든 기존 후보와 0.3 미만이면 새 ID 등록을 확인합니다. 이 수치는 초기 실험 설정이지 검증된 정확도 기준이나 일치 확률이 아닙니다. 정면 템플릿 하나와 비교하므로 큰 자세·조명 변화에서 다른 ID로 나뉘거나 오인식할 수 있습니다. 미관측 120초가 지나면 템플릿을 지우며 최대 32개만 유지합니다. 보류나 긴 샘플 공백은 연속 확인을 끊습니다.
+
+ID와 임베딩은 별도 메모리 갤러리와 표시용 영상 복사본에만 사용하며, `FeatureWindow`·JSONL 진단 로그·최종 세션 JSON에 추가하지 않습니다. 기존 `T` 임시 위치 키와 `S` 재식별 ID는 별개입니다. JSONL에는 기존 각도·모델 진단 기록만 남습니다. 같은 ID로 돌아와도 관측 공백의 점수를 만들지 않으며 정면 보정은 기존 정책대로 무효화될 수 있어 다시 `C`를 눌러야 합니다. 다인 재식별·개인별 점수 집계·ID별 JSON 저장은 이번 실험 범위가 아닙니다.
+
+### Windows 창 캡처 입력
+
 저장소 루트에서 실행하면 웹캠 영상 창, 실제 캡처 화면 창, 분석 결과 창이 열립니다. 실제 캡처 화면은 분석기에 전달된 바로 그 프레임이므로 잘림이나 다른 창에 가려진 부분을 확인할 수 있습니다.
 
 ```powershell
@@ -64,7 +124,7 @@ video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
 
 캡처 미리보기에는 개발자 모드와 같은 얼굴 윤곽·홍채 메시, 상체 선, 후처리 표시가 겹쳐집니다. `V` 키로 오버레이를 끄거나 켜고, `M` 키로 촘촘한 얼굴 삼각망을 전환합니다. `[`와 `]`로 얼굴 정보 페이지를 이동하고 `C`로 정면 기준 수집을 시작합니다. 표시된 점과 선은 모델의 추정 결과이며 정확한 인식을 보장하지 않습니다.
 
-결과 창은 프런트엔드 개발자 모드와 `video_recognition/developer_view.py`의 같은 렌더러를 사용합니다. 얼굴·상체 검출 수와 품질, 분석 주기/해상도, 각도와 눈·표정·움직임 특징 및 실험 점수를 표시합니다. 정면 보정 전이나 관측이 부족하면 점수는 보류됩니다. 실험 점수는 검증된 참여도가 아닙니다. 진단 JSONL에는 각도와 모델 결과가 기록됩니다.
+두 데모의 결과 창은 프런트엔드 개발자 모드와 `video_recognition/developer_view.py`의 같은 렌더러를 사용합니다. 얼굴·상체 검출 수와 품질, 분석 주기/해상도, 눈 개방도와 EAR, 원본·스무딩·상대 머리 각도, 각도 변화 후보, 깜빡임, 코 위치, 표정 형태 점수, 어깨 중심·가시성, 움직임 후보와 실험 점수를 표시합니다. 점수기는 보정된 단일 얼굴의 머리 각도와 자세 유지 시간을 사용하며, 실제 집중도나 이해도를 확정하는 모델이 아닙니다. 얼굴 순서는 프레임마다 바뀔 수 있습니다. 원본 영상과 원시 랜드마크는 저장하지 않지만, 각도·보정 상태·모델 판정 등은 별도 JSONL 진단 로그에 기록합니다. 로그는 최종 세션 JSON과 별개이며 필요가 끝나면 직접 삭제합니다.
 
 ## 모델 입력 특징과 제한
 

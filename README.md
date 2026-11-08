@@ -37,10 +37,18 @@ video_recognition/.venv/Scripts/python.exe -m streamlit run frontend/app.py
 
 ## 데모
 
-웹캠 또는 캡처 창 분석 데모:
+Windows에서 웹캠 영상 창을 캡처하는 분석 데모:
 
 ```powershell
 video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
 ```
+
+macOS에서는 웹캠 프레임을 직접 분석하는 별도 데모를 사용합니다. Mac용 가상환경과 영상 분석 의존성 설치 방법은 [영상 분석 안내](video_recognition/README.md#macos-웹캠-직접-입력)를 참고하세요.
+
+```bash
+video_recognition/.venv/bin/python -m video_recognition.webcam_test_mac
+```
+
+두 데모는 브라우저 대신 OpenCV 창에 영상·각도·실험 점수를 표시합니다. 창을 선택하고 `C`로 정면 보정을 시작하고 `Q`로 종료합니다. 원본 영상은 저장하지 않으며, 진단 로그는 `video_recognition/demo_logs/`에 생성됩니다. Mac 데모는 Windows 수업 창 캡처를 대신하지 않습니다.
 
 자세한 사용법은 [프런트 안내](frontend/README.md), [음성 전사 안내](sherpa_stt/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md), [강의 조교 안내](ai_agent/README.md)를 참고하세요.

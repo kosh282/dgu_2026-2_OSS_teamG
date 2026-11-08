@@ -45,13 +45,26 @@ def main():
     parser.add_argument('--duration', type=float, default=0, help='자동 종료 시간(초), 0은 수동 종료')
     parser.add_argument('--log-dir', type=Path, default=DEFAULT_LOG_DIR,
                         help='프레임별 JSONL 로그 폴더 (기본: 저장소 루트/demo_logs)')
+    parser.add_argument('--reidentify', action='store_true',
+                        help='동의한 인물의 세션 내 재식별 실험 (첫 실행 시 비상업 연구용 모델 다운로드)')
     args = parser.parse_args()
     if args.duration < 0:
         parser.error('--duration은 0 이상이어야 합니다')
 
+    reidentifier = None
+    if args.reidentify:
+        from .face_reidentification import FaceReidentifier
+        try:
+            reidentifier = FaceReidentifier()
+        except Exception as exc:
+            parser.exit(1, f'재식별 초기화 실패: {exc}\n')
+        print('재식별 실험: ID/임베딩은 메모리에만 유지하며 JSON에 저장하지 않습니다.')
+
     camera = cv2.VideoCapture(args.camera)
     if not camera.isOpened():
         camera.release()
+        if reidentifier is not None:
+            reidentifier.close()
         raise SystemExit('웹캠을 열 수 없습니다. 연결과 카메라 접근 권한을 확인하세요.')
 
     analyzer = pose_analyzer = pipeline = service = sid = log_handle = None
@@ -98,8 +111,13 @@ def main():
                 result['features'], model_runtime.latest, last_debug_signature,
             )
             write_frame_log(log_handle, result, model_runtime.latest)
+            display_frame = preview_capture.last_frame
+            if reidentifier is not None:
+                display_frame = reidentifier.annotate(
+                    display_frame, result['start_ms'], len(result['features']['faces']),
+                )
             controls = developer_output.render(
-                preview_capture.last_frame, result, analyzer, pose_analyzer,
+                display_frame, result, analyzer, pose_analyzer,
                 model_runtime.latest,
             )
             if controls['calibrate']:
@@ -109,6 +127,8 @@ def main():
     except KeyboardInterrupt:
         print('테스트를 종료합니다.')
     finally:
+        if reidentifier is not None:
+            reidentifier.close()
         if pipeline is not None:
             pipeline.close()
         else:
