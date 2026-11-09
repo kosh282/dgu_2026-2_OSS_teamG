@@ -34,6 +34,16 @@ class Observation:
         return self.angles is not None
 
 
+def soften_angle(value, deadband, scale, full_scale_start):
+    """중립 부근만 완화하고 큰 각도에서는 기울기 1을 유지하는 홀함수."""
+    magnitude = abs(value)
+    if magnitude <= deadband:
+        return 0.0
+    softened = (min(magnitude, full_scale_start) - deadband) * scale
+    softened += max(0.0, magnitude - full_scale_start)
+    return math.copysign(softened, value)
+
+
 def parse_feature_window(data, config=None):
     """형식 오류는 ValueError, 정상적인 미검출·보정 실패는 관측 불가로 반환합니다.
 
@@ -101,21 +111,8 @@ def parse_feature_window(data, config=None):
             source_angles = HeadAngles(**{
                 axis: float(relative[axis]) for axis in ("pitch", "yaw", "roll")
             })
-            yaw_magnitude = abs(source_angles.yaw)
-            if yaw_magnitude <= config.yaw_neutral_deadband_degrees:
-                model_yaw = 0.0
-            elif yaw_magnitude <= config.yaw_full_scale_start_degrees:
-                model_magnitude = (
-                    yaw_magnitude - config.yaw_neutral_deadband_degrees
-                ) * config.yaw_small_angle_scale
-                model_yaw = math.copysign(model_magnitude, source_angles.yaw)
-            else:
-                model_magnitude = (
-                    config.yaw_full_scale_start_degrees
-                    - config.yaw_neutral_deadband_degrees
-                ) * config.yaw_small_angle_scale
-                model_magnitude += yaw_magnitude - config.yaw_full_scale_start_degrees
-                model_yaw = math.copysign(model_magnitude, source_angles.yaw)
+            model_yaw = soften_angle(source_angles.yaw, config.yaw_neutral_deadband_degrees,
+                                     config.yaw_small_angle_scale, config.yaw_full_scale_start_degrees)
             # 중립 부근만 완만히 압축한다. 큰 좌우 회전은 거의 그대로 유지한다.
             angles = HeadAngles(source_angles.pitch, model_yaw, source_angles.roll)
         track_key = face.get("transient_track_key")

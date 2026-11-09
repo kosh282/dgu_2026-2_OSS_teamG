@@ -3,12 +3,15 @@
 from collections import deque
 
 from .runtime import MODEL_ID, MODEL_VERSION
+from .scoring import huang_window_score
+from .gaussian import gaussian_window_score
 
 
 class WindowPublisher:
     """관측이 끊긴 시간은 결측으로 두고 시간 가중 구간 점수를 발행한다.
 
-    특징과 임시 추적 정보는 보관하지 않는다. 각 시점의 점수는 다음 관측이나
+    Huang 모드의 최소 각도만 이동 구간 동안 메모리에 유지하고 저장하지 않는다.
+    임시 추적 정보는 보관하지 않는다. 각 시점의 점수는 다음 관측이나
     최대 관측 유지 시간까지만 유효하며, 이후는 관측 불가로 처리한다.
     """
 
@@ -17,6 +20,8 @@ class WindowPublisher:
         self.session_id = session_id
         self.runtime = runtime
         self.config = runtime.config
+        self.model_id = getattr(runtime, 'model_id', MODEL_ID)
+        self.model_version = getattr(runtime, 'model_version', MODEL_VERSION)
         self.window_ms = round(self.config.window_seconds * 1000)
         self.interval_ms = round(self.config.output_interval_seconds * 1000)
         self.hold_ms = round(self.config.max_observation_hold_seconds * 1000)
@@ -33,16 +38,24 @@ class WindowPublisher:
         timestamp = feature_window['start_ms']
         self.advance(timestamp)
         result = self.runtime(feature_window)
-        self._sample = (timestamp, result.get('angles') is not None, result.get('score'))
+        if self.config.scoring_method in {'huang', 'gaussian'} and (
+                result.get('status') == 'input_error'
+                or set(result.get('reason_codes', ())) & {
+                    'tracking_key_changed', 'baseline_unavailable', 'non_monotonic_timestamp'}):
+            # 재보정/대상 변경 전후의 상대각을 같은 통계에 섞지 않는다.
+            self._segments.clear()
+        self._sample = (timestamp, result.get('angles') is not None, result.get('score'),
+                        result.get('gaussian_observation') if self.config.scoring_method == 'gaussian'
+                        else result.get('huang_observation'))
         return result
 
     def _extend(self, end):
         if self._sample is not None:
-            timestamp, observable, score = self._sample
+            timestamp, observable, score, primitive = self._sample
             start = max(self._cursor, timestamp)
             stop = min(end, timestamp + self.hold_ms)
             if stop > start:
-                self._segments.append((start, stop, observable, score))
+                self._segments.append((start, stop, observable, score, primitive))
         self._cursor = end
 
     def advance(self, now_ms):
@@ -68,7 +81,7 @@ class WindowPublisher:
         start = max(self._start_ms, end - self.window_ms)
         duration = end - start
         observable_ms = scoreable_ms = weighted = 0
-        for left, right, observable, score in self._segments:
+        for left, right, observable, score, _ in self._segments:
             elapsed = max(0, min(end, right) - max(start, left))
             if observable:
                 observable_ms += elapsed
@@ -85,6 +98,22 @@ class WindowPublisher:
         if not scoreable_ms:
             reasons.append('no_scoreable_time')
         value = round(weighted / scoreable_ms, 1) if not reasons else None
+        if self.config.scoring_method == 'huang':
+            # 이미 계산된 이동 점수를 다시 평균하지 않고 같은 구간의 P/Y를 결합한다.
+            summary = huang_window_score(self._segments, start, end, self.config)
+            observable_ms = summary['observable_duration_ms']
+            scoreable_ms = summary['scoreable_duration_ms']
+            observable_ratio = observable_ms / duration
+            scoreable_ratio = scoreable_ms / duration
+            value, reasons = summary['score'], summary['reason_codes']
+        elif self.config.scoring_method == 'gaussian':
+            # 실제 시간과 원시 상대각으로 한 번만 집계하고 runtime의 평균은 재평균하지 않는다.
+            summary = gaussian_window_score(self._segments, start, end, self.config)
+            observable_ms = summary['observable_duration_ms']
+            scoreable_ms = summary['scoreable_duration_ms']
+            observable_ratio = observable_ms / duration
+            scoreable_ratio = scoreable_ms / duration
+            value, reasons = summary['score'], summary['reason_codes']
         quality = 'not_observable' if value is None else ('partial' if partial or scoreable_ms < duration else 'valid')
         payload = {
             'model_output': None if value is None else {
@@ -94,18 +123,39 @@ class WindowPublisher:
             'observation': {'valid_count': None, 'eligible_count': None,
                             'observable_ratio': None, 'count_unit': None},
             'signals': {},
-            'model_extensions': {MODEL_ID: {
+            'model_extensions': {self.model_id: {
                 'version': 'window-1', 'model_config_version': self.config.config_version,
                 'observable_duration_ms': observable_ms,
                 'scoreable_duration_ms': scoreable_ms, 'window_duration_ms': duration,
                 'observable_time_ratio': round(observable_ratio, 4),
                 'scoreable_time_ratio': round(scoreable_ratio, 4), 'partial_window': partial,
+                'scoring_method': self.config.scoring_method,
             }},
         }
+        if self.config.scoring_method == 'gaussian':
+            payload['model_extensions'][self.model_id].update({
+                'version': 'angle-time-window-3' if self.config.gaussian_angle_mode == 'softened' else 'angle-time-window-2',
+                'angle_mode': self.config.gaussian_angle_mode,
+                'pitch_deadband_degrees': self.config.gaussian_pitch_deadband_degrees,
+                'pitch_small_angle_scale': self.config.gaussian_pitch_small_angle_scale,
+                'pitch_full_scale_start_degrees': self.config.front_pitch_degrees,
+                'yaw_deadband_degrees': self.config.yaw_neutral_deadband_degrees,
+                'yaw_small_angle_scale': self.config.yaw_small_angle_scale,
+                'yaw_full_scale_start_degrees': self.config.yaw_full_scale_start_degrees,
+                'sigma_pitch_degrees': self.config.gaussian_sigma_pitch_degrees,
+                'sigma_yaw_degrees': self.config.gaussian_sigma_yaw_degrees,
+                'down_transition_pitch_degrees': self.config.gaussian_down_transition_pitch_degrees,
+                'down_confirm_seconds': self.config.gaussian_down_confirm_seconds,
+                'window_seconds': self.config.window_seconds,
+                'temporal_weighting': 'linear-time-integral',
+                'max_observation_hold_seconds': self.config.max_observation_hold_seconds,
+                'min_observable_ratio': self.config.min_observable_ratio,
+                'min_scoreable_ratio': self.config.min_scoreable_ratio,
+            })
         event = self.service.make_event(
             self.session_id, 'engagement_window', payload, start, end, 'model',
             quality_status=quality, reason_codes=reasons,
-            model_id=MODEL_ID, model_version=MODEL_VERSION,
+            model_id=self.model_id, model_version=self.model_version,
         )
         self.service.receive_event(event)
         self._last_end = end

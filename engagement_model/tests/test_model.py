@@ -29,6 +29,49 @@ def observation(pitch=0, yaw=0, roll=0):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_pitch_softening_validation_does_not_restrict_other_models(self):
+        """완화를 쓰지 않는 모드에서 기존 정면 범위 설정을 허용한다."""
+        factories = (
+            ('legacy', ModelConfig),
+            ('huang', ModelConfig.huang),
+            ('gaussian_relative', lambda **kw: ModelConfig.gaussian(gaussian_angle_mode='relative', **kw)),
+            ('legacy_with_unused_softened_mode', lambda **kw: ModelConfig(gaussian_angle_mode='softened', **kw)),
+            ('huang_with_unused_softened_mode', lambda **kw: ModelConfig.huang(gaussian_angle_mode='softened', **kw)),
+        )
+        for name, factory in factories:
+            with self.subTest(mode=name):
+                config = factory(front_pitch_degrees=1)
+                self.assertEqual(config.front_pitch_degrees, 1)
+                self.assertEqual(config.gaussian_pitch_deadband_degrees, 2)
+
+    def test_gaussian_softened_pitch_validation_rejects_invalid_settings(self):
+        """실제 완화 모드의 경계·계수·유한값 검증을 유지한다."""
+        for kwargs in (
+            {'front_pitch_degrees': 1},
+            {'gaussian_pitch_deadband_degrees': 10},
+            {'gaussian_pitch_deadband_degrees': 11},
+            {'gaussian_pitch_small_angle_scale': 0},
+            {'gaussian_pitch_small_angle_scale': 1.1},
+            {'gaussian_pitch_deadband_degrees': -1},
+            {'gaussian_pitch_small_angle_scale': True},
+            {'gaussian_pitch_deadband_degrees': float('nan')},
+            {'gaussian_pitch_small_angle_scale': float('inf')},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                ModelConfig.gaussian(**kwargs)
+
+    def test_gaussian_softened_accepts_valid_pitch_settings(self):
+        """기본값과 유효한 사용자 정의 완화 설정을 허용한다."""
+        for kwargs in ({}, {'gaussian_pitch_deadband_degrees': 0, 'gaussian_pitch_small_angle_scale': 1},
+                       {'front_pitch_degrees': 1, 'gaussian_pitch_deadband_degrees': 0.25,
+                        'gaussian_pitch_small_angle_scale': 0.5}):
+            with self.subTest(kwargs=kwargs):
+                config = ModelConfig.gaussian(**kwargs)
+                self.assertEqual(config.scoring_method, 'gaussian')
+                self.assertEqual(config.gaussian_angle_mode, 'softened')
+                self.assertEqual(config.gaussian_sigma_pitch_degrees, 15)
+                self.assertEqual(config.gaussian_sigma_yaw_degrees, 20)
+
     def test_configurable_window(self):
         """집계와 출력 간격을 바꾸고 기본 설정은 그대로 유지할 수 있습니다."""
         self.assertEqual(ModelConfig().window_seconds, 10)
