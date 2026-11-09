@@ -245,19 +245,26 @@ def preparation():
             video_enabled=st.checkbox('영상 분석 사용',value=True,key='video_enabled',disabled=running)
             model_enabled=st.checkbox('실험 행동 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
             st.caption('실험 점수는 영상 분석 결과를 사용합니다. 수업 시작 전에 기능을 선택하세요.')
-            windows=[]
+            windows=st.session_state.get('class_window_list', [])
             window_error=None
-            if video_enabled and sys.platform == 'win32':
+            refresh_windows=st.button('창 목록 새로고침',disabled=running or not video_enabled)
+            if video_enabled and sys.platform == 'win32' and ('class_window_list' not in st.session_state or refresh_windows):
                 try:
                     from video_recognition.integrated_analysis import list_windows
                     windows=list_windows()
+                    st.session_state.class_window_list=windows
                 except Exception as exc:
                     window_error=str(exc)
-            elif video_enabled:
+            elif video_enabled and sys.platform != 'win32':
                 window_error='실시간 창 캡처는 Windows 로컬 실행에서 사용할 수 있습니다.'
-            selected=st.selectbox('분석할 수업 창',windows,index=None,format_func=lambda x:x[1],disabled=running or not video_enabled,placeholder='수업 창을 선택하세요')
-            if st.button('창 목록 새로고침',disabled=running or not video_enabled):
-                st.rerun()
+            # 창 제목·순서가 바뀌어도 같은 핸들로 선택을 유지한다. 목록은 명시적으로 새로고침한다.
+            window_titles=dict(windows)
+            if st.session_state.get('class_window_handle') not in window_titles:
+                st.session_state.class_window_handle=None
+            selected_handle=st.selectbox('분석할 수업 창',list(window_titles),index=None,
+                key='class_window_handle',format_func=lambda hwnd: window_titles[hwnd],
+                disabled=running or not video_enabled,placeholder='수업 창을 선택하세요')
+            selected=(selected_handle, window_titles[selected_handle]) if selected_handle is not None else None
             if window_error:
                 st.info(window_error)
             elif video_enabled and not windows:
@@ -383,6 +390,22 @@ def live_page():
         model_status=snapshot['status'].get('model')
         value=score(latest_window) if latest_window and model_status != 'unavailable' else None
         b.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+        if live.video_enabled and getattr(live, 'model_enabled', False):
+            calibration=live.calibration_state()
+            state=calibration.get('status', 'starting')
+            reason=calibration.get('last_reason_code')
+            reasons={'no_face_detected':'얼굴이 감지되지 않았습니다.', 'multiple_faces_detected':'얼굴이 여러 개 감지되어 단일 얼굴 보정을 할 수 없습니다.',
+                     'face_quality_not_observable':'얼굴을 충분히 관찰할 수 없습니다.', 'head_angles_unavailable':'머리 각도를 계산할 수 없습니다.',
+                     'head_pose_unstable':'머리 움직임이 커서 다시 수집합니다.', 'calibration_frame_gap':'영상 입력이 끊겨 다시 수집합니다.',
+                     'calibration_timestamp_not_increasing':'영상 시각이 정상적으로 진행되지 않았습니다.'}
+            b.caption({'starting':'정면 기준: 영상 분석 준비 중', 'waiting':'정면 기준: 재보정이 필요합니다',
+                       'collecting':f"정면 기준 수집 중 · {calibration.get('progress', 0)*100:.0f}%", 'ready':'정면 기준 수집 완료'}.get(state, '정면 기준: 상태 확인 중'))
+            if reason:
+                b.caption(reasons.get(reason, f'보정 상태: {reason}'))
+            b.caption('얼굴 한 명이 정면을 보고 약 3초간 유지해 주세요. 자동 기준은 실제 정면인지 확인하지 못합니다.')
+            if b.button('정면 기준 재보정', disabled=not live.is_running(), key='recalibrate-head'):
+                live.request_head_calibration()
+                st.rerun()
         _,error,_=live.snapshot()
         if error:
             st.error(f'영상 분석 오류: {error}')
@@ -472,7 +495,7 @@ def live_page():
                 st.caption('모델 또는 영상 입력이 중단되어 최근 점수를 현재 점수로 표시하지 않습니다.')
             elif value is None:
                 st.caption('점수 보류 사유: '+', '.join(latest_window['quality']['reason_codes']))
-                st.caption('실험 모델은 개발자 미리보기에서 얼굴 한 명이 정면을 바라보며 C 키로 기준을 수집해야 합니다.')
+                st.caption('정면 기준과 관측 상태를 확인하세요. 기준 수집 후 새 점수 구간 집계가 필요합니다.')
     diagnostics_panel()
     if live.is_running():
         with st.expander('개발자 도구'):

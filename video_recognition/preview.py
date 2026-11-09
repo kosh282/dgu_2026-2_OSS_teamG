@@ -165,14 +165,26 @@ def draw_face_postprocessing(frame, faces):
 class PreviewCapture:
     """실제 분석기가 받을 동일한 캡처 프레임을 미리보기용으로 보관한다."""
 
-    def __init__(self, capture):
+    def __init__(self, capture, keep_frame=True):
         self.capture = capture
         self.last_frame = None
+        self._keep_frame = keep_frame
+
+    @property
+    def keep_frame(self):
+        return self._keep_frame
+
+    @keep_frame.setter
+    def keep_frame(self, enabled):
+        self._keep_frame = bool(enabled)
+        if not self._keep_frame:
+            self.last_frame = None
 
     def read(self):
         frame = self.capture.read()
         # 원본을 수정하지 않고 메모리에만 보관한다. 별도 재캡처나 파일 저장은 하지 않는다.
-        self.last_frame = frame.copy()
+        if self.keep_frame:
+            self.last_frame = frame.copy()
         return frame
 
     def close(self):

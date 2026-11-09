@@ -208,18 +208,21 @@ class VisionPipeline:
             # Keep the captured frame for preview, but send a bounded-size copy to the models.
             image = self.capture.read()
             capture_ms = self.service.elapsed_ms(self.session_id)
-            source_height, source_width = image.shape[:2]
-            analysis_image = self._analysis_image(image)
-            height, width = analysis_image.shape[:2]
-            frame = VideoFrame(
-                self.session_id, self.frame_id, capture_ms, width, height, 'BGR', analysis_image,
-            )
+            frame_id = self.frame_id
             self.frame_id += 1
 
             # Read every newest capture, while limiting expensive face inference to its target rate.
             if (self.last_face_analysis_ms is not None
                     and capture_ms - self.last_face_analysis_ms < self.face_interval_ms):
                 return None
+
+            # 분석 시점이 아닌 프레임은 고해상도 축소와 모델 입력 생성을 생략한다.
+            source_height, source_width = image.shape[:2]
+            analysis_image = self._analysis_image(image)
+            height, width = analysis_image.shape[:2]
+            frame = VideoFrame(
+                self.session_id, frame_id, capture_ms, width, height, 'BGR', analysis_image,
+            )
 
             faces = self.analyzer.analyze(frame)
             self.last_face_analysis_ms = capture_ms

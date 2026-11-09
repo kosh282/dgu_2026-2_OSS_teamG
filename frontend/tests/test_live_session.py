@@ -4,7 +4,7 @@ import time
 import tempfile
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from frontend.live_session import LiveSession
@@ -41,6 +41,41 @@ class LiveSessionIsolationTests(unittest.TestCase):
         engines = patch('frontend.live_session._stt_engines', {})
         engines.start()
         self.addCleanup(engines.stop)
+
+    def test_calibration_blocks_old_scores_until_new_window_is_published(self):
+        live = LiveSession(123)
+        live.sid = live.service.start_session('test')
+        class Publisher:
+            def __init__(self, service, sid, runtime, start_ms=0):
+                self._last_end = start_ms
+            def __call__(self, feature):
+                if feature.get('publish'):
+                    self._last_end = feature['start_ms']
+            def advance(self, now):
+                self._last_end = now
+        live.window_publisher = Publisher(None, None, None)
+        with patch('frontend.live_session.WindowPublisher', Publisher):
+            live._consume_model({'start_ms': 10, 'features': {'head_calibration_status': 'collecting'}})
+            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
+            live._consume_model({'start_ms': 100, 'features': {'head_calibration_status': 'ready'}})
+            live._advance_model()
+            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
+            live._consume_model({'start_ms': 10100, 'publish': True, 'features': {'head_calibration_status': 'ready'}})
+            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'running')
+            live._consume_model({'start_ms': 10101, 'features': {'head_calibration_status': 'waiting'}})
+            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
+        live.service.stop_session(live.sid)
+
+    def test_recalibration_request_clears_previous_preview_and_blocks_model(self):
+        live = LiveSession(123)
+        live.sid = live.service.start_session('test')
+        live.latest = {'features': {'head_calibration_diagnostics': {'status': 'ready'}}}
+        with patch.object(live, 'is_running', return_value=True):
+            self.assertTrue(live.request_head_calibration())
+        self.assertIsNone(live.latest)
+        self.assertEqual(live.calibration_state()['status'], 'collecting')
+        self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
+        live.service.stop_session(live.sid)
 
     def test_stt_engine_loads_before_session_and_is_reused(self):
         loaded, engines = [], []
@@ -109,6 +144,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
             def close(self): pass
 
         class FakePipeline(FakeResource):
+            head_calibration = Mock()
             def process_one(self):
                 started.set()
                 live.stop_event.wait(0.01)
@@ -158,6 +194,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
             def __call__(self, feature): raise RuntimeError('model failed')
 
         class FakePipeline(FakeResource):
+            head_calibration = Mock()
             def __init__(self, *args, **kwargs):
                 self.consumer = kwargs['model_consumer']
                 self.count = 0
@@ -193,6 +230,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
             def close(self): pass
 
         class FakePipeline(FakeResource):
+            head_calibration = Mock()
             def __init__(self, *args, **kwargs):
                 self.consumer = kwargs['model_consumer']
             def process_one(self):

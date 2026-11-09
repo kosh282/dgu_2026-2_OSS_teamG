@@ -91,6 +91,8 @@ class DashboardTests(unittest.TestCase):
                     self.sid=sid
                     self.running=False
                     self.video_enabled=False
+                    self.model_enabled=False
+                    self.calibration_requests=0
                 def has_started(self): return True
                 def is_running(self): return self.running
                 def snapshot(self): return None,None,False
@@ -101,6 +103,8 @@ class DashboardTests(unittest.TestCase):
                                     'lag_ms_latest': 54, 'queue_size': 0, 'rtf': 0.3},
                             'video_result_age_ms': None}
                 def developer_preview_enabled(self): return False
+                def calibration_state(self): return {'status':'collecting','progress':0.5,'last_reason_code':None}
+                def request_head_calibration(self): self.calibration_requests+=1
             app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20)
             app.session_state['live']=FakeLive()
             app.session_state['page']='라이브 세션'
@@ -120,6 +124,12 @@ class DashboardTests(unittest.TestCase):
             stop_index=next(i for i, element in enumerate(elements) if element.type=='button' and element.label=='수업 종료')
             warning_index=next(i for i, element in enumerate(elements) if element.type=='warning' and '음성 입력 누락 가능' in element.value)
             self.assertLess(stop_index, warning_index)
+            app.session_state['live'].video_enabled=True
+            app.session_state['live'].model_enabled=True
+            app.run()
+            self.assertTrue(any('정면 기준 수집 중' in c.value for c in app.caption))
+            next(b for b in app.button if b.label=='정면 기준 재보정').click().run()
+            self.assertEqual(app.session_state['live'].calibration_requests, 1)
 
     def test_empty_and_sample_ui(self):
         from streamlit.testing.v1 import AppTest
@@ -143,6 +153,23 @@ class DashboardTests(unittest.TestCase):
         next(c for c in app.checkbox if c.label.startswith('전사·메모')).check().run()
         self.assertFalse(app.exception)
         self.assertFalse(next(b for b in app.button if b.label=='세션 시작').disabled)
+
+    def test_window_selection_survives_changing_window_title_and_refresh(self):
+        from streamlit.testing.v1 import AppTest
+        with patch('video_recognition.integrated_analysis.list_windows') as list_windows:
+            list_windows.side_effect = [[(1, '수업 창'), (2, '다른 창')],
+                                        [(2, '다른 창'), (1, '수업 창 새 제목')],
+                                        [(2, '다른 창')]]
+            app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20).run()
+            selector=next(s for s in app.selectbox if s.label=='분석할 수업 창')
+            selector.select('수업 창').run()
+            self.assertFalse(app.exception)
+            self.assertEqual(next(s for s in app.selectbox if s.label=='분석할 수업 창').value, 1)
+            self.assertTrue(any('창 선택됨' in item.value for item in app.markdown))
+            next(b for b in app.button if b.label=='창 목록 새로고침').click().run()
+            self.assertEqual(next(s for s in app.selectbox if s.label=='분석할 수업 창').value, 1)
+            next(b for b in app.button if b.label=='창 목록 새로고침').click().run()
+            self.assertIsNone(next(s for s in app.selectbox if s.label=='분석할 수업 창').value)
 
     def test_personal_api_selection_requires_key(self):
         from streamlit.testing.v1 import AppTest

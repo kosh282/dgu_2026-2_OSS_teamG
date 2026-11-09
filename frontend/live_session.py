@@ -83,6 +83,9 @@ class LiveSession:
         self._model_failed = False
         self._model_retry_count = 0
         self._model_retry_at = None
+        self._calibration_request = threading.Event()
+        self._calibration_blocked = False
+        self._calibration_window_start = None
 
     def start(self, title):
         """수업 제목을 확정하고 타이머·공통 세션·영상 분석을 같은 순간에 시작한다."""
@@ -271,19 +274,30 @@ class LiveSession:
             window = WindowCapture(self.hwnd, expected_process_id=self._window_process_id)
             if self._window_process_id is None:
                 self._window_process_id = getattr(window, 'process_id', None)
-            capture = PreviewCapture(window)
+            capture = PreviewCapture(window, keep_frame=False)
             if self.model_enabled:
                 self._start_model()
             pipeline = VisionPipeline(
                 self.service, self.sid, capture, face,
                 model_consumer=self._consume_model if self.model_enabled else None, pose_analyzer=pose,
             )
+            if self.model_enabled:
+                # 초기 기준은 첫 유효 얼굴을 기다려 수집한다. 정면 여부 자체는 확인할 수 없다.
+                pipeline.head_calibration.start()
+                if not self._model_failed:
+                    self._calibration_blocked = True
+                    self._calibration_window_start = None
+                    self._model_status('unavailable', '정면 기준을 자동 수집합니다.', ['baseline_unavailable'])
             while not self.stop_event.is_set():
                 self._maybe_restart_model()
+                if self._calibration_request.is_set():
+                    self._calibration_request.clear()
+                    pipeline.head_calibration.start()
                 with self.lock:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
                 # 개발자 미리보기가 꺼져 있으면 랜드마크 좌표 복사와 오버레이 준비를 생략한다.
+                capture.keep_frame = preview_enabled
                 face.show_landmarks = preview_enabled and show_landmarks
                 pose.show_landmarks = preview_enabled and show_landmarks
                 try:
@@ -300,7 +314,7 @@ class LiveSession:
                         self.model_latest = self.model_runtime.latest
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
-                if preview_enabled:
+                if preview_enabled and capture.last_frame is not None:
                     if self._render_developer_preview(capture.last_frame, result, face, pose, show_landmarks):
                         # 키 입력도 분석기와 같은 스레드에서 처리해 보정 상태를 안전하게 바꾼다.
                         pipeline.head_calibration.start()
@@ -341,9 +355,30 @@ class LiveSession:
         if self._model_failed:
             return
         try:
+            calibration = feature.get('features', {}).get('head_calibration_status')
+            if calibration != 'ready' and not self._calibration_blocked:
+                self._calibration_blocked = True
+                self._calibration_window_start = None
+                self._model_status('unavailable', '정면 기준 수집 또는 재보정을 기다립니다.', ['baseline_unavailable'])
+            elif calibration != 'ready':
+                self._calibration_window_start = None
+            elif calibration == 'ready' and self._calibration_blocked and self._calibration_window_start is None:
+                # 이전 기준으로 수집한 점수와 새로운 기준의 점수가 한 구간에서 섞이지 않게 한다.
+                self.model_runtime = EngagementRuntime()
+                self._calibration_window_start = feature['start_ms']
+                self.window_publisher = WindowPublisher(self.service, self.sid, self.model_runtime,
+                                                        start_ms=self._calibration_window_start)
             self.window_publisher(feature)
+            self._finish_calibration_window()
         except Exception as exc:
             self._fail_model(exc)
+
+    def _finish_calibration_window(self):
+        if (self._calibration_blocked and self._calibration_window_start is not None
+                and self.window_publisher._last_end > self._calibration_window_start):
+            self._calibration_blocked = False
+            self._calibration_window_start = None
+            self._model_status('running', '정면 기준을 적용한 실험 구간 집계를 시작했습니다.')
 
     def _advance_model(self):
         if self.window_publisher is None or self._model_failed:
@@ -376,6 +411,8 @@ class LiveSession:
             )
             self._model_failed = False
             self._model_retry_at = None
+            self._calibration_blocked = False
+            self._calibration_window_start = None
             self._model_status('running', '단일 얼굴 실험 모델이 실행 중입니다.')
         except Exception as exc:
             self._fail_model(exc)
@@ -410,6 +447,24 @@ class LiveSession:
         self.thread.join(timeout=10)
         if self.thread.is_alive():
             raise RuntimeError('분석 작업을 종료하는 중입니다. 잠시 후 다시 시도하세요.')
+
+    def request_head_calibration(self):
+        """UI에서는 요청만 전달하고 실제 보정 객체는 영상 스레드에서 변경한다."""
+        if not self.model_enabled or not self.is_running():
+            return False
+        with self.lock:
+            self.latest = None
+            self._calibration_request.set()
+        self._model_status('unavailable', '정면 기준 재보정 요청을 처리합니다.', ['baseline_unavailable'])
+        return True
+
+    def calibration_state(self):
+        with self.lock:
+            if self._calibration_request.is_set():
+                return {'status': 'collecting', 'last_reason_code': None, 'progress': 0.0}
+            if not self.latest:
+                return {'status': 'starting', 'last_reason_code': None, 'progress': 0.0}
+            return dict(self.latest.get('features', {}).get('head_calibration_diagnostics') or {})
 
     def set_developer_preview(self, enabled):
         """개발자용 원본 프레임·랜드마크 창의 표시 여부를 바꾼다.
