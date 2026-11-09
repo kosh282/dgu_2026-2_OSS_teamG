@@ -38,20 +38,52 @@ class ModelConfig:
     away_base_score: float = 70.0
     angle_penalty: float = 30.0
     duration_penalty: float = 40.0
+    scoring_method: str = "legacy"
+    huang_small_seconds: float = 3.0
+    huang_amplitude_degrees: float = 5.0
+    huang_max_yaw_degrees: float = 90.0
+    gaussian_sigma_pitch_degrees: float = 15.0
+    gaussian_sigma_yaw_degrees: float = 20.0
+    gaussian_down_transition_pitch_degrees: float = 10.0
+    gaussian_down_confirm_seconds: float = 0.3
+    gaussian_angle_mode: str = 'relative'
+    gaussian_pitch_deadband_degrees: float = 2.0
+    gaussian_pitch_small_angle_scale: float = 0.75
+
+    @classmethod
+    def gaussian(cls, **overrides):
+        """각도 공간 Gaussian의 실험 초기값. 논문의 시야 폭/높이 계수가 아니다."""
+        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-0.3",
+                      gaussian_angle_mode='softened',
+                      window_seconds=10.0)
+        values.update(overrides)
+        if values['gaussian_angle_mode'] == 'relative' and 'config_version' not in overrides:
+            values['config_version'] = 'gaussian-angle-time-0.2'
+        return cls(**values)
+
+    @classmethod
+    def huang(cls, **overrides):
+        """논문 실험값과 온라인 변형을 명시한 선택 설정. 기존 기본값은 유지한다."""
+        values = dict(scoring_method="huang", config_version="huang-online-0.2",
+                      window_seconds=30.0)
+        values.update(overrides)
+        return cls(**values)
 
     def __post_init__(self):
         """잘못된 설정으로 계산이 실패하지 않도록 자료형과 값의 순서를 확인합니다."""
         # Python은 참/거짓 값도 숫자로 취급하지만, 실험 설정에서는 이를 거부합니다.
         for item in fields(self):
             value = getattr(self, item.name)
-            if item.name in {"config_version", "feature_version"}:
+            if item.name in {"config_version", "feature_version", "scoring_method", "gaussian_angle_mode"}:
                 if not isinstance(value, str) or not value.strip():
                     raise ValueError(f"{item.name}: 비어 있지 않은 문자열이 필요합니다")
             elif (isinstance(value, bool) or not isinstance(value, (int, float))
                   or not math.isfinite(value) or value < 0):
                 raise ValueError(f"{item.name}: 유한한 0 이상의 숫자가 필요합니다")
         for name in ("window_seconds", "output_interval_seconds", "recovery_seconds",
-                     "front_full_seconds", "max_observation_hold_seconds"):
+                     "front_full_seconds", "max_observation_hold_seconds",
+                     "huang_small_seconds", "huang_max_yaw_degrees",
+                     "gaussian_sigma_pitch_degrees", "gaussian_sigma_yaw_degrees"):
             if getattr(self, name) == 0:
                 raise ValueError(f"{name}: 0보다 커야 합니다")
         if not (self.front_yaw_degrees < self.away_yaw_degrees
@@ -80,3 +112,19 @@ class ModelConfig:
             raise ValueError("관측률은 0~1이어야 합니다")
         if self.front_base_score + self.front_bonus > 100 or self.away_base_score > 100:
             raise ValueError("기준 행동 점수는 0~100 범위여야 합니다")
+        if self.scoring_method not in {"legacy", "huang", "gaussian"}:
+            raise ValueError("scoring_method는 legacy, huang 또는 gaussian이어야 합니다")
+        if self.gaussian_angle_mode not in {'relative', 'softened'}:
+            raise ValueError('gaussian_angle_mode는 relative 또는 softened여야 합니다')
+        # Pitch 완화를 실제 사용하는 모드에서만 정면 범위와의 관계를 검사한다.
+        if (self.scoring_method == 'gaussian' and self.gaussian_angle_mode == 'softened'
+                and not (0 <= self.gaussian_pitch_deadband_degrees < self.front_pitch_degrees
+                         and 0 < self.gaussian_pitch_small_angle_scale <= 1)):
+            raise ValueError('Gaussian Pitch 완화 설정이 유효하지 않습니다')
+        if self.scoring_method == 'gaussian' and not (
+                0 < self.gaussian_down_transition_pitch_degrees < self.down_pitch_degrees):
+            raise ValueError('Gaussian 하향 전이 기준은 0보다 크고 아래 보기 기준보다 작아야 합니다')
+        if self.scoring_method == "huang" and self.huang_small_seconds > self.window_seconds:
+            raise ValueError("Huang 작은 구간은 집계 구간 이하여야 합니다")
+        if self.scoring_method == "huang" and round(self.huang_small_seconds * 1000) < 1:
+            raise ValueError("Huang 작은 구간은 1ms 이상이어야 합니다")

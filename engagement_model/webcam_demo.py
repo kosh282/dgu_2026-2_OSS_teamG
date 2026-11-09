@@ -1,0 +1,745 @@
+"""기존 영상 파이프라인을 재사용하는 독립 모델 비교 실행기. 파일 저장은 하지 않는다.
+
+수동 보정·좌우 자동 진단:
+    python -B -m engagement_model.webcam_demo --yaw-diagnostic --single-model
+정면 준비 후 CALIBRATE 버튼/C/Space를 한 번 누른다. 이후 정면→본인 왼쪽→정면→
+본인 오른쪽→정면을 자동 안내한다. 각 구간은 기본 이동 2초, 유지 3초이며 유지 표본만
+요약한다. --diagnostic-move-seconds / --diagnostic-hold-seconds로 안내 시간을 조정한다.
+수치 기록은 메모리에만 있고 완료/중단 시 터미널 요약을 출력한다. Q/Esc로 종료하며,
+새 수동 보정은 이전 진단을 종료하고 메모리를 새로 시작한다. 자동 보정 옵션과 병용하지 않는다.
+"""
+
+import argparse
+from collections import deque
+from contextlib import ExitStack
+from copy import deepcopy
+from dataclasses import replace
+import json
+import math
+import textwrap
+import time
+
+import cv2
+import numpy as np
+
+from integration import IntegrationService
+from video_recognition.face_analysis import FaceAnalyzer
+from video_recognition.pose_analysis import PoseAnalyzer
+from video_recognition.integrated_analysis import VisionPipeline
+from video_recognition.head_calibration import HeadCalibration, AXES
+from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother, draw_landmarks
+from video_recognition.developer_view import render_video_frame
+from video_recognition.webcam_test_mac import WebcamCapture
+
+from .config import ModelConfig
+from .runtime import EngagementRuntime, ComparisonRuntime
+from .gaussian import GaussianRuntime, gaussian_angle_score, gaussian_score_angles
+from .input_adapter import HeadAngles
+
+
+WINDOW = 'Engagement comparison - C/Space calibrate | V overlay | Q quit'
+CALIBRATE_BUTTON = (16, 430, 290, 474)
+
+
+class CalibrationControls:
+    """마우스 콜백은 요청만 전달하고 실제 보정 시작은 분석 루프에서 수행한다."""
+
+    def __init__(self, requested=False):
+        self.requested = requested
+        self.last_key_request = None
+
+    def mouse(self, event, x, y, flags, userdata):
+        left, top, right, bottom = CALIBRATE_BUTTON
+        if event == cv2.EVENT_LBUTTONDOWN and left <= x <= right and top <= y <= bottom:
+            self.requested = True
+
+    def consume(self, key):
+        key_request = key in (ord('c'), ord('C'), ord(' '))
+        if key_request:
+            now = time.monotonic()
+            repeated = self.last_key_request is not None and now - self.last_key_request < 0.6
+            self.last_key_request = now
+            key_request = not repeated
+        requested = self.requested or key_request
+        self.requested = False
+        return requested
+
+REASON_HELP = {
+    'baseline_unavailable': 'Press C, face forward and hold still for 3 seconds.',
+    'relative_angles_unavailable': 'Relative angles need a valid calibration.',
+    'huang_warmup': 'Waiting for a complete 3-second interval.',
+    'gaussian_warmup': 'Waiting for elapsed observation time; Gaussian uses a 10-second time kernel.',
+    'huang_recovery_warmup': 'Front-facing resumed; collecting a fresh 3-second interval.',
+    'downward_activity_uncertain': 'Writing/reading cannot be identified; downward activity is deferred.',
+    'huang_degenerate_pitch_range': 'Pitch normalization denominator is zero; affected intervals deferred.',
+    'insufficient_scoreable_time': 'Too little scoreable time in the rolling window (minimum 70%).',
+    'face_not_found': 'No face detected. Waiting for return; a completed calibration is retained.',
+    'multiple_faces_unsupported': 'Only one face is supported.',
+}
+
+
+class WebcamHeadCalibration(HeadCalibration):
+    """단일 사용자 데모에서 미검출만으로 완료된 보정을 지우지 않는다.
+
+    신원 재식별은 하지 않는다. 사용자가 바뀌거나 카메라를 옮기면 C로 재보정한다.
+    단일 얼굴의 관측 실패는 기준점 손상이 아니다. 현재 상대각만 비운다.
+    다중 얼굴과 수집 중 검출 공백은 기존 보정기의 정책을 따른다.
+    """
+
+    def start(self):
+        super().start()
+        self.diagnostic_samples = []
+
+    def update(self, faces, capture_ms):
+        # 완료 시 상위 구현이 지우는 실제 채택 표본만 숫자로 복사한다. 보정 계산은 그대로다.
+        collecting = self.status == 'collecting'
+        previous = list(self.samples) if collecting else []
+        status = self._update(faces, capture_ms)
+        if collecting:
+            if status == 'ready':
+                angles = faces[0].get('head_angles_smoothed_degrees') or faces[0]['head_angles_degrees']
+                self.diagnostic_samples = deepcopy(previous + [(capture_ms, dict(angles))])
+            else:
+                self.diagnostic_samples = deepcopy(self.samples)
+        return status
+
+    def _update(self, faces, capture_ms):
+        if self.status == 'ready':
+            valid_baseline = isinstance(self.baseline, dict) and all(
+                not isinstance(self.baseline.get(axis), bool)
+                and isinstance(self.baseline.get(axis), (int, float))
+                and math.isfinite(self.baseline[axis])
+                and -180 <= self.baseline[axis] <= 180
+                for axis in AXES
+            )
+            if not valid_baseline:
+                self.invalidate('calibration_baseline_invalid')
+            else:
+                reason = self._input_reason(faces)
+                if reason and len(faces) <= 1:
+                    for face in faces:
+                        face['head_angles_relative_degrees'] = None
+                        face['head_angles_relative_raw_degrees'] = None
+                    self.last_reason_code = reason
+                    return self.status
+                self.last_reason_code = None
+        return super().update(faces, capture_ms)
+
+
+def diagnostic_angles(value):
+    """허용한 축 숫자만 복사한다. 미관측을 0도로 채우지 않는다."""
+    return {axis: (float(value[axis]) if isinstance(value, dict)
+                   and not isinstance(value.get(axis), bool)
+                   and isinstance(value.get(axis), (int, float))
+                   and math.isfinite(value[axis]) else None) for axis in AXES}
+
+
+def diagnostic_angle_stats(values):
+    """±180도 경계를 고려한 표본 평균·편차. 유지 지시가 실제 안정성을 보장하지는 않는다."""
+    values = [v for v in values if v is not None]
+    if not values:
+        return dict(count=0, mean=None, std=None, min=None, max=None)
+    x = sum(math.cos(math.radians(v)) for v in values) / len(values)
+    y = sum(math.sin(math.radians(v)) for v in values) / len(values)
+    mean = math.degrees(math.atan2(y, x)) if math.hypot(x, y) > 1e-6 else None
+    std = (math.sqrt(sum(((v-mean+180) % 360-180)**2 for v in values) / len(values))
+           if mean is not None else None)
+    return dict(count=len(values), mean=mean, std=std, min=min(values), max=max(values))
+
+
+class GuidedYawDiagnostic:
+    """수동 보정 후 구간을 자동 안내한다. 숫자만 메모리에 두고 계약에는 전달하지 않는다."""
+
+    STAGES = ('front_initial', 'left', 'front_after_left', 'right', 'front_after_right')
+    LABELS = ('FACE FORWARD', 'TURN TO YOUR LEFT', 'RETURN TO FRONT',
+              'TURN TO YOUR RIGHT', 'RETURN TO FRONT')
+
+    def __init__(self, move_seconds=2, hold_seconds=3):
+        if any(not math.isfinite(v) or v <= 0 or round(v*1000) < 1
+               for v in (move_seconds, hold_seconds)):
+            raise ValueError('진단 이동/유지 시간은 유한한 양수이며 최소 1ms여야 합니다')
+        self.move_ms, self.hold_ms = round(move_seconds*1000), round(hold_seconds*1000)
+        self.state = 'waiting'
+        self.rows = deque(maxlen=10000)
+        self.started_ms = None
+        self.baseline = None
+        self.calibration_samples = []
+        self.last_track = None
+        self.truncated = False
+        self.reported = False
+        self.report = None
+        self.model_info = None
+
+    def calibration_started(self):
+        if self.state == 'running':
+            self.finish('사용자 재보정으로 중단')
+        self.rows.clear()
+        self.calibration_samples = []
+        self.started_ms = None
+        self.baseline = None
+        self.last_track = None
+        self.truncated = self.reported = False
+        self.report = None
+        self.model_info = None
+        self.state = 'collecting'
+
+    def phase(self, timestamp):
+        if self.started_ms is None:
+            return None
+        elapsed = max(0, timestamp-self.started_ms)
+        span = self.move_ms+self.hold_ms
+        index, within = divmod(elapsed, span)
+        if index >= len(self.STAGES):
+            return None
+        moving = within < self.move_ms
+        remaining = (self.move_ms if moving else span)-within
+        return index, 'move' if moving else 'hold', remaining
+
+    def tick(self, timestamp):
+        if self.state == 'running' and self.phase(timestamp) is None:
+            self.finish('완료')
+
+    def update(self, feature, model, calibration):
+        timestamp = feature['start_ms']
+        if self.state == 'collecting':
+            self.calibration_samples = deepcopy(getattr(calibration, 'diagnostic_samples', []))
+        if self.state == 'collecting' and calibration.status == 'ready':
+            self.baseline = diagnostic_angles(calibration.baseline)
+            self.model_info = dict(model_id=model.model_id, model_version=model.model_version,
+                config_version=model.config.config_version, angle_mode=model.config.gaussian_angle_mode,
+                sigma_pitch=model.config.gaussian_sigma_pitch_degrees,
+                sigma_yaw=model.config.gaussian_sigma_yaw_degrees)
+            self.calibration_samples = deepcopy(getattr(calibration, 'diagnostic_samples', []))
+            self.started_ms = timestamp
+            self.state = 'running'
+            print('좌우 진단 시작: 정면 → 본인 왼쪽 → 정면 → 본인 오른쪽 → 정면. 비슷한 크기로 돌려주세요.', flush=True)
+        self.tick(timestamp)
+        if self.state != 'running':
+            return
+        if calibration.status != 'ready' or diagnostic_angles(calibration.baseline) != self.baseline:
+            self.finish('보정 무효화 또는 기준 변경으로 중단; 다시 수동 보정 필요')
+            return
+        index, phase, _ = self.phase(timestamp)
+        features = feature['features']
+        faces = features.get('faces', [])
+        face = faces[0] if len(faces) == 1 else {}
+        track = face.get('transient_track_key')
+        changed = self.last_track is not None and track is not None and track != self.last_track
+        if track is not None:
+            self.last_track = track
+        primitive = model.latest.get('gaussian_observation')
+        used = dict(pitch=primitive[0], yaw=primitive[1], roll=None) if primitive is not None else None
+        quality = face.get('quality') or {}
+        top_quality = feature.get('quality') or {}
+        row = dict(timestamp_ms=timestamp, stage=self.STAGES[index], phase=phase,
+            raw=diagnostic_angles(face.get('head_angles_degrees')),
+            smoothed=diagnostic_angles(face.get('head_angles_smoothed_degrees')),
+            relative=diagnostic_angles(face.get('head_angles_relative_degrees')),
+            used=diagnostic_angles(used), baseline=dict(self.baseline),
+            face_count=len(faces), tracking_quality=face.get('tracking_quality'),
+            track_available=track is not None, track_changed=changed,
+            quality_status=quality.get('status'), quality_reasons=list(quality.get('reason_codes', [])),
+            window_quality=top_quality.get('status'),
+            angle_source=face.get('head_angle_model_input_source'),
+            current_score=model.latest.get('current_direction_score'),
+            orientation=model.latest.get('orientation_state'), downward_status=model.latest.get('downward_status'))
+        # 단계 간 산술 일치만 진단한다. 관측의 물리적 정확성을 판정하지 않는다.
+        source = row['smoothed'] if row['angle_source'] != 'raw_fallback' else row['raw']
+        row['relative_formula_error'] = {axis: (
+            (row['relative'][axis] - ((source[axis]-self.baseline[axis]+180) % 360-180)+180) % 360-180
+            if all(v is not None for v in (source[axis], self.baseline[axis], row['relative'][axis])) else None)
+            for axis in AXES}
+        row['used_formula_error'] = dict(pitch=None, yaw=None)
+        if primitive is not None and all(row['relative'][axis] is not None for axis in AXES):
+            expected = gaussian_score_angles(HeadAngles(**row['relative']), model.config)
+            row['used_formula_error'] = {axis: row['used'][axis]-getattr(expected, axis) for axis in ('pitch', 'yaw')}
+        if len(self.rows) == self.rows.maxlen:
+            self.truncated = True
+        self.rows.append(row)
+
+    def screen_lines(self, timestamp):
+        if self.state == 'waiting':
+            return ['YAW TEST: Face forward, then click CALIBRATE or press C/Space.',
+                    'Keep camera fixed. Manual calibration required.']
+        if self.state == 'collecting':
+            return ['YAW TEST: CALIBRATING - keep facing forward and stay still.']
+        if self.state == 'running':
+            phase = self.phase(timestamp)
+            if phase is None:
+                return ['YAW TEST: finishing...']
+            index, part, remaining = phase
+            return [f'YAW TEST {index+1}/5: {self.LABELS[index]}',
+                    f'{"MOVE / SETTLE" if part == "move" else "HOLD STILL"}: {math.ceil(remaining/1000)}s',
+                    'Match left/right turn size; follow instructions, do not recalibrate.']
+        return ['YAW TEST FINISHED - summary printed in terminal.',
+                'C/Space or CALIBRATE starts a new trial. Q/Esc quits.']
+
+    def summary(self, reason):
+        stages = {}
+        for name in self.STAGES:
+            rows = [r for r in self.rows if r['stage'] == name]
+            hold = [r for r in rows if r['phase'] == 'hold']
+            valid = [r for r in hold if r['face_count'] == 1 and r['quality_status'] in ('valid', 'partial')
+                     and r['window_quality'] in ('valid', 'partial')]
+            scores = [r['current_score'] for r in valid if r['current_score'] is not None]
+            stages[name] = dict(move_count=sum(r['phase']=='move' for r in rows), hold_count=len(hold),
+                valid_hold_count=len(valid), track_changes=sum(r['track_changed'] for r in rows),
+                score_mean=sum(scores)/len(scores) if scores else None,
+                score_valid_ratio=len(scores)/len(hold) if hold else None,
+                channels={channel: {axis: diagnostic_angle_stats([r[channel][axis] for r in valid])
+                                    for axis in AXES} for channel in ('raw', 'smoothed', 'relative', 'used')})
+        pairs = {}
+        for channel in ('raw', 'smoothed', 'relative', 'used'):
+            means = [stages[s]['channels'][channel]['yaw']['mean'] for s in ('front_initial', 'left', 'right')]
+            front, left, right = means
+            dl = (left-front+180) % 360-180 if left is not None and front is not None else None
+            dr = (right-front+180) % 360-180 if right is not None and front is not None else None
+            pairs[channel] = dict(front_mean=front, left_mean=left, right_mean=right,
+                left_deviation_from_front=dl, right_deviation_from_front=dr,
+                absolute_deviation_difference=abs(abs(dl)-abs(dr)) if dl is not None and dr is not None else None,
+                absolute_mean_difference=abs(abs(left)-abs(right)) if left is not None and right is not None else None,
+                opposite_sides=dl*dr < 0 if dl is not None and dr is not None else None)
+        errors = {}
+        for key in ('relative_formula_error', 'used_formula_error'):
+            values = [abs(v) for row in self.rows for v in row[key].values() if v is not None]
+            errors[key+'_max'] = max(values) if values else None
+        front = stages['front_initial']['channels']['smoothed']['yaw']['mean']
+        baseline_yaw = self.baseline.get('yaw') if self.baseline else None
+        errors['baseline_minus_initial_front_yaw'] = ((baseline_yaw-front+180) % 360-180
+            if baseline_yaw is not None and front is not None else None)
+        left_score, right_score = stages['left']['score_mean'], stages['right']['score_mean']
+        returns = {}
+        for name in ('front_initial', 'front_after_left', 'front_after_right'):
+            values = [r['relative']['yaw'] for r in self.rows if r['stage'] == name and r['phase'] == 'hold'
+                      and r['face_count'] == 1 and r['quality_status'] in ('valid', 'partial')
+                      and r['window_quality'] in ('valid', 'partial') and r['relative']['yaw'] is not None]
+            returns[name] = {**stages[name]['channels']['relative']['yaw'],
+                'mean_absolute_error_from_zero': sum(abs(v) for v in values)/len(values) if values else None}
+        return dict(reason=reason, completed=reason=='완료', truncated=self.truncated,
+            all_stages_have_valid_hold_observations=all(s['valid_hold_count'] > 0 for s in stages.values()),
+            timing=dict(move_seconds=self.move_ms/1000, hold_seconds=self.hold_ms/1000),
+            model=self.model_info,
+            baseline=self.baseline, calibration_count=len(self.calibration_samples),
+            calibration_distribution={axis: diagnostic_angle_stats([sample[1].get(axis) for sample in self.calibration_samples])
+                                      for axis in AXES}, stages=stages, yaw_comparison=pairs,
+            front_return_yaw=returns,
+            score_mean_difference=abs(left_score-right_score) if left_score is not None and right_score is not None else None,
+            consistency=errors)
+
+    def finish(self, reason):
+        if self.reported:
+            return
+        self.reported = True
+        self.state = 'done'
+        self.report = self.summary(reason)
+        print('\n=== 좌우 Yaw 진단 요약 (메모리 수치; 파일 저장 없음) ===', flush=True)
+        for stage, stats in self.report['stages'].items():
+            print(f"{stage}: hold={stats['hold_count']}, valid={stats['valid_hold_count']}, "
+                  f"score_mean={stats['score_mean']}, score_valid_ratio={stats['score_valid_ratio']}, "
+                  f"track_changes={stats['track_changes']}", flush=True)
+            for channel, axes in stats['channels'].items():
+                text = ' / '.join(f"{axis}:mean={axes[axis]['mean']},std={axes[axis]['std']},n={axes[axis]['count']}" for axis in AXES)
+                print(f'  {channel} {text}', flush=True)
+        print(json.dumps({key: value for key, value in self.report.items() if key != 'stages'},
+                         ensure_ascii=False, indent=2, allow_nan=False), flush=True)
+        print('해석: raw/smoothed는 최초 정면 대비 편차로 좌우를 비교하세요. 0도 자체가 정면이라는 보장은 없습니다.\n'
+              'relative_formula_error는 보정 산술, used_formula_error는 완화 산술의 일치도입니다.\n'
+              'baseline_minus_initial_front_yaw와 front_return_yaw로 정면 재현성을 확인하세요.\n'
+              'hold는 유지 안내 구간입니다. 표준편차·표본 수·결측·추적 변경도 함께 보세요.\n'
+              '진짜 좌우 회전량은 측정하지 않았으므로 원본 비대칭을 solvePnP 오류로 확정할 수 없습니다.\n'
+              'rvec/tvec·재투영 오차는 현재 입력에 없어 이 진단으로 확인하지 못합니다.\n'
+              'used.roll=null: Gaussian은 Roll을 점수에 사용하지 않습니다.', flush=True)
+
+
+def model_lines(name, result):
+    """실제 score만 표시하며 화면용 과거 점수를 현재 점수로 대체하지 않는다."""
+    score = result.get('score')
+    value = f'{score:.1f}/100' if score is not None else 'DEFERRED (no current score)'
+    label = '10s aggregate' if 'current_direction_score' in result else 'score'
+    lines = [f'{name} {label}: {value}',
+             f"state={result.get('orientation_state')} | status={result.get('status')}",
+             f"front={result.get('front_seconds', 0):.1f}s  away={result.get('away_seconds', 0):.1f}s  down={result.get('looking_down_seconds', 0):.1f}s"]
+    reasons = result.get('reason_codes', [])
+    lines.append('Reasons: ' + (', '.join(reasons) or 'none'))
+    lines.extend(REASON_HELP[reason] for reason in reasons if reason in REASON_HELP)
+    if 'current_direction_score' in result:
+        current = result['current_direction_score']
+        lines.insert(0, f'{name} current direction: {current:.1f}/100' if current is not None
+                     else f'{name} current direction: unavailable')
+    angles = result.get('source_angles') or result.get('angles')
+    if angles:
+        lines.append(f"Relative pitch/yaw: {angles['pitch']:.2f}/{angles['yaw']:.2f} deg")
+    return lines
+
+
+class GaussianDiagnostics:
+    """실제 입력과 축별 기여를 메모리에서만 진단한다. 산정·JSON은 변경하지 않는다."""
+
+    def __init__(self):
+        self.previous = None
+        self.drops = deque(maxlen=100)
+        self.lines = []
+        self.events = deque(maxlen=100)
+        self.last_track = None
+        self.previous_snapshot = None
+
+    def reset(self):
+        self.previous = None
+        self.drops.clear()
+        self.lines = []
+        self.events.clear()
+        self.last_track = None
+        self.previous_snapshot = None
+
+    def _show_recent_event(self, timestamp):
+        while self.events and self.events[0]['timestamp_ms'] < timestamp - 8000:
+            self.events.popleft()
+        if self.events:
+            event = max(self.events, key=lambda item: item['drop'])
+            self.lines.append(f"HISTORICAL DROP (8s hold): t={event['timestamp_ms']}ms drop={event['drop']:.1f}; driver={event['driver']}")
+            for label in ('before', 'after'):
+                snapshot = event[label]
+                self.lines.append(f"  {label}: track={snapshot['track']} baseline={snapshot['baseline']} current={snapshot['current']}")
+                self.lines.append(f"  raw={snapshot['raw']} smooth={snapshot['smoothed']}")
+                self.lines.append(f"  relative={snapshot['relative']} USED={snapshot['used']} terms={snapshot['terms']}")
+
+    def update(self, feature, model, *, baseline=None):
+        result, config = model.latest, model.config
+        timestamp = feature['start_ms']
+        features = feature['features']
+        faces = features.get('faces', [])
+        face = faces[0] if len(faces) == 1 else {}
+        track = face.get('transient_track_key')
+        track_changed = self.last_track is not None and track is not None and track != self.last_track
+        if track is not None:
+            self.last_track = track
+        self.lines = [f"Gaussian actual input | t={timestamp}ms | calibration={features.get('head_calibration_status')}",
+                      f'Sigma pitch/yaw: {config.gaussian_sigma_pitch_degrees:g}/{config.gaussian_sigma_yaw_degrees:g} deg (unchanged)']
+        self.lines.append(f'Baseline P/Y: {baseline.get("pitch")}/{baseline.get("yaw")} deg' if baseline else 'Baseline P/Y: unavailable')
+        self.lines.append(f'Track key: {track}; changed={track_changed}')
+        for label, key in [('Raw', 'head_angles_degrees'),
+                           ('Smoothed', 'head_angles_smoothed_degrees'),
+                           ('Relative', 'head_angles_relative_degrees')]:
+            angles = face.get(key)
+            self.lines.append(f'{label} P/Y: ' + (
+                f"{angles['pitch']:.2f}/{angles['yaw']:.2f} deg" if angles else 'unavailable'))
+        primitive = result.get('gaussian_observation')
+        if primitive is None:
+            self.previous = None
+            self.drops.clear()
+            self.lines.append('Gaussian input/current/candidates: unavailable (not scored; no stale values)')
+            self.previous_snapshot = None
+            self._show_recent_event(timestamp)
+            return
+        pitch, yaw = primitive
+        p_term = (pitch / config.gaussian_sigma_pitch_degrees) ** 2
+        y_term = (yaw / config.gaussian_sigma_yaw_degrees) ** 2
+        total = p_term + y_term
+        snapshot = deepcopy(dict(track=track, baseline=baseline,
+            current=result['current_direction_score'], used=primitive, terms=(p_term, y_term),
+            raw=face.get('head_angles_degrees'), smoothed=face.get('head_angles_smoothed_degrees'),
+            relative=face.get('head_angles_relative_degrees')))
+        dominant = 'equal' if p_term == y_term else ('Pitch' if p_term > y_term else 'Yaw')
+        self.lines.extend([
+            f'USED P/Y: {pitch:.2f}/{yaw:.2f} deg (angle mode={config.gaussian_angle_mode})',
+            f"Current: {result['current_direction_score']:.1f}/100 | 10s: {result.get('score')}",
+            f'Exponent terms (P/sigmaP)^2={p_term:.3f}; (Y/sigmaY)^2={y_term:.3f}',
+            f'Current attenuation: {dominant}; P/Y share=' +
+            (f'{100*p_term/total:.1f}/{100*y_term/total:.1f}%' if total else '0/0% (neutral)'),
+        ])
+        candidates = [gaussian_angle_score(HeadAngles(pitch, yaw, 0),
+                      replace(config, gaussian_sigma_yaw_degrees=sigma)) for sigma in (20, 30, 40)]
+        self.lines.append('SAME INPUT sigmaYaw 20/30/40: ' + '/'.join(f'{s:.2f}' for s in candidates))
+        previous = self.previous
+        if (previous is not None and track == previous[1]
+                and 0 < timestamp - previous[0] <= config.max_observation_hold_seconds * 1000):
+            _, _, old_p, old_y, old_pt, old_yt, old_score = previous
+            dp = (pitch - old_p + 180) % 360 - 180
+            dy = (yaw - old_y + 180) % 360 - 180
+            dpt, dyt = p_term - old_pt, y_term - old_yt
+            drop = old_score - result['current_direction_score']
+            driver = 'equal' if dpt == dyt else ('Pitch' if dpt > dyt else 'Yaw')
+            self.lines.append(f'Delta P/Y={dp:+.2f}/{dy:+.2f} deg in {timestamp-previous[0]}ms; score={-drop:+.1f}')
+            if drop > 0:
+                self.drops.append((timestamp, drop, driver, dpt, dyt))
+                self.events.append(dict(timestamp_ms=timestamp, drop=drop, driver=driver,
+                                        before=self.previous_snapshot, after=snapshot))
+        else:
+            self.drops.clear()
+            self.lines.append('Delta unavailable: first valid input, gap or track change')
+        while self.drops and self.drops[0][0] < timestamp - 5000:
+            self.drops.popleft()
+        if self.drops:
+            at, drop, driver, dpt, dyt = max(self.drops, key=lambda item: item[1])
+            self.lines.append(f'Largest drop in last 5s: {drop:.1f} at {at}ms; driver={driver}; delta terms P/Y={dpt:+.3f}/{dyt:+.3f}')
+        self.previous = (timestamp, track, pitch, yaw, p_term, y_term, result['current_direction_score'])
+        self.previous_snapshot = snapshot
+        self._show_recent_event(timestamp)
+
+
+def panel_lines(feature, models, *, primary='gaussian', debug=False, diagnostics=None):
+    """일반 화면은 현재 점수만, 집계/입력/사유/모델 비교는 디버그에 표시한다."""
+    result = models[primary].latest
+    current = result.get('current_direction_score') if primary == 'gaussian' else result.get('score')
+    label = 'Current direction' if primary == 'gaussian' else 'Model score'
+    value = f'{current:.1f}/100' if current is not None else 'UNAVAILABLE'
+    calibration = feature['features'].get('head_calibration_status', 'waiting')
+    lines = [f'Model: {primary}', f'{label}: {value}',
+             f"Behavior: {result.get('orientation_state', 'not_observable')}",
+             f'Calibration: {calibration}',
+             'Click video window, C/Space: calibrate | D: debug | Q/Esc: quit']
+    if primary == 'gaussian':
+        aggregate = result.get('score')
+        angles = result.get('source_angles')
+        lines[2:2] = [
+            f'10s score: {aggregate:.1f}/100' if aggregate is not None else '10s score: UNAVAILABLE',
+            f"Relative P/Y: {angles['pitch']:.1f}/{angles['yaw']:.1f} deg" if angles else 'Relative P/Y: UNAVAILABLE',
+            f'Sigma P/Y: {models[primary].config.gaussian_sigma_pitch_degrees:g}/{models[primary].config.gaussian_sigma_yaw_degrees:g} deg']
+    if result.get('downward_status'):
+        lines.append(f"Downward: {result['downward_status']} (activity unknown)")
+    calibration_diagnostics = feature['features'].get('head_calibration_diagnostics', {})
+    reason = calibration_diagnostics.get('last_reason_code')
+    if calibration == 'collecting':
+        lines.append(f"Calibration progress: {100 * calibration_diagnostics.get('progress', 0):.0f}% | hold face forward")
+        if reason:
+            lines.append(f'Calibration input issue: {reason}')
+    if calibration == 'ready' and not feature['features'].get('faces'):
+        lines.append('No face detected; calibration retained. Waiting for return.')
+    elif calibration == 'waiting':
+        lines.append(f'Recalibration required: {reason or "baseline_unavailable"}. Press C.')
+    elif calibration == 'ready' and reason:
+        lines.append(f'Observation unavailable: {reason}. Calibration retained.')
+    if debug:
+        lines.extend(['', 'DEBUG: score means temporal aggregate; current direction is separate.'])
+        if diagnostics is not None:
+            lines.extend(diagnostics.lines)
+        for name, model in models.items():
+            lines.extend(model_lines(name, model.latest))
+            if model.config.scoring_method == 'gaussian':
+                sampling = model.sampling_diagnostics()
+                lines.append(f'Sigma P/Y: {model.config.gaussian_sigma_pitch_degrees}/{model.config.gaussian_sigma_yaw_degrees} deg (experimental)')
+                lines.append(f"Sample intervals: {sampling['min_interval_ms']}..{sampling['max_interval_ms']} ms; regular={sampling['regular']}")
+            lines.append('')
+    return lines
+
+
+def render_tracking(frame, feature, landmarks, *, show_overlay=True):
+    """현재 프레임의 검출만 표시하며 과거 얼굴 위치를 남기지 않는다."""
+    faces = feature['features'].get('faces', [])
+    current_landmarks = landmarks if faces else []
+    preview = (draw_landmarks(frame, current_landmarks, [])
+               if show_overlay else frame.copy())
+    height, width = preview.shape[:2]
+    if not faces:
+        label, color = 'FACE NOT DETECTED - waiting for return', (0, 180, 255)
+    elif len(faces) > 1:
+        label, color = 'MULTIPLE FACES - scoring unavailable', (0, 180, 255)
+    elif faces[0].get('head_angles_relative_degrees') is None:
+        label, color = 'FACE DETECTED - waiting for valid calibrated pose', (0, 180, 255)
+    else:
+        label, color = 'FACE DETECTED - pose available', (40, 230, 100)
+    if show_overlay:
+        for points in current_landmarks:
+            valid = [(p[0], p[1]) for p in points
+                     if len(p) >= 2 and math.isfinite(p[0]) and math.isfinite(p[1])
+                     and 0 <= p[0] < 1 and 0 <= p[1] < 1]
+            if valid:
+                xs, ys = zip(*valid)
+                cv2.rectangle(preview, (int(min(xs) * width), int(min(ys) * height)),
+                              (int(max(xs) * width), int(max(ys) * height)), color, 2)
+    cv2.putText(preview, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX,
+                .5, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(preview, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX,
+                .5, color, 1, cv2.LINE_AA)
+    return preview
+
+
+def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_overlay,
+                 primary='gaussian', debug=False, diagnostics=None, guided=None):
+    """기존 랜드마크 렌더러를 재사용하고 점수 설명만 독립 패널에 표시한다."""
+    preview = (render_video_frame(frame, feature, face.last_landmarks, pose.last_landmarks,
+                                  overlay_smoother, show_overlay=show_overlay)
+               if debug else render_tracking(frame, feature, face.last_landmarks,
+                                              show_overlay=show_overlay))
+    height, width = preview.shape[:2]
+    scale = min(640 / width, 480 / height)
+    preview = cv2.resize(preview, (max(1, round(width * scale)), max(1, round(height * scale))))
+    lines = panel_lines(feature, models, primary=primary, debug=debug, diagnostics=diagnostics)
+    wrapped = [part for line in lines for part in (textwrap.wrap(line, 83) or [''])]
+    line_height = 23 if debug else 48
+    canvas = np.zeros((max(500, 32 + len(wrapped) * line_height), 1400, 3), dtype=np.uint8)
+    canvas[:preview.shape[0], :preview.shape[1]] = preview
+    for row, line in enumerate(wrapped):
+        scale_text = .47 if debug else (.9 if row == 1 else .65)
+        cv2.putText(canvas, line, (655, 30 + row * line_height), cv2.FONT_HERSHEY_SIMPLEX,
+                    scale_text, (235, 235, 235), 1, cv2.LINE_AA)
+    left, top, right, bottom = CALIBRATE_BUTTON
+    cv2.rectangle(canvas, (left, top), (right, bottom), (80, 70, 20), -1)
+    cv2.putText(canvas, 'CLICK TO CALIBRATE', (left + 12, top + 28),
+                cv2.FONT_HERSHEY_SIMPLEX, .65, (255, 255, 255), 1, cv2.LINE_AA)
+    if guided is not None:
+        # 고정 크기 안내를 영상 영역에 그려 상세 디버그 행 수와 관계없이 읽을 수 있게 한다.
+        cv2.rectangle(canvas, (0, 345), (640, 425), (20, 20, 20), -1)
+        for index, line in enumerate(guided.screen_lines(feature['start_ms'])):
+            cv2.putText(canvas, line, (10, 366+index*23), cv2.FONT_HERSHEY_SIMPLEX,
+                        .47, (60, 240, 255), 1, cv2.LINE_AA)
+    return canvas
+
+
+def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gaussian_config=None,
+        debug=False, calibrate=False, yaw_diagnostic=False, diagnostic_move_seconds=2,
+        diagnostic_hold_seconds=3):
+    """카메라·분석기·독립 세션을 소유하며 오류/종료 시 자원을 반환한다."""
+    if not math.isfinite(duration) or duration < 0:
+        raise ValueError('duration은 유한한 0 이상의 초여야 합니다.')
+    if primary not in {'legacy', 'huang', 'gaussian'}:
+        raise ValueError('primary는 legacy, huang 또는 gaussian이어야 합니다')
+    if yaw_diagnostic and (primary != 'gaussian' or calibrate):
+        raise ValueError('좌우 진단은 Gaussian 모델에서 수동 보정으로 실행하세요 (--calibrate 제외)')
+    guided = GuidedYawDiagnostic(diagnostic_move_seconds, diagnostic_hold_seconds) if yaw_diagnostic else None
+    if compare:
+        runtime = ComparisonRuntime(primary, include_gaussian=True, gaussian_config=gaussian_config)
+    elif primary == 'gaussian':
+        runtime = GaussianRuntime(gaussian_config)
+    else:
+        runtime = EngagementRuntime(ModelConfig.huang() if primary == 'huang' else ModelConfig())
+    models = runtime.runtimes if compare else {primary: runtime}
+    diagnostics = GaussianDiagnostics() if 'gaussian' in models else None
+    frames = 0
+    try:
+        with ExitStack() as resources:
+            camera = cv2.VideoCapture(camera_index)
+            resources.callback(camera.release)
+            if not camera.isOpened():
+                raise RuntimeError(f'웹캠 {camera_index}을 열 수 없습니다. 카메라 권한과 다른 앱의 사용 여부를 확인하세요.')
+            print(f'Webcam {camera_index} opened; initializing MediaPipe.', flush=True)
+            service = IntegrationService()
+            sid = service.start_session('Huang webcam test', config={
+                'config_version': runtime.config.config_version,
+                'participation_model': {'model_id': runtime.model_id, 'model_version': runtime.model_version},
+                'stt_model': None,
+            })
+            resources.callback(service.stop_session, sid)
+            face = FaceAnalyzer(show_landmarks=True)
+            resources.callback(face.close)
+            pose = PoseAnalyzer(show_landmarks=True)
+            resources.callback(pose.close)
+            capture = PreviewCapture(WebcamCapture(camera))
+            pipeline = VisionPipeline(service, sid, capture, face,
+                                      model_consumer=runtime, pose_analyzer=pose)
+            pipeline.head_calibration = WebcamHeadCalibration()
+            # 분석기/카메라 종료는 ExitStack이 담당한다. pipeline은 메모리 후처리만 소유한다.
+            resources.callback(pipeline.face_postprocessor.reset)
+            smoother = LandmarkOverlaySmoother()
+            cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+            resources.callback(close_window)
+            cv2.resizeWindow(WINDOW, 1200, 650)
+            controls = CalibrationControls(calibrate)
+            cv2.setMouseCallback(WINDOW, controls.mouse)
+            started = time.monotonic()
+            next_report = 0.0
+            show_overlay = True
+            print('Click video window; C/Space: calibrate, D: debug, V: overlay, Q/Esc: quit. No files are saved.', flush=True)
+            if guided is not None:
+                print('수동 좌우 진단: 정면을 보고 준비한 뒤 CALIBRATE 버튼 또는 C/Space를 한 번 누르세요.\n'
+                      '화면 안내의 LEFT/RIGHT는 본인의 좌우입니다. 보정 후 5구간이 자동 진행됩니다.\n'
+                      '카메라를 고정하고 좌우를 비슷한 크기로 돌려주세요. 숫자만 메모리에 보관합니다.', flush=True)
+            while not duration or time.monotonic() - started < duration:
+                if controls.consume(-1) and pipeline.head_calibration.status != 'collecting':
+                    if guided is not None:
+                        guided.calibration_started()
+                    pipeline.head_calibration.start()
+                    for model in models.values():
+                        model.reset()
+                    if diagnostics is not None:
+                        diagnostics.reset()
+                    print('Calibration started: hold face forward for 3 seconds.', flush=True)
+                if guided is not None:
+                    guided.tick(service.elapsed_ms(sid))
+                feature = pipeline.process_one()
+                if feature is not None:
+                    frames += 1
+                    if guided is not None:
+                        guided.update(feature, models['gaussian'], pipeline.head_calibration)
+                    if diagnostics is not None:
+                        diagnostics.update(feature, models['gaussian'], baseline=pipeline.head_calibration.baseline)
+                    panel = render_panel(capture.last_frame, feature, models,
+                                         overlay_smoother=smoother, face=face, pose=pose,
+                                         show_overlay=show_overlay, primary=primary, debug=debug,
+                                         diagnostics=diagnostics, guided=guided)
+                    cv2.imshow(WINDOW, panel)
+                    if debug and time.monotonic() >= next_report:
+                        print(json.dumps({name: {'score': model.latest['score'],
+                                                'state': model.latest['orientation_state'],
+                                                'reasons': model.latest['reason_codes']}
+                                          for name, model in models.items()}), flush=True)
+                        next_report = time.monotonic() + 2
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord('q'), ord('Q'), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+                if controls.consume(key):
+                    controls.requested = True
+                elif key in (ord('v'), ord('V')):
+                    show_overlay = not show_overlay
+                elif key in (ord('d'), ord('D')):
+                    debug = not debug
+    finally:
+        if guided is not None and guided.state in {'collecting', 'running'}:
+            guided.finish('종료 또는 오류로 진단 미완료')
+        print(f'Analyzed frames: {frames}', flush=True)
+        if compare:
+            print('Aggregate frame-based comparison (not accuracy): ' + json.dumps(runtime.summary()), flush=True)
+
+
+def close_window():
+    """사용자가 이미 닫았더라도 이 실행기의 창만 안전하게 정리한다."""
+    try:
+        cv2.destroyWindow(WINDOW)
+    except cv2.error:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description='참여도 모델 독립 웹캠 비교 (legacy/Huang/Gaussian, 저장 없음)')
+    parser.add_argument('--camera', type=int, default=0)
+    parser.add_argument('--duration', type=float, default=0, help='자동 종료 초, 기본 0은 수동 종료')
+    parser.add_argument('--huang-only', action='store_true', help='기존 모델 비교 없이 Huang만 표시')
+    parser.add_argument('--model', choices=('legacy', 'huang', 'gaussian'), default=None)
+    parser.add_argument('--debug', action='store_true', help='집계 점수·상대각·사유·모델 비교 표시')
+    parser.add_argument('--calibrate', action='store_true', help='키 입력 없이 시작할 때 정면 보정')
+    parser.add_argument('--yaw-diagnostic', action='store_true',
+                        help='수동 보정 후 정면/왼쪽/정면/오른쪽/정면 자동 수치 진단 (저장 없음)')
+    parser.add_argument('--diagnostic-move-seconds', type=float, default=2, help='각 구간 자세 이동·정착 시간 (기본 2초)')
+    parser.add_argument('--diagnostic-hold-seconds', type=float, default=3, help='각 구간 유지 표본 시간 (기본 3초)')
+    parser.add_argument('--single-model', action='store_true', help='선택한 모델만 표시')
+    parser.add_argument('--sigma-pitch', type=float, default=15, help='Gaussian sigma pitch (도, 실험 초기값)')
+    parser.add_argument('--sigma-yaw', type=float, default=20, help='Gaussian sigma yaw (도, 실험 초기값)')
+    parser.add_argument('--gaussian-angle-mode', choices=('relative', 'softened'), default='softened',
+                        help='relative: 이전 Gaussian 입력, softened: 중립 부근 완화 (기본)')
+    args = parser.parse_args()
+    args.model = args.model or ('huang' if args.huang_only else 'gaussian')
+    if not math.isfinite(args.duration) or args.duration < 0:
+        parser.error('--duration은 유한한 0 이상의 값이어야 합니다.')
+    if args.huang_only and args.model != 'huang':
+        parser.error('--huang-only는 --model huang과 함께 사용하세요.')
+    if args.yaw_diagnostic and (args.model != 'gaussian' or args.calibrate):
+        parser.error('--yaw-diagnostic은 Gaussian에서 수동 보정합니다. --calibrate를 제외하세요.')
+    try:
+        config = ModelConfig.gaussian(gaussian_sigma_pitch_degrees=args.sigma_pitch,
+                                      gaussian_sigma_yaw_degrees=args.sigma_yaw,
+                                      gaussian_angle_mode=args.gaussian_angle_mode)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        run(args.camera, args.duration, not (args.huang_only or args.single_model),
+            primary=args.model, gaussian_config=config, debug=args.debug, calibrate=args.calibrate,
+            yaw_diagnostic=args.yaw_diagnostic, diagnostic_move_seconds=args.diagnostic_move_seconds,
+            diagnostic_hold_seconds=args.diagnostic_hold_seconds)
+    except KeyboardInterrupt:
+        print('웹캠 테스트를 종료합니다.')
+    except Exception as exc:
+        parser.exit(1, f'웹캠 실행 실패: {type(exc).__name__}: {exc}\n')
+
+
+if __name__ == '__main__':
+    main()
