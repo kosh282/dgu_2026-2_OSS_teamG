@@ -90,6 +90,7 @@ class FaceAnalyzer:
         self.last_landmarks = []
         # 얼굴 배열 순서는 프레임마다 달라질 수 있으므로, 후처리기가 임시 위치 추적에 쓸 중심점도 함께 보관한다.
         self.last_face_centers = []
+        self.last_face_boxes = []
 
     def analyze(self, frame):
         import cv2
@@ -108,6 +109,12 @@ class FaceAnalyzer:
             (float(sum(point.x for point in points) / len(points)),
              float(sum(point.y for point in points) / len(points)))
             for points in result.face_landmarks if points
+        ]
+        # 재식별 표시용 현재 프레임 경계. 특징 사전/JSON에는 넣지 않는다.
+        self.last_face_boxes = [
+            [max(0., min(p.x for p in points)), max(0., min(p.y for p in points)),
+             min(1., max(p.x for p in points)), min(1., max(p.y for p in points))]
+            for points in result.face_landmarks
         ]
         # 원본은 첫 얼굴 하나만 사용했지만 수업 창에서는 검출된 모든 얼굴을 처리한다.
         # 배열의 순서는 매 프레임 바뀔 수 있으므로 참가자 ID로 사용하면 안 된다.

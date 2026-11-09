@@ -1,5 +1,6 @@
-"""동의한 단일 인물 시험용 메모리 재식별. 결과를 이벤트/로그에 넣지 않는다."""
+"""동의한 참가자의 세션 내 메모리 재식별. 결과를 이벤트/로그에 넣지 않는다."""
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -100,6 +101,82 @@ class IdentityGallery:
         return result
 
 
+class MultiIdentityGallery(IdentityGallery):
+    """같은 프레임의 후보를 함께 판정해 중복 ID와 등록 순서 의존을 막는다."""
+
+    def __init__(self):
+        super().__init__()
+        self.pending_tracks = {}
+
+    def clear(self):
+        super().clear()
+        self.pending_tracks.clear()
+
+    def observe_many(self, embeddings, timestamp_ms, reserved):
+        results = {key: {'identity': None, 'state': 'deferred'} for key in embeddings}
+        if self.last_ms is not None and timestamp_ms <= self.last_ms:
+            self.pending_tracks.clear()
+            return results
+        self.last_ms = timestamp_ms
+        for identity, entry in list(self.entries.items()):
+            if identity not in reserved and timestamp_ms - entry['last_seen'] > self.retention_ms:
+                del self.entries[identity]
+        vectors = {key: self._vector(value) for key, value in embeddings.items()}
+        candidates = {}
+        for key, vector in vectors.items():
+            if vector is None or any(e['vector'].shape != vector.shape for e in self.entries.values()):
+                continue
+            scores = sorted(((float(vector @ e['vector']), identity)
+                             for identity, e in self.entries.items()), reverse=True)
+            best, candidate = scores[0] if scores else (-1, None)
+            if scores and best >= self.threshold:
+                if candidate in reserved or (len(scores) > 1 and best - scores[1][0] < self.margin):
+                    continue
+            elif best >= self.new_threshold:
+                continue
+            else:
+                candidate = None
+            candidates[key] = candidate
+        # 같은 ID 후보를 요구하거나 서로 비슷한 미확인 얼굴은 모두 보류한다.
+        conflicts = set()
+        keys = list(candidates)
+        for i, key in enumerate(keys):
+            for other in keys[i + 1:]:
+                if (candidates[key] is not None and candidates[key] == candidates[other]) or (
+                        vectors[key].shape == vectors[other].shape
+                        and float(vectors[key] @ vectors[other]) >= self.new_threshold):
+                    conflicts.update((key, other))
+        next_pending = {}
+        for key, candidate in candidates.items():
+            if key in conflicts:
+                continue
+            vector = vectors[key]
+            previous = self.pending_tracks.get(key)
+            continuous = (previous is not None and previous['candidate'] == candidate
+                          and 0 < timestamp_ms - previous['time'] <= 1500
+                          and previous['vector'].shape == vector.shape
+                          and float(previous['vector'] @ vector) >= self.threshold)
+            count = previous['count'] + 1 if continuous else 1
+            next_pending[key] = {'candidate': candidate, 'time': timestamp_ms,
+                                 'vector': vector.copy(), 'count': count}
+            if count < self.confirmations:
+                results[key]['state'] = 'confirming'
+                continue
+            if candidate is None:
+                if len(self.entries) >= self.max_identities:
+                    continue
+                candidate = f'S{self.next_id:03d}'
+                self.next_id += 1
+                self.entries[candidate] = {'vector': vector.copy(), 'last_seen': timestamp_ms}
+                state = 'new'
+            else:
+                state = 'reconnected'
+                self.entries[candidate]['last_seen'] = timestamp_ms
+            results[key] = {'identity': candidate, 'state': state}
+        self.pending_tracks = next_pending
+        return results
+
+
 class FaceReidentifier:
     """InsightFace 추론 결과를 표시 전용 ID에 연결하며 디스크에 기록하지 않는다."""
 
@@ -114,48 +191,131 @@ class FaceReidentifier:
                                 allowed_modules=['detection', 'recognition'],
                                 providers=['CPUExecutionProvider'])
         self.app.prepare(ctx_id=-1, det_size=(640, 640))
-        self.gallery = IdentityGallery()
+        self.gallery = MultiIdentityGallery()
+        self.connections = {}
         self.last_inference_ms = None
+        self.last_observation_ms = None
 
-    def annotate(self, frame, timestamp_ms, face_count):
-        """표시용 복사본만 변경하며 FeatureWindow와 진단 로그는 수정하지 않는다."""
+    @staticmethod
+    def _geometry(faces, boxes):
+        """배열 순서는 같은 프레임의 대응에만 사용하고 트랙 키로 상태를 연결한다."""
+        if len(faces) != len(boxes):
+            return {}
+        geometry = {}
+        duplicates = set()
+        for face, box in zip(faces, boxes):
+            key = face.get('transient_track_key')
+            box = np.asarray(box, dtype=float)
+            if (isinstance(key, bool) or not isinstance(key, int) or key < 0
+                    or box.shape != (4,) or not np.isfinite(box).all()
+                    or not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1)):
+                continue
+            if key in geometry:
+                duplicates.add(key)
+            geometry[key] = box
+        # 겹친 얼굴은 위치 연결만으로 사람을 구별하지 않는다.
+        keys = list(geometry)
+        for i, key in enumerate(keys):
+            a = geometry[key]
+            for other in keys[i + 1:]:
+                b = geometry[other]
+                overlap = max(0., min(a[2], b[2]) - max(a[0], b[0])) * max(0., min(a[3], b[3]) - max(a[1], b[1]))
+                area = min((a[2]-a[0])*(a[3]-a[1]), (b[2]-b[0])*(b[3]-b[1]))
+                if overlap > area * .15:
+                    duplicates.update((key, other))
+        return {key: box for key, box in geometry.items() if key not in duplicates}
+
+    def annotate(self, frame, timestamp_ms, faces, *, boxes):
+        """개인별 ID는 표시 복사본과 별도 메모리에만 유지한다."""
         import cv2
         output = frame.copy()
-        # 추론 사이의 프레임에서도 미검출/복수 얼굴은 연속 확인을 끊는다.
-        if face_count != 1:
-            self.gallery.observe(None, timestamp_ms)
-            cv2.putText(output, 'ReID --: deferred', (12, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2)
-            return output
-        # 추론하지 않은 프레임에는 이전 ID를 새 판정처럼 표시하지 않는다.
-        if self.last_inference_ms is not None and timestamp_ms - self.last_inference_ms < 500:
-            cv2.putText(output, 'ReID: waiting for next sample', (12, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2)
-            return output
-        self.last_inference_ms = timestamp_ms
-        faces = self.app.get(frame)
-        embedding = None
-        box = None
-        if len(faces) == 1:
-            face = faces[0]
-            box = np.asarray(face.bbox)
-            if (box.shape == (4,) and np.isfinite(box).all()
-                    and min(box[2] - box[0], box[3] - box[1]) >= 80
-                    and float(face.det_score) >= 0.8):
-                embedding = face.embedding
-        result = self.gallery.observe(embedding, timestamp_ms)
-        identity = result['identity'] or '--'
-        label = f"ReID {identity}: {result['state']}"
-        if result['similarity'] is not None:
-            label += f" cosine={result['similarity']:.2f}"
-        cv2.putText(output, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 220, 255), 2)
-        if box is not None and embedding is not None:
-            x1, y1, x2, y2 = box.astype(int)
+        geometry = self._geometry(faces, boxes)
+        gap = timestamp_ms - self.last_observation_ms if self.last_observation_ms is not None else None
+        if gap is not None and (gap <= 0 or gap > 1500):
+            self.connections.clear()
+            self.gallery.pending_tracks.clear()
+            self.last_inference_ms = None
+        self.last_observation_ms = timestamp_ms
+        self.connections = {key: identity for key, identity in self.connections.items() if key in geometry}
+        self.gallery.pending_tracks = {key: state for key, state in self.gallery.pending_tracks.items() if key in geometry}
+        reserved = set(self.connections.values())
+        for identity in reserved:
+            self.gallery.entries[identity]['last_seen'] = timestamp_ms
+        unknown = [key for key in geometry if key not in self.connections]
+        results = {}
+        if unknown and (self.last_inference_ms is None or timestamp_ms - self.last_inference_ms >= 500):
+            self.last_inference_ms = timestamp_ms
+            embeddings = {key: None for key in unknown}
+            reasons = {key: 'no_quality_match' for key in unknown}
+            # 좁게 자른 영상에서는 SCRFD가 놓치는 얼굴이 있어 전체 문맥으로 검출한다.
+            # 검출과 특징 추론을 분리해 이미 확인된 사람의 임베딩은 다시 계산하지 않는다.
+            detected_boxes, keypoints = self.app.det_model.detect(frame, max_num=0, metric='default')
+            height, width = frame.shape[:2]
+            pixel_boxes = {key: box * np.array([width, height, width, height])
+                           for key, box in geometry.items()}
+            possible = {key: [] for key in geometry}
+            for index, detected in enumerate(detected_boxes):
+                detected = np.asarray(detected, dtype=float)
+                if (detected.shape != (5,) or not np.isfinite(detected).all()
+                        or detected[4] < .7
+                        or min(detected[2]-detected[0], detected[3]-detected[1]) < 80):
+                    continue
+                for key, target in pixel_boxes.items():
+                    cx, cy = (target[0]+target[2])*.5, (target[1]+target[3])*.5
+                    intersection = max(0., min(target[2], detected[2])-max(target[0], detected[0])) * max(0., min(target[3], detected[3])-max(target[1], detected[1]))
+                    target_area = (target[2]-target[0])*(target[3]-target[1])
+                    detected_area = (detected[2]-detected[0])*(detected[3]-detected[1])
+                    union = target_area + detected_area - intersection
+                    if (detected[0] <= cx <= detected[2] and detected[1] <= cy <= detected[3]
+                            and union > 0 and intersection/union >= .2):
+                        possible[key].append(index)
+            for key in unknown:
+                matches = possible[key]
+                if len(matches) != 1:
+                    if len(matches) > 1:
+                        reasons[key] = 'ambiguous_detection'
+                    continue
+                index = matches[0]
+                if sum(index in values for values in possible.values()) != 1:
+                    reasons[key] = 'shared_detection'
+                    continue
+                if (keypoints is None or index >= len(keypoints)
+                        or np.asarray(keypoints[index]).shape != (5, 2)
+                        or not np.isfinite(keypoints[index]).all()):
+                    continue
+                detected = detected_boxes[index]
+                face = SimpleNamespace(bbox=detected[:4], det_score=detected[4], kps=keypoints[index])
+                self.app.models['recognition'].get(frame, face)
+                embeddings[key] = face.embedding
+                reasons[key] = 'uncertain_identity'
+            results = self.gallery.observe_many(embeddings, timestamp_ms, reserved)
+            for key, result in results.items():
+                if result['state'] == 'deferred':
+                    result['reason'] = reasons[key]
+                if result['identity'] is not None:
+                    self.connections[key] = result['identity']
+        else:
+            for identity, entry in list(self.gallery.entries.items()):
+                if identity not in reserved and timestamp_ms-entry['last_seen'] > self.gallery.retention_ms:
+                    del self.gallery.entries[identity]
+        for key, box in geometry.items():
+            identity = self.connections.get(key)
+            state = results.get(key, {}).get('state', 'tracked' if identity else 'waiting')
+            label = f"ReID {identity or '--'}: {state}"
+            if results.get(key, {}).get('reason'):
+                label += f" ({results[key]['reason']})"
+            if state == 'tracked':
+                label += ' (inference paused)'
+            x1, y1, x2, y2 = (box * np.array([frame.shape[1], frame.shape[0]] * 2)).astype(int)
             cv2.rectangle(output, (x1, y1), (x2, y2), (0, 220, 255), 2)
+            cv2.putText(output, label, (max(0, x1), max(20, y1-6)), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 220, 255), 1)
+        if len(geometry) != len(faces) or not faces:
+            cv2.putText(output, 'ReID: missing/overlapping faces deferred', (12, 28), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 220, 255), 1)
         return output
 
     def close(self):
         self.gallery.clear()
+        self.connections.clear()
         self.app = None
         self.last_inference_ms = None
+        self.last_observation_ms = None
