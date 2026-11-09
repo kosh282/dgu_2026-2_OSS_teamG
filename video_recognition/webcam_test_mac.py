@@ -114,7 +114,8 @@ def main():
             display_frame = preview_capture.last_frame
             if reidentifier is not None:
                 display_frame = reidentifier.annotate(
-                    display_frame, result['start_ms'], len(result['features']['faces']),
+                    display_frame, result['start_ms'], result['features']['faces'],
+                    boxes=getattr(analyzer, 'last_face_boxes', []),
                 )
             controls = developer_output.render(
                 display_frame, result, analyzer, pose_analyzer,

@@ -59,67 +59,124 @@ class GalleryTests(unittest.TestCase):
         self.assertEqual(len(gallery), 1)
 
 
-class AdapterTests(unittest.TestCase):
-    def make_adapter(self, face):
+class MultiFaceTests(unittest.TestCase):
+    def make_adapter(self):
         from unittest.mock import Mock
-        from video_recognition.face_reidentification import FaceReidentifier
+        from types import SimpleNamespace
+        from video_recognition.face_reidentification import FaceReidentifier, MultiIdentityGallery
         adapter = FaceReidentifier.__new__(FaceReidentifier)
         adapter.app = Mock()
-        adapter.app.get.return_value = [face]
-        adapter.gallery = IdentityGallery()
+        def detect(image, **kwargs):
+            # 전체 영상에서는 검출되지만 얼굴만 자르면 검출되지 않는 회귀 사례.
+            if image.shape[:2] != (200, 600):
+                return np.empty((0, 5)), np.empty((0, 5, 2))
+            return (np.array([[30, 40, 210, 160, .76], [390, 40, 570, 160, .76]]),
+                    np.zeros((2, 5, 2)))
+        def recognize(image, face):
+            x = int((face.bbox[0] + face.bbox[2]) / 2)
+            index = int(image[100, x, 0])
+            face.embedding = np.eye(3)[index]
+            return face.embedding
+        adapter.app.get.return_value = []
+        adapter.app.det_model.detect.side_effect = detect
+        adapter.app.models = {'recognition': Mock()}
+        adapter.app.models['recognition'].get.side_effect = recognize
+        adapter.gallery = MultiIdentityGallery()
+        adapter.connections = {}
         adapter.last_inference_ms = None
+        adapter.last_observation_ms = None
         return adapter
 
-    def test_overlay_does_not_modify_input_or_expose_embeddings(self):
-        from types import SimpleNamespace
-        face = SimpleNamespace(bbox=np.array([10, 10, 110, 110]), det_score=0.95,
-                               embedding=np.array([1., 0.]))
-        adapter = self.make_adapter(face)
-        frame = np.zeros((160, 320, 3), dtype=np.uint8)
+    def scene(self):
+        frame = np.zeros((200, 600, 3), dtype=np.uint8)
+        frame[:, 300:] = 1
+        faces = [{'transient_track_key': 10, 'head_position': {'x': .2, 'y': .5}},
+                 {'transient_track_key': 20, 'head_position': {'x': .8, 'y': .5}}]
+        boxes = [[.05, .2, .35, .8], [.65, .2, .95, .8]]
+        return frame, faces, boxes
+
+    def test_simultaneous_ids_pause_and_return_independently(self):
+        adapter = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        original = frame.copy()
         for stamp in (0, 500, 1000):
-            overlay = adapter.annotate(frame, stamp, 1)
-        self.assertEqual(len(adapter.gallery), 1)
-        self.assertTrue(np.any(overlay))
-        self.assertFalse(np.any(frame))
+            adapter.annotate(frame, stamp, faces, boxes=boxes)
+        self.assertEqual(len(adapter.connections), 2)
+        ids = dict(adapter.connections)
+        self.assertEqual(len(set(ids.values())), 2)
+        self.assertEqual(adapter.app.models['recognition'].get.call_count, 6)
+        adapter.annotate(frame, 1500, faces[::-1], boxes=boxes[::-1])
+        self.assertEqual(adapter.app.models['recognition'].get.call_count, 6)
+        adapter.annotate(frame, 2000, faces[:1], boxes=boxes[:1])
+        self.assertEqual(adapter.connections, {10: ids[10]})
+        faces[1]['transient_track_key'] = 30
+        for stamp in (2500, 3000, 3500):
+            adapter.annotate(frame, stamp, faces, boxes=boxes)
+        self.assertEqual(adapter.connections, {10: ids[10], 30: ids[20]})
+        self.assertEqual(adapter.app.models['recognition'].get.call_count, 9)
+        np.testing.assert_array_equal(frame, original)
+        self.assertNotIn('identity', faces[0])
         adapter.close()
-        self.assertEqual(len(adapter.gallery), 0)
-        self.assertIsNone(adapter.app)
+        self.assertFalse(adapter.connections)
+        self.assertFalse(adapter.gallery.entries)
 
-    def test_multiple_faces_and_poor_quality_do_not_enroll(self):
-        from types import SimpleNamespace
-        face = SimpleNamespace(bbox=np.array([10, 10, 30, 30]), det_score=0.95,
-                               embedding=np.array([1., 0.]))
-        adapter = self.make_adapter(face)
-        frame = np.zeros((160, 320, 3), dtype=np.uint8)
+    def test_duplicate_embedding_does_not_assign_same_id_twice(self):
+        adapter = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        frame[:] = 0
         for stamp in (0, 500, 1000):
-            adapter.annotate(frame, stamp, 2)
-        adapter.app.get.assert_not_called()
-        for stamp in (1500, 2000, 2500):
-            adapter.annotate(frame, stamp, 1)
-        self.assertEqual(len(adapter.gallery), 0)
+            adapter.annotate(frame, stamp, faces, boxes=boxes)
+        self.assertEqual(adapter.connections, {})
 
-    def test_inference_is_throttled(self):
+    def test_overlap_and_missing_geometry_defer(self):
+        adapter = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        for stamp in (0, 500, 1000):
+            adapter.annotate(frame, stamp, faces, boxes=[boxes[0], boxes[0]])
+        adapter.app.det_model.detect.assert_not_called()
+        adapter.annotate(frame, 1500, faces, boxes=[])
+        self.assertFalse(adapter.connections)
+
+    def test_small_or_off_center_detection_does_not_enroll(self):
         from types import SimpleNamespace
-        face = SimpleNamespace(bbox=np.array([10, 10, 110, 110]), det_score=0.95,
-                               embedding=np.array([1., 0.]))
-        adapter = self.make_adapter(face)
-        frame = np.zeros((160, 320, 3), dtype=np.uint8)
-        for stamp in (0, 100, 200, 500):
-            adapter.annotate(frame, stamp, 1)
-        self.assertEqual(adapter.app.get.call_count, 2)
+        frame, faces, boxes = self.scene()
+        for box in ([0, 0, 10, 10], [0, 0, 85, 85]):
+            adapter = self.make_adapter()
+            adapter.app.det_model.detect.side_effect = None
+            adapter.app.det_model.detect.return_value = (
+                np.array([[*box, .95]]), np.zeros((1, 5, 2)))
+            for stamp in (0, 500, 1000):
+                adapter.annotate(frame, stamp, faces[:1], boxes=boxes[:1])
+            self.assertFalse(adapter.connections)
 
-    def test_missing_or_multiple_faces_between_samples_interrupt_confirmation(self):
-        from types import SimpleNamespace
-        face = SimpleNamespace(bbox=np.array([10, 10, 110, 110]), det_score=0.95,
-                               embedding=np.array([1., 0.]))
-        frame = np.zeros((160, 320, 3), dtype=np.uint8)
-        for count in (0, 2):
-            adapter = self.make_adapter(face)
-            for stamp, faces in ((0, 1), (250, count), (500, 1), (750, count), (1000, 1)):
-                adapter.annotate(frame, stamp, faces)
-            self.assertEqual(len(adapter.gallery), 0)
-            self.assertEqual(adapter.app.get.call_count, 3)
+    def test_long_gap_reconfirms_and_continuous_track_does_not_expire(self):
+        frame, faces, boxes = self.scene()
+        adapter = self.make_adapter()
+        for stamp in range(0, 125001, 500):
+            adapter.annotate(frame, stamp, faces[:1], boxes=boxes[:1])
+        identity = adapter.connections[10]
+        self.assertEqual(adapter.app.det_model.detect.call_count, 3)
+        adapter.annotate(frame, 127000, faces[:1], boxes=boxes[:1])
+        self.assertFalse(adapter.connections)
+        for stamp in (127500, 128000):
+            adapter.annotate(frame, stamp, faces[:1], boxes=boxes[:1])
+        self.assertEqual(adapter.connections[10], identity)
 
+    def test_gallery_expiry_and_reserved_identity(self):
+        from video_recognition.face_reidentification import MultiIdentityGallery
+        gallery = MultiIdentityGallery()
+        for stamp in (0, 500, 1000):
+            matched = gallery.observe_many({10: [1, 0]}, stamp, set())
+        identity = matched[10]['identity']
+        for stamp in (2000, 2500, 3000):
+            result = gallery.observe_many({20: [1, 0]}, stamp, {identity})
+            self.assertIsNone(result[20]['identity'])
+        for stamp in (124000, 124500, 125000):
+            result = gallery.observe_many({20: [1, 0]}, stamp, set())
+        self.assertNotEqual(identity, result[20]['identity'])
+
+
+class AdapterTests(unittest.TestCase):
     def test_demo_keeps_reidentification_out_of_feature_window_and_log(self):
         import json
         import sys
@@ -128,7 +185,8 @@ class AdapterTests(unittest.TestCase):
         from video_recognition import webcam_test_mac as demo
         from video_recognition import face_reidentification
         frame = np.zeros((48, 64, 3), dtype=np.uint8)
-        result = {'start_ms': 0, 'features': {'faces': []}}
+        result = {'start_ms': 0, 'features': {'faces': [
+            {'transient_track_key': 10}, {'transient_track_key': 20}]}}
         original = json.dumps(result)
         reid = MagicMock()
         reid.annotate.return_value = frame.copy()
@@ -144,7 +202,7 @@ class AdapterTests(unittest.TestCase):
              patch.object(demo.cv2, 'VideoCapture', return_value=camera), \
              patch.object(demo.cv2, 'destroyAllWindows'), \
              patch.object(face_reidentification, 'FaceReidentifier', return_value=reid), \
-             patch.object(demo, 'FaceAnalyzer'), patch.object(demo, 'PoseAnalyzer'), \
+             patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])), patch.object(demo, 'PoseAnalyzer'), \
              patch.object(demo, 'PreviewCapture', return_value=capture), \
              patch.object(demo, 'VisionPipeline', return_value=pipeline), \
              patch.object(demo, 'DeveloperPreviewOutput', return_value=preview), \
@@ -154,7 +212,7 @@ class AdapterTests(unittest.TestCase):
             demo.main()
         self.assertEqual(json.dumps(result), original)
         self.assertIs(writer.call_args.args[1], result)
-        reid.annotate.assert_called_once_with(frame, 0, 0)
+        reid.annotate.assert_called_once_with(frame, 0, result['features']['faces'], boxes=[])
         reid.close.assert_called_once()
         pipeline.close.assert_called_once()
 
@@ -170,7 +228,8 @@ class AdapterTests(unittest.TestCase):
         for enabled in (True, False):
             with self.subTest(enabled=enabled), ExitStack() as stack:
                 frame = np.zeros((48, 64, 3), dtype=np.uint8)
-                result = {'start_ms': 0, 'features': {'faces': []}}
+                result = {'start_ms': 0, 'features': {'faces': [
+                    {'transient_track_key': 10}, {'transient_track_key': 20}]}}
                 original = json.dumps(result)
                 camera = MagicMock()
                 camera.read.return_value = (True, frame)
@@ -191,7 +250,7 @@ class AdapterTests(unittest.TestCase):
                     stack.enter_context(patch.object(demo.cv2, name))
                 windows = stack.enter_context(patch.object(demo, 'list_windows', return_value=[(42, demo.CAMERA_WINDOW)]))
                 win_capture = stack.enter_context(patch.object(demo, 'WindowCapture'))
-                stack.enter_context(patch.object(demo, 'FaceAnalyzer'))
+                stack.enter_context(patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])))
                 stack.enter_context(patch.object(demo, 'PoseAnalyzer'))
                 stack.enter_context(patch.object(demo, 'PreviewCapture', return_value=capture))
                 stack.enter_context(patch.object(demo, 'VisionPipeline', return_value=pipeline))
@@ -206,7 +265,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertIs(writer.call_args.args[1], result)
                 if enabled:
                     factory.assert_called_once()
-                    reid.annotate.assert_called_once_with(frame, 0, 0)
+                    reid.annotate.assert_called_once_with(frame, 0, result['features']['faces'], boxes=[])
                     self.assertIs(preview.render.call_args.args[0], annotated)
                     reid.close.assert_called_once()
                 else:
