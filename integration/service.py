@@ -105,7 +105,7 @@ class IntegrationService:
             if not state["running"]:
                 if event["created_ms"] is not None:
                     raise IntegrationError("종료 후 이벤트에는 created_at_utc가 필요합니다")
-                if kind not in {"transcript_edited", "note_created", "resource_suggestion", "post_session_feedback"}:
+                if kind not in {"transcript_edited", "note_created", "resource_suggestion", "teaching_suggestion", "post_session_feedback"}:
                     raise IntegrationError("종료된 세션에는 실시간 이벤트를 추가할 수 없습니다")
                 if event["end_ms"] > state["session"]["duration_ms"]:
                     raise IntegrationError("이벤트 시각이 수업 종료 시각을 초과합니다")
@@ -139,7 +139,7 @@ class IntegrationService:
                     state["transcripts"][uid] = item
                     state["events"][eid] = item
             else:
-                if kind in {"resource_suggestion", "post_session_feedback"}:
+                if kind in {"resource_suggestion", "teaching_suggestion", "post_session_feedback"}:
                     if any(ref not in state["events"] for ref in payload["evidence_event_ids"]):
                         raise IntegrationError("근거 이벤트가 현재 세션에 없습니다")
                 if kind == "note_created" and any(ref not in state["events"] for ref in payload["linked_event_ids"]):
@@ -175,6 +175,7 @@ class IntegrationService:
                 "transcripts": _ordered(list(state["transcripts"].values())),
                 "engagement_windows": select("engagement_window"), "notes": select("note_created"),
                 "suggestions": [with_evidence_flag(e) for e in select("resource_suggestion")],
+                "teaching_suggestions": [with_evidence_flag(e) for e in select("teaching_suggestion")],
                 "feedback": [with_evidence_flag(e) for e in select("post_session_feedback")],
             })
 
@@ -235,7 +236,7 @@ class IntegrationService:
         """세션을 종료된 상태로 불러온다. 실시간 캡처의 재개는 지원하지 않는다."""
         with open(file_path, encoding="utf-8-sig") as handle:
             data = json.load(handle)
-        if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
+        if not isinstance(data, dict) or data.get("schema_version") not in {"0.1.0", SCHEMA_VERSION}:
             raise IntegrationError("지원하지 않는 저장 스키마입니다")
         session, config, events = data.get("session"), data.get("config"), data.get("events")
         if not isinstance(session, dict) or not isinstance(config, dict) or not isinstance(events, list):

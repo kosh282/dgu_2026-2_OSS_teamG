@@ -1,6 +1,6 @@
-# 팀 공통 데이터 계약 v0.1.0
+# 팀 공통 데이터 계약 v0.2.0 확장안
 
-> 상태: **구현 시작을 위한 잠정 계약** · 기준: 중간발표 v3 및 제출 제안서 · 작성일: 2026-10-29
+> 상태: **팀 합의 전 구현 확장안** · 기준: 중간발표 v3 및 제출 제안서 · 작성일: 2026-10-29
 >
 > 참여도 평가 모델, 점수 척도, 입력 특징과 집계식은 미정입니다. 이 문서는 모듈 연결을 위한 공통 틀을 정하며, 모델 선택이나 점수의 타당성을 확정하지 않습니다. 팀 회의에서 변경사항을 합의하고 버전을 갱신하세요.
 
@@ -55,7 +55,7 @@ flowchart LR
 
 | 필드 | 타입 | 필수 | 의미 |
 |---|---|---|---|
-| `schema_version` | string | 예 | 이 이벤트 계약의 버전, 현재 `0.1.0` |
+| `schema_version` | string | 예 | 현재 구현 `0.2.0`, 기존 `0.1.0` 저장 세션 읽기 지원 |
 | `session_id` | UUID string | 예 | 세션 식별자 |
 | `event_id` | UUID string | 예 | 이벤트 식별자 |
 | `event_type` | string | 예 | 아래 목록의 이벤트 유형 |
@@ -139,6 +139,7 @@ flowchart LR
 |---|---|---|
 | `note_created` | `text`, `linked_event_ids` 배열 | 시점 메모는 시작과 종료 시각을 같게 함. 연결 대상이 없으면 빈 배열 |
 | `resource_suggestion` | `title`, `description`, `source`, `evidence_event_ids`, `status` | `source`는 `document_id`, `document_name`, `page`(1부터 시작, 모르면 `null`) 포함. `status`: `suggested`/`accepted`/`dismissed` |
+| `teaching_suggestion` | `title`, `description`, `search_query`, `origin`, `evidence_event_ids`, `status` | AI 생성 수업 제안. `origin`: `ai_generated`, `status`: `suggested`. 선택 필드 `trigger_threshold`(0~100), `material_sources`, `external_sources`. 외부 검색 결과는 본문을 검증하지 않은 후보 |
 | `post_session_feedback` | `text`, `evidence_event_ids`, `status` | 강의록의 근거 이벤트 ID 연결. `status`: `draft`/`reviewed` |
 
 `evidence_event_ids`는 같은 세션 내 근거 이벤트의 ID 배열입니다. 저장 당시 존재하는 근거를 사용하고, 이후 전사가 수정되어 참조가 끊어질 경우 삭제하지 않고 UI에서 **근거 갱신 필요**로 표시합니다. `source.document_id`는 강의 자료를 가리키는 ID이지 사용자 식별자가 아닙니다.
@@ -182,4 +183,5 @@ flowchart LR
 ## 변경 기록
 
 - `0.1.0` (2026-10-29): 팀별 입출력과 공통 이벤트·시간·저장 기준 초안. 참여 모델 및 점수는 미정으로 둠.
+- `0.2.0` (팀 합의 전 구현 확장안): 전사 기반 `teaching_suggestion`과 실시간 제안의 선택적 `trigger_threshold` 추가.
 

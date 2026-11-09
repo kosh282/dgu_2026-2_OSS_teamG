@@ -4,13 +4,15 @@ import importlib.util
 import os
 import sys
 import tempfile
+from urllib.parse import quote
 from pathlib import Path
 
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import SessionFiles, chart, clock, overlap, score
+from frontend.dashboard_data import (SessionFiles, chart, clock, overlap, score, suggestion_phase,
+                                     related_suggestions, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
 files = SessionFiles(os.environ.get('LECTURER_SESSION_DIR', str(Path.home() / 'lecturer_dashboard' / 'sessions')))
@@ -160,36 +162,65 @@ def material_summary(index, errors):
                    + (f' 텍스트가 없는 {empty}쪽(스캔 이미지 등)은 검색하지 않습니다.' if empty else ''))
 
 
-def claude_option(key):
-    """Claude 사용 선택. 기본은 꺼짐이며 켜면 전송 범위를 안내한다."""
-    from ai_agent import claude_ready
-    ready = claude_ready()
-    enabled = st.checkbox('Claude로 제안·피드백 문장 작성 (선택)', key=key, disabled=not ready)
-    if not ready:
-        st.caption('anthropic 패키지가 없어 로컬 검색 결과만 사용합니다.')
-    elif enabled:
-        has_key = bool(os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('ANTHROPIC_AUTH_TOKEN'))
-        st.caption('확정 전사·메모·관련 자료 페이지 텍스트가 Anthropic API로 전송됩니다. 원본 영상·음성과 얼굴 특징은 보내지 않습니다. '
-                   + ('API 키를 찾았습니다.' if has_key else 'API 키 환경 변수가 없습니다. `ant auth login` 프로필이 없으면 로컬 결과로 대체됩니다.'))
-    return enabled
+def assistant_options(key, disabled=False):
+    """제공자별 키는 화면 세션과 실행 중 작성기에만 둔다."""
+    from ai_agent.writer import PROVIDER_DEFAULT_MODELS
+    provider = st.selectbox('문장 작성 방식', ['local', 'openai', 'gemini', 'claude'],
+                            format_func=lambda x: {'local':'로컬', 'openai':'OpenAI', 'gemini':'Gemini', 'claude':'Claude'}[x],
+                            key=f'{key}-provider', disabled=disabled)
+    if provider == 'local':
+        return {'provider': 'local'}, True
+    model = st.text_input('모델 ID', value=PROVIDER_DEFAULT_MODELS[provider],
+                          key=f'{key}-{provider}-model', disabled=disabled)
+    api_key = st.text_input('개인 API 키', type='password', key=f'{key}-{provider}-key', disabled=disabled)
+    st.caption('확정 전사·메모·관련 자료 텍스트가 선택한 제공자에 전송됩니다. API 키는 세션 JSON에 저장하지 않으며 사용량은 해당 계정에 청구될 수 있습니다.')
+    if not api_key.strip() or not model.strip():
+        st.warning('선택한 제공자의 API 키와 모델 ID를 입력하세요.')
+    if st.button('API 연결 확인 (요청 발생)', key=f'{key}-{provider}-check', disabled=disabled or not api_key.strip() or not model.strip()):
+        from ai_agent.writer import make_writer, ClaudeUnavailable
+        try:
+            make_writer(provider=provider, api_key=api_key, model=model).check_connection()
+            st.success('API와 모델의 구조화 응답을 확인했습니다.')
+        except (ValueError, ClaudeUnavailable) as exc:
+            st.error(f'연결 확인 실패: {exc}')
+    return {'provider': provider, 'api_key': api_key, 'model': model}, bool(api_key.strip() and model.strip())
 
 
 def resources(service, sid, snapshot, readonly=False):
-    suggestions = [e for e in snapshot['suggestions'] if e['event_id'] not in st.session_state.hidden_suggestions]
+    suggestions = [e for e in snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
+                   if readonly or e['event_id'] not in st.session_state.hidden_suggestions]
+    suggestions.sort(key=lambda e: (e['start_ms'], e['event_id']), reverse=True)
     if not suggestions:
-        st.caption('현재 표시할 자료 제안이 없습니다. 강의 자료를 올리면 강의 조교가 최근 전사와 비교해 제안합니다.')
+        st.caption('선택한 구간에 연결된 제안이 없습니다.' if readonly else '설정한 실험 점수 이하의 최근 구간과 확정 전사가 있으면 제안을 생성합니다.')
     for event in suggestions:
         payload = event['payload']
         with st.container(border=True):
-            st.caption(clock(event['start_ms']))
+            st.caption(f"{clock(event['start_ms'])} · {suggestion_phase(event)}")
             st.write(payload['title'])
             st.write(payload['description'])
-            source = payload['source']
-            by = '강의 조교 · Claude 작성' if str(event['provenance'].get('model_id') or '').startswith('claude') else '강의 조교 · 로컬 검색'
-            st.caption(f"출처: {source['document_name']} · {source.get('page') or '페이지 미지정'}쪽"
-                       + (f" · {by} · 근거 전사 {len(payload['evidence_event_ids'])}문장" if event['provenance']['module'] == 'assistant' else ''))
+            model_id = str(event['provenance'].get('model_id') or '')
+            by = '강의 조교 · 로컬 검색' if model_id.startswith('local-') else f'강의 조교 · {model_id or "모델 미상"}'
+            if event['event_type'] == 'teaching_suggestion':
+                st.caption(f'{by} · 전사 기반 AI 생성 초안 · 출처 내용과 적합성은 교수자가 확인해야 합니다.')
+                for source in payload.get('material_sources', []):
+                    st.caption(f"참고한 업로드 자료 후보: {source['document_name']} · {source.get('page') or '?'}쪽")
+                for source in payload.get('external_sources', []):
+                    st.link_button('외부 검색 결과: ' + source['title'], source['url'])
+                if payload.get('search_query'):
+                    st.link_button('검색어로 외부 자료 찾기', 'https://www.google.com/search?q=' + quote(payload['search_query']))
+            else:
+                source = payload['source']
+                st.caption(f"출처: {source['document_name']} · {source.get('page') or '페이지 미지정'}쪽 · {by}")
+            st.caption('실험 점수는 제안 시점의 참고 신호이며 학습자의 집중도·이해도를 뜻하지 않습니다.')
             if event.get('evidence_needs_refresh'):
                 st.warning('근거 전사가 수정되었습니다. 자료 제안을 다시 확인하세요.')
+            if readonly:
+                ids = set(payload.get('evidence_event_ids', []))
+                evidence = [t for t in snapshot['transcripts'] if t['event_id'] in ids]
+                if evidence:
+                    with st.expander(f'근거 강의록 {len(evidence)}개 보기'):
+                        for transcript in evidence:
+                            st.write(f"{clock(transcript['start_ms'])} · {transcript['payload']['text']}")
             if not readonly:
                 a,b = st.columns(2)
                 if a.button('제안 메모로 저장',key='accept-'+event['event_id'],use_container_width=True):
@@ -268,8 +299,10 @@ def preparation():
             uploaded=st.file_uploader('PDF · PPTX 강의 자료',type=['pdf','ppt','pptx'],accept_multiple_files=True,key='materials',disabled=running)
             index,errors=material_index(uploaded)
             material_summary(index,errors)
-            claude_option('assistant_claude')
-            st.caption('강의 조교는 수업 중 최근 확정 전사와 자료 페이지를 비교해 자료를 제안합니다(음성 전사 필요). '
+            writer_options, writer_ready = assistant_options('live-assistant', disabled=running)
+            st.caption('외부 AI 사용 시 전사·관련 자료가 제공자에 전달되며, AI가 검색어를 제안하면 한국어 위키백과에도 검색어가 전송됩니다. 검색 결과 제목만 참고하므로 링크 내용을 직접 확인하세요.')
+            score_threshold=st.slider('제안 시작 실험 점수 (이하)', 0, 100, 60, key='assistant_score_threshold', disabled=running)
+            st.caption('현재 점수는 단일 얼굴 실험값입니다. 점수가 없거나 오래되면 제안하지 않습니다. 외부 AI 선택 시 자료 없이도 전사 기반 제안을 받을 수 있습니다. '
                        '자료는 현재 브라우저 세션 메모리에만 두며 파일로 저장하지 않습니다. 세션 JSON에는 자료 이름·페이지 번호만 남습니다.')
         with st.container(border=True):
             st.subheader('4  동의·저장 안내')
@@ -283,8 +316,7 @@ def preparation():
             audio_label='사용 안 함' if not stt_enabled else ('출력 루프백' if audio_source=='loopback' else '마이크')
             model_label='미선택' if not stt_enabled else ('준비됨' if stt_ready else '준비 필요')
             for name,state in [('영상 캡처',('창 선택됨' if selected else '대기') if video_enabled else '사용 안 함'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)',('설치됨' if importlib.util.find_spec('mediapipe') else '미설치') if video_enabled else '사용 안 함'),('참여 모델','사용' if video_enabled and model_enabled else '사용 안 함'),
-                               ('강의 조교',(f'자료 {len(index.materials)}개 · {index.page_count}쪽' + (' · Claude' if st.session_state.get('assistant_claude') else ' · 로컬'))
-                                if index.materials else '자료 없음 (제안 안 함)')]:
+                               ('강의 조교',f'자료 {len(index.materials)}개 · 점수 {score_threshold} 이하 · {writer_options["provider"]}')]:
                 st.write(f'{name} · **{state}**')
             if stt_enabled and not stt_ready:
                 st.caption(stt_missing)
@@ -294,7 +326,7 @@ def preparation():
                 st.info('진행 중인 수업이 있습니다.')
                 if st.button('라이브 세션으로 이동',use_container_width=True):
                     navigate('라이브 세션')
-            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or not video_enabled) and title.strip() and consent and storage)):
+            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or not video_enabled) and title.strip() and consent and storage and writer_ready)):
                 try:
                     from frontend.live_session import LiveSession
                     live=LiveSession(selected[0] if selected and video_enabled else None,
@@ -311,7 +343,7 @@ def preparation():
                     try:
                         # 강의 조교는 같은 통합부 세션의 확정 전사를 읽어 자료 제안 이벤트를 보낸다.
                         from ai_agent import LiveAssistant, make_writer
-                        assistant=LiveAssistant(live.service,live.sid,index,make_writer(st.session_state.get('assistant_claude',False)))
+                        assistant=LiveAssistant(live.service,live.sid,index,make_writer(**writer_options),score_threshold=score_threshold)
                         assistant.start()
                         st.session_state.assistant=assistant
                     except Exception as exc:  # 조교 실패가 수업 시작을 막지 않는다
@@ -404,6 +436,8 @@ def live_page():
                 live.stop()
                 if st.session_state.assistant is not None:
                     st.session_state.assistant.stop()
+                    if not st.session_state.assistant.is_running():
+                        st.session_state.assistant = None
                 files.save(live.service,live.sid)
                 files.clear_recovery(live.sid)
                 st.session_state.saved_sid=live.sid
@@ -470,7 +504,7 @@ def review_page():
     ratios=[(e['payload'].get('observation',{}).get('observable_ratio'),max(1,e['end_ms']-e['start_ms'])) for e in windows] if not has_overlap else []
     ratios=[(r,w) for r,w in ratios if r is not None]
     columns=st.columns(4)
-    for column,label,value in zip(columns,['수업 전체 참여 점수','분석 가능률','자료 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '측정 불가',f'{sum(r*w for r,w in ratios)/sum(w for _,w in ratios):.0%}' if ratios else '측정 불가',f"{len(snapshot['suggestions'])}건",f"{len(snapshot['notes'])}개"]):
+    for column,label,value in zip(columns,['수업 전체 참여 점수','분석 가능률','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '측정 불가',f'{sum(r*w for r,w in ratios)/sum(w for _,w in ratios):.0%}' if ratios else '측정 불가',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
         column.metric(label,value)
     if has_overlap:
         st.caption('이동 구간은 서로 겹치므로 전체 평균과 전체 분석 가능률을 계산하지 않습니다.')
@@ -493,6 +527,7 @@ def review_page():
         st.plotly_chart(chart(windows,snapshot['notes'],duration,selected),use_container_width=True,key=chart_key,on_select=select_chart_range,selection_mode='box')
     def visible(event):
         return overlap(event,*selected)
+    all_suggestions=snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
     left,right=st.columns([2,1])
     with left:
         with st.container(border=True):
@@ -503,6 +538,9 @@ def review_page():
             for event in transcripts:
                 payload=event['payload']
                 with st.expander(f"{clock(event['start_ms'])} · {payload['text']}"):
+                    linked=related_suggestions(event, all_suggestions)
+                    for suggestion in linked:
+                        st.caption(f"{suggestion_phase(suggestion)} · {clock(suggestion['start_ms'])} · {suggestion['payload']['title']}")
                     with st.form('edit-'+event['event_id']):
                         text=st.text_area('전사 수정',payload['text'])
                         if st.form_submit_button('수정 저장'):
@@ -526,7 +564,8 @@ def review_page():
                 st.caption('저장된 메모가 없습니다.')
         with st.container(border=True):
             st.subheader('AI 강의 조교 · 사후 분석')
-            st.caption('확정 전사와 강의 자료를 비교해 구간별 피드백을 만들고, 수업 중 제안이 없던 구간에는 수업 시각에 맞춘 자료 제안을 추가합니다. 결과는 초안이며 교수자가 검토합니다.')
+            st.caption('확정 전사로 구간별 피드백을 만들고, 낮은 실험 점수 또는 교수자 메모가 있는 5분 구간에 제안을 추가합니다. 전사가 없거나 기존 제안이 있는 구간은 새 제안을 만들지 않습니다.')
+            st.caption('이미 조교 사후 피드백을 생성한 수업은 중복 방지를 위해 다시 생성하지 않습니다. 점수는 집중도나 이해도를 의미하지 않습니다.')
             extra=st.file_uploader('강의 자료 추가 (수업 시작 때 올린 자료는 다시 올리지 않아도 됩니다)',type=['pdf','ppt','pptx'],
                                    accept_multiple_files=True,key=f'review-materials-{sid}')
             from ai_agent import MaterialIndex, generate_post_session, make_writer
@@ -537,11 +576,17 @@ def review_page():
             material_summary(review_index,errors)
             if not review_index.materials:
                 st.caption('자료가 없으면 전사·메모·실험 점수만으로 피드백을 만듭니다.')
-            use_claude=claude_option(f'review-claude-{sid}')
-            if st.button('사후 피드백 · 자료 제안 생성',key=f'assistant-run-{sid}',type='primary'):
+            review_options, review_ready=assistant_options(f'review-assistant-{sid}')
+            review_threshold=st.slider('사후 제안 실험 점수 기준 (이하)', 0, 100, 60, key=f'review-threshold-{sid}')
+            include_selected=st.checkbox('현재 검토 구간에도 제안 생성', key=f'review-selected-{sid}')
+            if include_selected:
+                st.caption(f'선택 구간 {clock(selected[0])}–{clock(selected[1])}과 겹치는 5분 구간을 추가합니다. 전체 구간이 선택되어 있으면 전 구간이 대상입니다.')
+            st.caption('외부 AI 사용 시 전사·관련 자료가 제공자에 전달되며 생성된 검색어는 한국어 위키백과 검색에 사용될 수 있습니다.')
+            if st.button('사후 피드백 · 자료 제안 생성',key=f'assistant-run-{sid}',type='primary',disabled=not review_ready):
                 with st.spinner('강의 조교가 수업 기록을 정리하는 중입니다...'):
                     try:
-                        result=generate_post_session(service,sid,review_index,make_writer(use_claude))
+                        result=generate_post_session(service,sid,review_index,make_writer(**review_options),
+                            score_threshold=review_threshold, selected_range=selected if include_selected else None)
                         files.save(service,sid)
                         st.session_state.assistant_result=(sid,result)
                     except Exception as exc:
@@ -557,7 +602,7 @@ def review_page():
                 else:
                     st.success(f"피드백 {result['feedback']}건 · 자료 제안 {result['suggestions']}건을 만들었습니다.")
                     if result.get('writer_error'):
-                        st.warning(f"Claude 작성 실패로 로컬 결과를 사용했습니다: {result['writer_error']}")
+                        st.warning(f"외부 AI 작성 실패로 로컬 결과를 사용했습니다: {result['writer_error']}")
         with st.container(border=True):
             st.subheader('사후 피드백 · 선택 구간')
             feedback=[e for e in snapshot['feedback'] if visible(e)]
@@ -570,8 +615,11 @@ def review_page():
                 st.caption('저장된 피드백이 없습니다. 위의 AI 강의 조교로 만들 수 있습니다.')
             st.caption('관찰 신호만으로 이해 부족이나 교수법의 문제를 확정하지 않습니다.')
         with st.container(border=True):
-            st.subheader('관련 자료 · 선택 구간')
-            filtered=dict(snapshot,suggestions=[e for e in snapshot['suggestions'] if visible(e)])
+            st.subheader('수업 중·사후 제안 · 선택 구간')
+            st.caption('제안 시각이나 근거 강의록이 선택 구간과 겹치는 항목입니다. 수업 중 숨긴 제안도 강의 기록에 표시합니다.')
+            in_range=lambda e: suggestion_in_range(e,*selected,snapshot['transcripts'])
+            filtered=dict(snapshot,suggestions=[e for e in snapshot['suggestions'] if in_range(e)],
+                          teaching_suggestions=[e for e in snapshot.get('teaching_suggestions', []) if in_range(e)])
             resources(service,sid,filtered,readonly=True)
     with tempfile.TemporaryDirectory() as directory:
         path=Path(directory)/'session.json'

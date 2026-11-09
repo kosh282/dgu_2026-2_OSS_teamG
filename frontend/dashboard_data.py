@@ -25,6 +25,29 @@ def overlap(event, start, end):
     return start <= a <= end if a == b else a < end and b > start
 
 
+def suggestion_phase(event):
+    """생성 시각의 공통 계약 필드로 실시간과 종료 후 생성을 구분한다."""
+    if event.get('created_ms') is not None:
+        return '수업 중 제안'
+    if event.get('created_at_utc'):
+        return '수업 후 제안'
+    return '생성 시점 미상'
+
+
+def related_suggestions(transcript, suggestions):
+    """시각이 아닌 명시적 근거 ID로 전사와 제안을 연결한다."""
+    return [event for event in suggestions
+            if transcript['event_id'] in event['payload'].get('evidence_event_ids', [])]
+
+
+def suggestion_in_range(event, start, end, transcripts):
+    """제안 시각 또는 명시적 근거 전사가 범위에 있으면 표시한다."""
+    if overlap(event, start, end):
+        return True
+    ids = set(event['payload'].get('evidence_event_ids', []))
+    return any(t['event_id'] in ids and overlap(t, start, end) for t in transcripts)
+
+
 def chart(windows, notes, duration, selected=None):
     fig = go.Figure()
     ordered = sorted(windows, key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))

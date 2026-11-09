@@ -7,9 +7,11 @@
 `suggested`/`draft`로 만들어 최종 판단을 교수자에게 둔다.
 """
 import threading
+import math
 
 from integration.service import IntegrationError
 from .writer import LocalWriter, section_keywords
+from .external_search import search_reference
 
 COMPONENT = "assistant"
 MODULE = "assistant"
@@ -39,6 +41,24 @@ def _evidence(transcripts, hit):
     return matched or list(transcripts)
 
 
+def _external_suggestion(writer, texts, hits, searcher):
+    """AI가 검색어를 만들면 검색 결과 제목을 참고해 제안을 보완한다."""
+    result = writer.suggest_teaching(texts, hits)
+    if not result:
+        return None
+    references = searcher(result.get('search_query', '')) if result.get('search_query') else []
+    if references:
+        searched_query = result['search_query']
+        refined = writer.suggest_teaching(texts, hits, references)
+        if refined:
+            result = refined
+        result['search_query'] = searched_query
+    result['external_sources'] = references
+    result['material_sources'] = [{'document_id': h.page.document_id, 'document_name': h.page.document_name,
+                                   'page': h.page.page} for h in hits[:3]]
+    return result
+
+
 class LiveAssistant:
     """수업 중 주기적으로 최근 확정 전사와 강의 자료를 비교해 자료 제안을 만든다.
 
@@ -46,15 +66,22 @@ class LiveAssistant:
     """
 
     def __init__(self, service, session_id, index, writer=None, *, interval_s=10.0,
-                 window_ms=60_000, cooldown_ms=600_000):
+                 window_ms=60_000, cooldown_ms=120_000, score_threshold=60.0, max_score_age_ms=15_000,
+                 searcher=search_reference):
         self.service = service
         self.session_id = session_id
         self.index = index
         self.writer = writer or LocalWriter()
+        self.searcher = searcher
         self.interval_s = interval_s
         self.window_ms = window_ms
         self.cooldown_ms = cooldown_ms
-        self._last_end_ms = -1
+        if isinstance(score_threshold, bool) or not isinstance(score_threshold, (int, float)) or not math.isfinite(score_threshold) or not 0 <= score_threshold <= 100:
+            raise ValueError('실험 점수 기준은 0~100이어야 합니다')
+        self.score_threshold = float(score_threshold)
+        self.max_score_age_ms = max_score_age_ms
+        self._last_score_event_id = None
+        self._last_suggestion_ms = None
         self._suggested = {}  # (document_id, page) -> 마지막 제안 구간 끝
         self._reported_error = None
         self._stop = threading.Event()
@@ -81,11 +108,8 @@ class LiveAssistant:
     def start(self):
         if self._thread is not None:
             raise RuntimeError("이미 시작했습니다")
-        if not self.index:
-            self._status("stopped", "강의 자료가 없어 실시간 자료 제안을 하지 않습니다.")
-            return False
-        where = "Claude 작성(전사·자료 일부를 Anthropic API로 전송)" if self.writer.uses_external_service else "로컬 검색"
-        self._status("running", f"강의 자료 {len(self.index.materials)}개·{self.index.page_count}쪽으로 실시간 자료 제안 중 ({where})")
+        where = f"외부 AI 작성 ({self.writer.model_id}, 전사·자료 일부 전송)" if self.writer.uses_external_service else "로컬 검색"
+        self._status("running", f"점수 {self.score_threshold:g} 이하 구간과 확정 전사를 기다립니다. 자료 {len(self.index.materials)}개 ({where})")
         self._thread = threading.Thread(target=self._loop, name="lecture-assistant", daemon=True)
         self._thread.start()
         return True
@@ -116,17 +140,48 @@ class LiveAssistant:
                 pass
 
     def step(self):
-        """새 확정 전사가 있으면 한 번 검색해 제안을 만든다. 만든 이벤트(없으면 None)를 돌려준다."""
+        """최근 유효 점수가 기준 이하이고 전사가 있으면 자료 또는 수업 제안을 만든다."""
         snapshot = self.service.get_dashboard_snapshot(self.session_id)
-        transcripts = snapshot["transcripts"]
-        newest = max((event["end_ms"] for event in transcripts), default=-1)
-        if newest <= self._last_end_ms:
+        now = self.service.elapsed_ms(self.session_id)
+        windows = snapshot['engagement_windows']
+        if snapshot['status'].get('model') != 'running' or not windows:
             return None
-        self._last_end_ms = newest
-        window = [event for event in transcripts if event["end_ms"] >= newest - self.window_ms]
+        score_event = max(windows, key=lambda event: (event['end_ms'], event.get('created_ms') or 0))
+        output = score_event['payload'].get('model_output') or {}
+        value = output.get('value') if isinstance(output, dict) else None
+        if (score_event['quality']['status'] not in {'valid', 'partial'}
+                or isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not 0 <= value <= self.score_threshold
+                or not 0 <= now - score_event['end_ms'] <= self.max_score_age_ms
+                or score_event['event_id'] == self._last_score_event_id
+                or (self._last_suggestion_ms is not None and now - self._last_suggestion_ms < self.cooldown_ms)):
+            return None
+        window = [event for event in snapshot['transcripts']
+                  if now - self.window_ms <= event['end_ms'] <= now]
+        if not window:
+            return None
         query = " ".join(event["payload"]["text"] for event in window)
+        newest = max(event['end_ms'] for event in window)
         hits = [hit for hit in self.index.search(query)
                 if newest - self._suggested.get((hit.page.document_id, hit.page.page), -10**12) > self.cooldown_ms]
+        if self.writer.uses_external_service and hasattr(self.writer, 'suggest_teaching'):
+            result = _external_suggestion(self.writer, [event['payload']['text'] for event in window], hits, self.searcher)
+            self._report_writer_error(fallback=False)
+            if result is None:
+                return None
+            payload = {**result, 'origin': 'ai_generated', 'status': 'suggested', 'trigger_threshold': self.score_threshold,
+                       'evidence_event_ids': [score_event['event_id']] + [event['event_id'] for event in window]}
+            event = self.service.make_event(
+                self.session_id, 'teaching_suggestion', payload, score_event['start_ms'], score_event['end_ms'],
+                MODULE, model_id=self.writer.model_id, model_version=self.writer.model_version)
+            try:
+                self.service.receive_event(event)
+            except IntegrationError:
+                return None
+            self._last_score_event_id = score_event['event_id']
+            self._last_suggestion_ms = now
+            self.suggestion_count += 1
+            return event
         if not hits:
             return None
         result = self.writer.suggest([event["payload"]["text"] for event in window], hits)
@@ -134,9 +189,12 @@ class LiveAssistant:
         if result is None:
             return None
         evidence = _evidence(window, result["hit"])
+        payload = _suggestion_payload(result, evidence)
+        payload['trigger_threshold'] = self.score_threshold
+        payload['evidence_event_ids'].append(score_event['event_id'])
         model_id, model_version = _model_ids(self.writer, result)
         event = self.service.make_event(
-            self.session_id, "resource_suggestion", _suggestion_payload(result, evidence),
+            self.session_id, "resource_suggestion", payload,
             min(e["start_ms"] for e in evidence), max(e["end_ms"] for e in evidence), MODULE,
             model_id=model_id, model_version=model_version)
         try:
@@ -145,17 +203,20 @@ class LiveAssistant:
             return None  # 생성 직후 세션이 종료된 경우
         page = result["hit"].page
         self._suggested[(page.document_id, page.page)] = newest
+        self._last_score_event_id = score_event['event_id']
+        self._last_suggestion_ms = now
         self.suggestion_count += 1
         return event
 
-    def _report_writer_error(self):
+    def _report_writer_error(self, fallback=True):
         error = self.writer.last_error
         if error != self._reported_error:
             self._reported_error = error
             if error:
-                self._status("running", f"Claude 작성 실패, 로컬 검색 결과로 대체: {error}", quality="partial")
+                action = '로컬 검색 결과로 대체' if fallback else '전사 기반 제안 생성 보류'
+                self._status("running", f"외부 AI 작성 실패, {action}: {error}", quality="partial")
             else:
-                self._status("running", "Claude 작성이 다시 동작합니다.")
+                self._status("running", "외부 AI 작성이 다시 동작합니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +242,11 @@ def _engagement_line(windows):
             values.append(float(value))
     if not values:
         return f"실험 참여 점수: 이 구간은 관측 불가({unobservable}개 구간)로 점수가 없습니다."
-    average = sum(values) / len(values)
-    return (f"실험 참여 점수(참고): 평균 {average:.0f}점, 점수 있는 구간 {len(values)}개·관측 불가 {unobservable}개. "
+    ordered = sorted(windows, key=lambda event: (event['start_ms'], event['end_ms']))
+    overlapping = any(b['start_ms'] < a['end_ms'] for a, b in zip(ordered, ordered[1:]))
+    summary = (f"구간별 범위 {min(values):.0f}~{max(values):.0f}점 (구간 중첩으로 평균 미산출)"
+               if overlapping else f"구간 평균 {sum(values) / len(values):.0f}점")
+    return (f"실험 참여 점수(참고): {summary}, 점수 있는 구간 {len(values)}개·관측 불가 {unobservable}개. "
             "집중도·이해도를 뜻하지 않습니다.")
 
 
@@ -190,15 +254,20 @@ def _existing_assistant_feedback(snapshot):
     return [event for event in snapshot["feedback"] if event["provenance"]["module"] == MODULE]
 
 
-def generate_post_session(service, session_id, index, writer=None, *, section_ms=300_000):
+def generate_post_session(service, session_id, index, writer=None, *, section_ms=300_000, searcher=search_reference,
+                          score_threshold=60.0, selected_range=None):
     """종료된(또는 진행 중인) 세션에 사후 자료 제안과 구간별 피드백을 추가한다.
 
-    - 자료 제안이 없던 구간은 강의 자료에서 관련 페이지를 찾아 수업 시각에 맞춘 제안을 만든다.
+    - 유효한 낮은 점수, 교수자 메모 또는 명시적으로 선택한 검토 구간에만 제안한다.
     - 확정 전사가 있는 구간마다 피드백(`draft`)을, 마지막에 수업 전체 피드백을 만든다.
     같은 세션에 이미 조교 피드백이 있으면 중복을 막기 위해 새로 만들지 않는다.
     반환값: {"suggestions": n, "feedback": n, "skipped": 사유 또는 None, "writer_error": 오류 또는 None}
     """
     writer = writer or LocalWriter()
+    if isinstance(score_threshold, bool) or not isinstance(score_threshold, (int, float)) or not math.isfinite(score_threshold) or not 0 <= score_threshold <= 100:
+        raise ValueError('실험 점수 기준은 0~100이어야 합니다')
+    if selected_range is not None and (len(selected_range) != 2 or selected_range[0] < 0 or selected_range[0] >= selected_range[1]):
+        raise ValueError('선택 구간은 시작보다 끝이 커야 합니다')
     snapshot = service.get_dashboard_snapshot(session_id)
     if _existing_assistant_feedback(snapshot):
         return {"suggestions": 0, "feedback": 0, "skipped": "이미 조교 피드백이 있습니다.", "writer_error": None}
@@ -215,19 +284,49 @@ def generate_post_session(service, session_id, index, writer=None, *, section_ms
         section_transcripts = [event for event in transcripts if start <= event["start_ms"] < end]
         if not section_transcripts:
             continue
+        low_scores = []
+        for event in snapshot['engagement_windows']:
+            output = event['payload'].get('model_output') or {}
+            value = output.get('value') if isinstance(output, dict) else None
+            if (_overlaps(event, start, end) and event['quality']['status'] in {'valid', 'partial'}
+                    and not isinstance(value, bool) and isinstance(value, (int, float))
+                    and math.isfinite(value) and 0 <= value <= score_threshold):
+                low_scores.append(event)
+        marked_notes = [e for e in snapshot['notes'] if start <= e['start_ms'] < end]
+        selected = selected_range is not None and start < selected_range[1] and end > selected_range[0]
+        eligible = bool(low_scores or marked_notes or selected)
         texts = [event["payload"]["text"] for event in section_transcripts]
         hits = index.search(" ".join(texts), limit=3) if has_materials else []
         matched_pages.update((hit.page.document_id, hit.page.page) for hit in hits)
-        existing = [event for event in service.get_dashboard_snapshot(session_id)["suggestions"]
+        current_snapshot = service.get_dashboard_snapshot(session_id)
+        existing = [event for event in current_snapshot["suggestions"] + current_snapshot.get('teaching_suggestions', [])
                     if _overlaps(event, start, end)]
         # 수업 중 제안이 없던 구간만 타임라인에 맞춘 사후 제안을 추가한다.
-        if hits and not existing:
+        if eligible and not existing and writer.uses_external_service and hasattr(writer, 'suggest_teaching'):
+            context = texts + [f"교수자 메모: {e['payload']['text']}" for e in marked_notes]
+            result = _external_suggestion(writer, context, hits, searcher)
+            if result:
+                payload = {**result, 'origin': 'ai_generated', 'status': 'suggested',
+                           'evidence_event_ids': [e['event_id'] for e in section_transcripts + low_scores + marked_notes]}
+                if low_scores:
+                    payload['trigger_threshold'] = float(score_threshold)
+                event = service.make_event(session_id, 'teaching_suggestion', payload,
+                    min(e['start_ms'] for e in section_transcripts), max(e['end_ms'] for e in section_transcripts),
+                    MODULE, model_id=writer.model_id, model_version=writer.model_version)
+                service.receive_event(event)
+                existing.append(event)
+                created_suggestions += 1
+        elif eligible and hits and not existing:
             result = writer.suggest(texts, hits)
             if result is not None:
                 evidence = _evidence(section_transcripts, result["hit"])
                 model_id, model_version = _model_ids(writer, result)
+                payload = _suggestion_payload(result, evidence)
+                payload['evidence_event_ids'] += [e['event_id'] for e in low_scores + marked_notes]
+                if low_scores:
+                    payload['trigger_threshold'] = float(score_threshold)
                 event = service.make_event(
-                    session_id, "resource_suggestion", _suggestion_payload(result, evidence),
+                    session_id, "resource_suggestion", payload,
                     min(e["start_ms"] for e in evidence), max(e["end_ms"] for e in evidence), MODULE,
                     model_id=model_id, model_version=model_version)
                 service.receive_event(event)
@@ -238,7 +337,7 @@ def generate_post_session(service, session_id, index, writer=None, *, section_ms
             "start_ms": start, "end_ms": end, "transcripts": section_transcripts,
             "keywords": section_keywords(texts), "pages": hits, "has_materials": has_materials,
             "notes": [e["payload"]["text"] for e in current["notes"] if start <= e["start_ms"] < end],
-            "suggestions": [f"{e['payload']['source']['document_name']} {e['payload']['source']['page'] or '?'}쪽" for e in existing],
+            "suggestions": [e['payload']['title'] for e in existing],
             "suggestion_ids": [e["event_id"] for e in existing],
             "engagement": _engagement_line([e for e in current["engagement_windows"] if _overlaps(e, start, end)]),
         })

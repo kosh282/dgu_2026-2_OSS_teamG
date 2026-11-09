@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import SessionFiles, chart, overlap, score
+from frontend.dashboard_data import (SessionFiles, chart, overlap, score, suggestion_phase,
+                                     related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
 SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
@@ -41,6 +42,19 @@ class DashboardTests(unittest.TestCase):
     def test_overlap_includes_crossing_transcript(self):
         self.assertTrue(overlap({'start_ms':100,'end_ms':500},200,300))
         self.assertFalse(overlap({'start_ms':100,'end_ms':200},200,300))
+
+    def test_suggestion_is_linked_by_evidence_across_timeline_and_phases(self):
+        transcript = {'event_id': 'transcript', 'start_ms': 100, 'end_ms': 200}
+        live = {'event_id': 'suggestion', 'start_ms': 300, 'end_ms': 400,
+                'created_ms': 410, 'created_at_utc': None,
+                'payload': {'evidence_event_ids': ['transcript']}}
+        post = dict(live, created_ms=None, created_at_utc='2026-01-01T00:00:00Z')
+        self.assertEqual(suggestion_phase(live), '수업 중 제안')
+        self.assertEqual(suggestion_phase(post), '수업 후 제안')
+        self.assertEqual(related_suggestions(transcript, [live]), [live])
+        self.assertTrue(suggestion_in_range(live, 100, 200, [transcript]))
+        self.assertFalse(suggestion_in_range(live, 100, 200, []))
+        self.assertTrue(suggestion_in_range(live, 300, 400, []))
 
     def test_edit_save_reload_and_notes_do_not_duplicate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,6 +143,17 @@ class DashboardTests(unittest.TestCase):
         next(c for c in app.checkbox if c.label.startswith('전사·메모')).check().run()
         self.assertFalse(app.exception)
         self.assertFalse(next(b for b in app.button if b.label=='세션 시작').disabled)
+
+    def test_personal_api_selection_requires_key(self):
+        from streamlit.testing.v1 import AppTest
+        app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20).run()
+        next(s for s in app.selectbox if s.label=='문장 작성 방식').select('OpenAI').run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any('API 키와 모델 ID' in warning.value for warning in app.warning))
+        key=next(t for t in app.text_input if t.label=='개인 API 키')
+        key.set_value('test-only-key').run()
+        self.assertFalse(app.exception)
+        self.assertFalse(any('API 키와 모델 ID' in warning.value for warning in app.warning))
 
 if __name__=='__main__':
     unittest.main()

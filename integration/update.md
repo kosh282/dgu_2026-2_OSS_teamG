@@ -4,7 +4,7 @@
 
 ## 구현 범위
 
-팀 공통 데이터 계약 v0.1.0을 바탕으로 실시간 수업 데이터를 한 프로세스에서 관리하는 Python 최소 버전입니다. 표준 라이브러리만 사용하며 Python 3.10 이상을 권장합니다.
+팀 공통 데이터 계약 v0.1.0과 팀 합의 전 v0.2.0 확장안을 바탕으로 실시간 수업 데이터를 한 프로세스에서 관리합니다. 표준 라이브러리만 사용하며 Python 3.10 이상을 권장합니다.
 
 - `integration/contracts.py`: 공통 이벤트 필드와 주요 이벤트별 payload 검사. 알려지지 않은 이벤트도 공통 형식에 맞으면 보존
 - `integration/service.py`: 세션 생성·공통 시계·이벤트 수신, 현재 상태, 프런트용 스냅샷, 시간 구간 조회, JSON 저장/재열기
@@ -72,7 +72,7 @@ snapshot = service.get_dashboard_snapshot(session_id)
 
 - `transcript_partial`은 발화 ID별 최신 `revision`만 메모리에 유지하고 저장하지 않습니다. `transcript_final`을 받으면 부분 전사를 지우고 확정합니다.
 - `transcript_edited`는 기존 확정본의 ID를 `replaces_event_id`에 넣고 더 높은 `revision`과 동일 시간 구간으로 전달합니다. 현재 확정본만 저장합니다.
-- `resource_suggestion`과 `post_session_feedback`은 현재 존재하는 근거 이벤트 ID를 받아야 합니다. 전사 수정으로 근거가 사라진 경우 스냅샷에 `evidence_needs_refresh: true`가 붙습니다. 이 필드는 화면용이며 저장 이벤트를 바꾸지 않습니다.
+- `resource_suggestion`, `teaching_suggestion`과 `post_session_feedback`은 현재 존재하는 근거 이벤트 ID를 받아야 합니다. 전사 수정으로 근거가 사라진 경우 스냅샷에 `evidence_needs_refresh: true`가 붙습니다. 이 필드는 화면용이며 저장 이벤트를 바꾸지 않습니다.
 - 스냅샷의 `status`, `partial_transcripts`, `transcripts`, `engagement_windows`, `notes`, `suggestions`, `feedback`을 프런트가 읽습니다. 화면용 데이터는 복사본입니다.
 - 이벤트는 수신 순서로 저장하고 타임라인과 구간 조회는 발생 시각으로 정렬합니다. 저장 파일의 최상위 구조는 `schema_version`, `session`, `config`, `events`입니다.
 - 원본 프레임·오디오·얼굴 이미지·개인 트랙 등을 저장 이벤트에 넣지 마세요. 일부 대표 키를 차단하지만 이 기능은 모든 민감 데이터를 찾아내는 도구가 아닙니다. 전사와 메모에는 개인 식별 내용이 들어갈 수 있습니다.

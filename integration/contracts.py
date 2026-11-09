@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from uuid import UUID
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
 MODULES = {"capture", "vision", "model", "speech", "ui", "assistant", "system"}
 QUALITY = {"valid", "partial", "not_observable"}
 # 원본 입력·개인별 중간 데이터의 대표 키. 포괄적인 개인정보 탐지기는 아니다.
@@ -161,8 +161,12 @@ def validate_event(event, session_id):
         if not isinstance(payload.get("text"), str):
             _fail("payload.text", "문자열이어야 합니다")
         _id_list(payload.get("linked_event_ids"), "payload.linked_event_ids")
-    elif kind in {"resource_suggestion", "post_session_feedback"}:
+    elif kind in {"resource_suggestion", "teaching_suggestion", "post_session_feedback"}:
         _id_list(payload.get("evidence_event_ids"), "payload.evidence_event_ids")
+        if "trigger_threshold" in payload:
+            threshold = payload["trigger_threshold"]
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 <= threshold <= 100:
+                _fail("payload.trigger_threshold", "0~100 사이 숫자여야 합니다")
         if kind == "resource_suggestion":
             _string(payload.get("title"), "payload.title")
             if not isinstance(payload.get("description"), str):
@@ -176,6 +180,29 @@ def validate_event(event, session_id):
                 _int(source["page"], "payload.source.page", 1)
             if payload.get("status") not in {"suggested", "accepted", "dismissed"}:
                 _fail("payload.status", "허용되지 않은 제안 상태입니다")
+        elif kind == "teaching_suggestion":
+            _string(payload.get("title"), "payload.title")
+            _string(payload.get("description"), "payload.description")
+            if not isinstance(payload.get("search_query"), str) or len(payload["search_query"]) > 200:
+                _fail("payload.search_query", "200자 이하의 검색어 문자열이어야 합니다")
+            if payload.get("status") != "suggested" or payload.get("origin") != "ai_generated":
+                _fail("payload", "AI 생성 제안 상태가 필요합니다")
+            if not payload["evidence_event_ids"]:
+                _fail("payload.evidence_event_ids", "근거 이벤트가 필요합니다")
+            for key in ('external_sources', 'material_sources'):
+                if key in payload and (not isinstance(payload[key], list) or len(payload[key]) > 3):
+                    _fail(f'payload.{key}', '최대 3개의 출처 배열이어야 합니다')
+            for source in payload.get('external_sources', []):
+                _object(source, 'payload.external_sources')
+                _string(source.get('title'), 'payload.external_sources.title')
+                if not isinstance(source.get('url'), str) or not source['url'].startswith('https://ko.wikipedia.org/wiki/'):
+                    _fail('payload.external_sources.url', '위키백과 문서 주소가 필요합니다')
+            for source in payload.get('material_sources', []):
+                _object(source, 'payload.material_sources')
+                _uuid(source.get('document_id'), 'payload.material_sources.document_id')
+                _string(source.get('document_name'), 'payload.material_sources.document_name')
+                if source.get('page') is not None:
+                    _int(source['page'], 'payload.material_sources.page', 1)
         else:
             if not isinstance(payload.get("text"), str):
                 _fail("payload.text", "문자열이어야 합니다")

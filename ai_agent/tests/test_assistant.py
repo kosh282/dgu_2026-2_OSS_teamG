@@ -51,6 +51,18 @@ def new_session(title="운영체제"):
     return service, sid
 
 
+def score_window(service, sid, value=50, *, start=0, end=10000, status='valid'):
+    service.now = max(service.now, end)
+    running = service.make_event(sid, 'analysis_status', {'component': 'model', 'state': 'running', 'message': 'test'}, 0, 0, 'model')
+    service.receive_event(running)
+    event = service.make_event(sid, 'engagement_window', {
+        'model_output': None if value is None else {'value': value},
+        'observation': {'valid_count': None, 'eligible_count': None, 'observable_ratio': None, 'count_unit': None}, 'signals': {},
+    }, start, end, 'model', quality_status=status, model_id='test', model_version='1')
+    service.receive_event(event)
+    return event
+
+
 class RetrievalTests(unittest.TestCase):
     def test_finds_page_despite_particles(self):
         index = MaterialIndex([LECTURE])
@@ -126,6 +138,7 @@ class LiveAssistantTests(unittest.TestCase):
         self.assertIsNone(assistant.step())  # 전사 없음
         say(service, sid, 1_000, 4_000, "오늘은 점심 이야기부터 하겠습니다")
         evidence = say(service, sid, 5_000, 9_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
+        score = score_window(service, sid)
         event = assistant.step()
         self.assertIsNotNone(event)
         validate_event(event, sid)
@@ -133,7 +146,7 @@ class LiveAssistantTests(unittest.TestCase):
         self.assertEqual(payload["source"]["page"], 2)
         self.assertEqual(payload["source"]["document_id"], LECTURE.document_id)
         self.assertEqual(payload["status"], "suggested")
-        self.assertEqual(payload["evidence_event_ids"], [evidence["event_id"]])
+        self.assertEqual(payload["evidence_event_ids"], [evidence["event_id"], score["event_id"]])
         self.assertEqual((event["start_ms"], event["end_ms"]), (5_000, 9_000))
         self.assertEqual(event["provenance"]["module"], "assistant")
         self.assertEqual(event["provenance"]["model_id"], LocalWriter.model_id)
@@ -143,10 +156,12 @@ class LiveAssistantTests(unittest.TestCase):
         say(service, sid, 10_000, 14_000, "라운드 로빈 스케줄링에서 타임 퀀텀이 짧으면 문맥 교환이 늘어납니다")
         self.assertIsNone(assistant.step())
 
-    def test_without_materials_reports_stopped(self):
+    def test_without_materials_waits_for_events(self):
         service, sid = new_session()
-        self.assertFalse(LiveAssistant(service, sid, MaterialIndex([])).start())
-        self.assertEqual(service.get_dashboard_snapshot(sid)["status"]["assistant"], "stopped")
+        assistant = LiveAssistant(service, sid, MaterialIndex([]))
+        self.assertTrue(assistant.start())
+        self.assertEqual(service.get_dashboard_snapshot(sid)["status"]["assistant"], "running")
+        assistant.stop()
 
     def test_thread_stops_with_session(self):
         service, sid = new_session()
@@ -178,7 +193,7 @@ class PostSessionTests(unittest.TestCase):
 
         result = generate_post_session(service, sid, MaterialIndex([LECTURE]))
         self.assertIsNone(result["skipped"])
-        self.assertEqual(result["suggestions"], 2)  # 두 구간 모두 수업 중 제안이 없었음
+        self.assertEqual(result["suggestions"], 1)  # 메모가 있는 두 번째 구간만 제안
         self.assertEqual(result["feedback"], 3)  # 구간 2개 + 수업 전체
         snapshot = service.get_dashboard_snapshot(sid)
         for event in snapshot["feedback"] + snapshot["suggestions"]:
@@ -186,7 +201,7 @@ class PostSessionTests(unittest.TestCase):
             self.assertIsNone(event["created_ms"])  # 종료 후 생성
             self.assertIsNotNone(event["created_at_utc"])
         pages = sorted(e["payload"]["source"]["page"] for e in snapshot["suggestions"])
-        self.assertEqual(pages, [1, 3])
+        self.assertEqual(pages, [3])
         second = next(e for e in snapshot["feedback"] if e["start_ms"] == 300_000)
         self.assertIn("예시 더 들기", second["payload"]["text"])
         self.assertIn("관측 불가", second["payload"]["text"])
@@ -203,11 +218,12 @@ class PostSessionTests(unittest.TestCase):
             rsid = reopened.load_session(path)
             again = reopened.get_dashboard_snapshot(rsid)
         self.assertEqual(len(again["feedback"]), 3)
-        self.assertEqual(len(again["suggestions"]), 2)
+        self.assertEqual(len(again["suggestions"]), 1)
 
     def test_skips_existing_live_suggestion_section(self):
         service, sid = new_session()
         say(service, sid, 1_000, 5_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
+        score_window(service, sid)
         LiveAssistant(service, sid, MaterialIndex([LECTURE])).step()
         service.stop_session(sid)
         result = generate_post_session(service, sid, MaterialIndex([LECTURE]))
@@ -247,6 +263,7 @@ class ClaudeWriterTests(unittest.TestCase):
         client, messages = fake_client({"choice": 0, "title": "라운드 로빈 슬라이드", "description": "타임 퀀텀 설명과 연결됩니다."})
         service, sid = new_session()
         say(service, sid, 1_000, 5_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
+        score_window(service, sid)
         event = LiveAssistant(service, sid, MaterialIndex([LECTURE]), ClaudeWriter(client=client)).step()
         self.assertEqual(event["payload"]["title"], "라운드 로빈 슬라이드")
         self.assertEqual(event["provenance"]["model_id"], "claude-opus-5-5")
@@ -260,6 +277,7 @@ class ClaudeWriterTests(unittest.TestCase):
         client, _ = fake_client({"choice": -1, "title": "", "description": ""})
         service, sid = new_session()
         say(service, sid, 1_000, 5_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
+        score_window(service, sid)
         self.assertIsNone(LiveAssistant(service, sid, MaterialIndex([LECTURE]), ClaudeWriter(client=client)).step())
 
     def test_failure_falls_back_to_local(self):
@@ -267,6 +285,7 @@ class ClaudeWriterTests(unittest.TestCase):
         client, _ = fake_client(anthropic.AnthropicError("no credentials"))
         service, sid = new_session()
         say(service, sid, 1_000, 5_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
+        score_window(service, sid)
         writer = ClaudeWriter(client=client)
         event = LiveAssistant(service, sid, MaterialIndex([LECTURE]), writer).step()
         self.assertEqual(event["provenance"]["model_id"], LocalWriter.model_id)
