@@ -13,9 +13,10 @@ class MultiFaceGaussianRuntime:
     """ID는 화면 표에만 제공한다. 특징 및 발행용 latest에는 넣지 않는다."""
 
     model_id = 'multi-face-gaussian'
-    model_version = 'multi-gaussian-0.1'
+    model_version = 'multi-gaussian-0.2'
     max_participants = 32
     ttl_ms = 120000
+    calibration_grace_ms = 3000
 
     def __init__(self, config=None):
         self.config = config or ModelConfig.gaussian()
@@ -59,7 +60,7 @@ class MultiFaceGaussianRuntime:
         calibration = HeadCalibration()
         calibration.start()
         return dict(calibration=calibration, runtime=GaussianRuntime(self.config),
-                    last_seen=timestamp, present=False, track=None,
+                    last_seen=timestamp, last_valid_ms=None, present=False, track=None,
                     row=dict(id=identity, status='calibrating', calibration_status='collecting',
                              current_direction_score=None, score=None,
                              reason_codes=['baseline_unavailable']))
@@ -111,9 +112,17 @@ class MultiFaceGaussianRuntime:
             single_face = deepcopy(face)
             single['features']['faces'] = [single_face]
             calibration = person['calibration']
+            input_reason = calibration._input_reason([single_face])
+            last_valid = person['last_valid_ms']
+            # 확정 ID가 복귀했더라도 긴 관측 공백 뒤에는 기존 기준을 재사용하지 않는다.
+            if (calibration.status == 'ready' and last_valid is not None and
+                    (timestamp < last_valid or timestamp - last_valid > self.calibration_grace_ms)):
+                calibration.start()
+                person['runtime'].reset()
             # 불량 입력으로 완료된 개인 기준을 삭제하지 않는다.
-            if calibration._input_reason([single_face]) is None:
+            if input_reason is None:
                 calibration.update([single_face], timestamp)
+                person['last_valid_ms'] = timestamp
             else:
                 single_face['head_angles_relative_degrees'] = None
                 if calibration.status != 'ready':
@@ -142,6 +151,17 @@ class MultiFaceGaussianRuntime:
                            score=round(sum(recent) / len(recent), 1) if recent else None,
                            detected_count=len(faces), observable_count=observable_count,
                            scoreable_count=len(primitives))
+        candidates = [r.get('eye_candidate') for r in outputs]
+        # 다인 비교는 모든 검출 얼굴이 ID와 후보 점수를 가진 경우에만 표시한다.
+        if (candidates and len(outputs) == len(faces) and all(
+                isinstance(item, dict) and item.get('candidate_total') is not None for item in candidates)):
+            self.latest['eye_candidate'] = {
+                key: round(sum(item[key] for item in candidates) / len(candidates), 1)
+                for key in ('candidate_total', 'head_score', 'eye_score')}
+            self.latest['eye_candidate'].update(status='group_candidate', count=len(candidates))
+        else:
+            self.latest['eye_candidate'] = {'candidate_total': None, 'head_score': None,
+                                            'eye_score': None, 'status': 'group_unavailable'}
         self.latest['status'] = 'scored' if recent else 'deferred'
         self.latest['reason_codes'] = list(dict.fromkeys(
             reason for result in outputs for reason in result['reason_codes']))
@@ -175,8 +195,10 @@ class MultiFaceGaussianRuntime:
             scoreable_ms += right - left
             u, v = (left - origin) / window, (right - origin) / window
             weight = (v - u) * (v + u) / 2
-            for pitch, yaw in primitives:
-                numerator += weight * gaussian_angle_score(HeadAngles(pitch, yaw, 0), self.config)
+            for primitive in primitives:
+                score = (primitive[2] if len(primitive) == 3 else
+                         gaussian_angle_score(HeadAngles(primitive[0], primitive[1], 0), self.config))
+                numerator += weight * score
                 denominator += weight
                 person_ms += right - left
         reasons = []

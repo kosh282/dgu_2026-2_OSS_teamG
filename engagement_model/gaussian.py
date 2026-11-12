@@ -7,6 +7,7 @@ from .config import ModelConfig
 from .scoring import _number, _validate_angles
 from .input_adapter import HeadAngles, soften_angle
 from .runtime import EngagementRuntime
+from .eye_candidate import EyeCandidate
 
 
 def gaussian_angle_score(angles, config):
@@ -64,7 +65,8 @@ def gaussian_window_score(segments, start, end, config):
             observable_ms += right - left
         if not observable or primitive is None:
             continue
-        score = gaussian_angle_score(HeadAngles(primitive[0], primitive[1], 0), config)
+        score = (primitive[2] if len(primitive) == 3 else
+                 gaussian_angle_score(HeadAngles(primitive[0], primitive[1], 0), config))
         # 정규화된 시간 커널 적분: (v²-u²)/2. 뺄셈 오차를 줄이도록 인수분해한다.
         u, v = (left - origin) / window_ms, (right - origin) / window_ms
         weight = (v - u) * (v + u) / 2
@@ -97,9 +99,10 @@ class GaussianRuntime(EngagementRuntime):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
+        self._eye_candidate = EyeCandidate(max_gap_ms=round(config.max_observation_hold_seconds * 1000))
         super().__init__(config, **kwargs)
         self.model_id = 'gaussian-head-direction'
-        self.model_version = 'angle-time-0.3' if config.gaussian_angle_mode == 'softened' else 'angle-time-0.2'
+        self.model_version = 'angle-time-0.4'
         self.latest = self._empty_result('waiting_for_observation')
 
     def _reset_time_state(self, **kwargs):
@@ -109,6 +112,7 @@ class GaussianRuntime(EngagementRuntime):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
+        self._eye_candidate.reset()
 
     def _empty_result(self, reason):
         # 실행 중/미리보기 전용 값이다. JSON 이벤트의 score 의미는 변경하지 않는다.
@@ -134,6 +138,7 @@ class GaussianRuntime(EngagementRuntime):
     def __call__(self, feature_window):
         result = super().__call__(feature_window)
         if result['status'] == 'input_error':
+            self._eye_candidate.reset()
             self._last_display_score = self._last_display_score_ms = None
             result.update(self._display_fields(None))
             return result
@@ -174,9 +179,17 @@ class GaussianRuntime(EngagementRuntime):
         if observable and not (transition or down):
             score_angles = gaussian_score_angles(HeadAngles(**angles), self.config)
             primitive = (score_angles.pitch, score_angles.yaw)
+        elif down and self.downward_policy is None and self._down_start_score is not None:
+            # 직전 유효 점수에서 5초 유예 후 10초에 걸쳐 최대 20점 감소한다.
+            elapsed = max(0.0, self._down_seconds - self.config.down_grace_seconds)
+            decay = min(1.0, elapsed / self.config.down_decay_seconds)
+            adjusted = max(0.0, self._down_start_score - self.config.down_penalty * decay)
+            # 세 번째 원소는 방향각이 아닌 아래 보기 정책 점수다.
+            primitive = (None, None, adjusted)
         result['gaussian_observation'] = primitive
         result['current_direction_score'] = (
-            round(gaussian_angle_score(HeadAngles(primitive[0], primitive[1], 0), self.config), 1)
+            round(primitive[2] if len(primitive) == 3 else
+                  gaussian_angle_score(HeadAngles(primitive[0], primitive[1], 0), self.config), 1)
             if primitive is not None else None
         )
         self._gaussian_sample = (timestamp, observable, primitive)
@@ -190,9 +203,12 @@ class GaussianRuntime(EngagementRuntime):
         reasons = list(result['reason_codes']) + summary['reason_codes']
         if not observable:
             summary['score'] = None
-        elif transition or down:
+        elif (transition or down) and primitive is None:
             summary['score'] = None
             reasons.append('downward_activity_uncertain' if down else 'downward_transition_uncertain')
+        elif down and primitive is not None:
+            reasons.append('looking_down_score_decay' if self._down_seconds > self.config.down_grace_seconds
+                           else 'looking_down_grace')
         result['score'] = summary['score']
         result['status'] = 'scored' if result['score'] is not None else 'deferred'
         result['reason_codes'] = list(dict.fromkeys(reasons))
@@ -203,4 +219,6 @@ class GaussianRuntime(EngagementRuntime):
             self._last_display_score = self._last_display_score_ms = None
         result['previous_stable_score'] = self._previous_stable_score
         result.update(self._display_fields(timestamp, result['score']))
+        # 비교 전용 후보는 메모리에만 두고 세션 점수나 이벤트를 변경하지 않는다.
+        result['eye_candidate'] = self._eye_candidate.update(feature_window, result)
         return result

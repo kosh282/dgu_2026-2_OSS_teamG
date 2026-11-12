@@ -95,7 +95,7 @@ class WebcamRecoveryTests(unittest.TestCase):
         for feature in [feature_window(200, faces=0), feature_window(300, pitch=30)]:
             model(feature)
             diagnostics.update(feature, model)
-            self.assertIn('candidates: unavailable', '\n'.join(diagnostics.lines))
+            self.assertTrue(any(text in '\n'.join(diagnostics.lines) for text in ('candidates: unavailable', 'Looking-down policy score')))
             self.assertIsNone(diagnostics.previous)
         returned = feature_window(400)
         model(returned)

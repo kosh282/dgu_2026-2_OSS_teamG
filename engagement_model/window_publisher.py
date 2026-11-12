@@ -42,7 +42,8 @@ class WindowPublisher:
         single_reset = (not callable(getattr(self.runtime, 'aggregate_window', None))
                         and bool(set(result.get('reason_codes', ())) & reset_reasons))
         if self.config.scoring_method in {'huang', 'gaussian'} and (
-                result.get('status') == 'input_error' or single_reset):
+                result.get('status') == 'input_error' or single_reset
+                or 'position_association_reset' in result.get('reason_codes', ())):
             # 재보정/대상 변경 전후의 상대각을 같은 통계에 섞지 않는다.
             self._segments.clear()
         self._sample = (timestamp, result.get('angles') is not None, result.get('score'),
@@ -143,7 +144,7 @@ class WindowPublisher:
         }
         if self.config.scoring_method == 'gaussian':
             payload['model_extensions'][self.model_id].update({
-                'version': 'angle-time-window-3' if self.config.gaussian_angle_mode == 'softened' else 'angle-time-window-2',
+                'version': 'angle-time-window-4',
                 'angle_mode': self.config.gaussian_angle_mode,
                 'pitch_deadband_degrees': self.config.gaussian_pitch_deadband_degrees,
                 'pitch_small_angle_scale': self.config.gaussian_pitch_small_angle_scale,
@@ -155,6 +156,9 @@ class WindowPublisher:
                 'sigma_yaw_degrees': self.config.gaussian_sigma_yaw_degrees,
                 'down_transition_pitch_degrees': self.config.gaussian_down_transition_pitch_degrees,
                 'down_confirm_seconds': self.config.gaussian_down_confirm_seconds,
+                'down_grace_seconds': self.config.down_grace_seconds,
+                'down_decay_seconds': self.config.down_decay_seconds,
+                'down_penalty': self.config.down_penalty,
                 'window_seconds': self.config.window_seconds,
                 'temporal_weighting': 'linear-time-integral',
                 'max_observation_hold_seconds': self.config.max_observation_hold_seconds,
@@ -163,7 +167,7 @@ class WindowPublisher:
             })
         if callable(aggregate):
             payload['model_extensions'][self.model_id].update({
-                'aggregation': 'reidentified-person-time-weighted-gaussian',
+                'aggregation': getattr(self.runtime, 'aggregation_label', 'reidentified-person-time-weighted-gaussian'),
                 'scoreable_person_duration_ms': summary['scoreable_person_duration_ms'],
             })
         event = self.service.make_event(

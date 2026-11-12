@@ -53,12 +53,12 @@ class ModelConfig:
     @classmethod
     def gaussian(cls, **overrides):
         """각도 공간 Gaussian의 실험 초기값. 논문의 시야 폭/높이 계수가 아니다."""
-        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-0.3",
+        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-0.4",
                       gaussian_angle_mode='softened',
                       window_seconds=10.0)
         values.update(overrides)
         if values['gaussian_angle_mode'] == 'relative' and 'config_version' not in overrides:
-            values['config_version'] = 'gaussian-angle-time-0.2'
+            values['config_version'] = 'gaussian-angle-time-0.4-relative'
         return cls(**values)
 
     @classmethod

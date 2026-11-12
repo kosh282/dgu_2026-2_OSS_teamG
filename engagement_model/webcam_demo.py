@@ -302,7 +302,7 @@ class GuidedYawDiagnostic:
         if track is not None:
             self.last_track = track
         primitive = model.latest.get('gaussian_observation')
-        used = dict(pitch=primitive[0], yaw=primitive[1], roll=None) if primitive is not None else None
+        used = dict(pitch=primitive[0], yaw=primitive[1], roll=None) if primitive is not None and len(primitive) == 2 else None
         quality = face.get('quality') or {}
         top_quality = feature.get('quality') or {}
         row = dict(timestamp_ms=timestamp, stage=self.STAGES[index], phase=phase,
@@ -328,7 +328,7 @@ class GuidedYawDiagnostic:
             if all(v is not None for v in (source[axis], self.baseline[axis], row['relative'][axis])) else None)
             for axis in AXES}
         row['used_formula_error'] = dict(pitch=None, yaw=None)
-        if primitive is not None and all(row['relative'][axis] is not None for axis in AXES):
+        if primitive is not None and len(primitive) == 2 and all(row['relative'][axis] is not None for axis in AXES):
             expected = gaussian_score_angles(HeadAngles(**row['relative']), model.config)
             row['used_formula_error'] = {axis: row['used'][axis]-getattr(expected, axis) for axis in ('pitch', 'yaw')}
         if len(self.rows) == self.rows.maxlen:
@@ -542,6 +542,12 @@ class GaussianDiagnostics:
             self.lines.append(f'{label} P/Y: ' + (
                 f"{angles['pitch']:.2f}/{angles['yaw']:.2f} deg" if angles else 'unavailable'))
         primitive = result.get('gaussian_observation')
+        if primitive is not None and len(primitive) == 3:
+            self.previous = None
+            self.drops.clear()
+            self.previous_snapshot = None
+            self.lines.append(f'Looking-down policy score: {primitive[2]:.1f}; angle terms unavailable')
+            return
         if primitive is None:
             self.previous = None
             self.drops.clear()
@@ -878,6 +884,19 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
                       if yaw_range else 'Yaw range: insufficient samples')
         label(f"{range_text} ({calibration_range['status']}; diagnostic only)", 10, 540, .48)
     label(f"State: {result.get('orientation_state', 'not_observable')} | Down: {result.get('downward_status') or '--'}"[:80], 660, 375, .52)
+    candidate = result.get('eye_candidate') or {}
+    label('EYE + HEAD COMPARISON (NOT FINAL)', 12, 590, .48, (100, 215, 255))
+    label('TOTAL 80/20', 12, 630, .43)
+    label('HEAD 10s', 215, 630, .43)
+    label('EYE 10s', 420, 630, .43)
+    label(_score_label(candidate.get('candidate_total')), 12, 685, 1.05, (245, 245, 245), 2)
+    label(_score_label(candidate.get('head_score')), 215, 685, 1.05, (245, 245, 245), 2)
+    label(_score_label(candidate.get('eye_score')), 420, 685, 1.05, (245, 245, 245), 2)
+    label(f"Candidate: {candidate.get('status', 'unavailable')} | "
+          f"Eye coverage: {candidate.get('coverage', '--')} | "
+          f"Prolonged closed: {candidate.get('closed_seconds', '--')}s", 12, 730, .37)
+    label(f"Eye: {candidate.get('eye_state', '--')} | "
+          f"Continuous closed: {candidate.get('continuous_closed_seconds', '--')}s", 12, 760, .37)
     reason = cal_info.get('last_reason_code') or gaze_data.get('reason') or ', '.join(result.get('reason_codes') or [])
     label(('Reason: ' + str(reason or '--'))[:82], 660, 403, .48)
     if debug:

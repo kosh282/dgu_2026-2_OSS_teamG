@@ -96,7 +96,7 @@ publisher는 전체 근거 구간을 별도로 유지하므로 같은 시점에 
 프런트의 재식별 다인 경로는 각 ID에 독립적인 정면 기준과 Gaussian 계산기를 둡니다.
 그룹 구간은 각 사람의 유효 관측 점수 `s_i(t)`에 최근성 선형 시간 커널 `w(t)`를 적용해
 `Σ_i ∫valid_i w(t)s_i(t)dt / Σ_i ∫valid_i w(t)dt`로 집계합니다.
-개인별 이동 평균을 다시 평균하지 않습니다. 재식별 미확정·보정 중·미검출·아래 보기 보류는
+개인별 이동 평균을 다시 평균하지 않습니다. 재식별 미확정·보정 중·미검출·기준 점수가 없는 아래 보기 구간은
 적분 대상에서 제외하며 0점으로 넣지 않습니다. 관측/점수화 시간 gate는 해당 구간에
 적어도 한 사람의 유효 관측/점수가 존재하는 벽시계 시간 기준입니다.
 저장은 ID 없는 그룹 이벤트만 사용합니다. 분모와 한계는 [다인 모델 안내](../README.md#프런트-다인-gaussian)를 참고하세요.
@@ -128,7 +128,7 @@ sigma 기본15/20도와 전처리 계수는 검증 전 프로젝트 실험값입
 이 각도 sigma를 최적값으로 선택했다는 실험 근거는 현재 코드만으로 확인할 수 없습니다.
 설정·CLI의 기본값과 후보 비교 기능이 있다는 사실을 통계적 최적화 결과로 해석하지 않습니다.
 ambiguous도 유효 각도면 점수화하고 away에 Legacy3초 유예를 적용하지 않습니다.
-하향 전이/아래 보기/미검출은 현재 점수를 null로 둡니다.
+하향 전이와 미검출은 현재 점수를 null로 둡니다. 아래 보기는 직전 유효 점수가 있으면 5초 유지 후 10초간 최대 20점을 선형 감점합니다.
 
 ### 최근10초의 시간 가중
 
@@ -159,10 +159,10 @@ S_time=sum(S_angle(segment)*integral_segment(w(t)dt))
 |---|---|---|---|
 | Legacy | experimental-0.5 | experimental-0.4 | window-1 |
 | Huang | huang-online-0.2 | huang-online-0.2 | window-1 |
-| Gaussian relative | angle-time-0.2 | gaussian-angle-time-0.2 | angle-time-window-2 |
-| Gaussian softened | angle-time-0.3 | gaussian-angle-time-0.3 | angle-time-window-3 |
+| Gaussian relative | angle-time-0.4 | gaussian-angle-time-0.4-relative | angle-time-window-4 |
+| Gaussian softened | angle-time-0.4 | gaussian-angle-time-0.4 | angle-time-window-4 |
 
 설정 버전은 호출자가 재정의할 수 있으므로 실제 실행 provenance도 확인합니다.
-Gaussian 0.1은 현재 별도 실행 모드가 없습니다. relative 0.2는 현재 공통 보류 정책을 공유하는 비교 모드입니다.
+Gaussian 0.1은 현재 별도 실행 모드가 없습니다. relative 0.4는 같은 아래 보기 정책을 공유하는 비교 모드입니다.
 보관본의 과거 0.2 결과를 현재 relative 모드의 완전한 재현 결과라고 간주하지 않습니다.
 과거 버전 설명·실험 표는 [이력 원문](implementation-history.md)에 별도로 보존합니다.
