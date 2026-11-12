@@ -554,9 +554,26 @@ def render_tracking(frame, feature, landmarks, *, show_overlay=True):
     return preview
 
 
+def _score_label(value):
+    return f'{value:.1f}' if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else '--'
+
+
+def _debug_pages(feature, models, primary, diagnostics, face):
+    """내용 길이가 바뀌어도 캔버스 크기는 유지하고 상세 정보만 쪽을 넘긴다."""
+    lines = panel_lines(feature, models, primary=primary, debug=True, diagnostics=diagnostics)
+    gaze = vars(face).get('gaze')
+    if gaze is not None:
+        lines.extend(gaze.lines())
+        policy = getattr(models[primary], 'downward_policy', None)
+        if policy is not None:
+            lines.append(policy.diagnostic)
+    wrapped = [part for line in lines for part in (textwrap.wrap(line, 44, break_long_words=True) or [''])]
+    return [wrapped[i:i+36] for i in range(0, len(wrapped), 36)] or [[]]
+
+
 def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_overlay,
-                 primary='gaussian', debug=False, diagnostics=None, guided=None):
-    """기존 랜드마크 렌더러를 재사용하고 점수 설명만 독립 패널에 표시한다."""
+                 primary='gaussian', debug=False, diagnostics=None, guided=None, debug_page=0):
+    """주요 정보의 위치는 고정하고 상세 정보는 페이지별로 표시한다."""
     preview = (render_video_frame(frame, feature, face.last_landmarks, pose.last_landmarks,
                                   overlay_smoother, show_overlay=show_overlay)
                if debug else render_tracking(frame, feature, face.last_landmarks,
@@ -564,21 +581,44 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
     height, width = preview.shape[:2]
     scale = min(640 / width, 480 / height)
     preview = cv2.resize(preview, (max(1, round(width * scale)), max(1, round(height * scale))))
-    lines = panel_lines(feature, models, primary=primary, debug=debug, diagnostics=diagnostics)
-    gaze_estimator = vars(face).get('gaze')
-    if gaze_estimator is not None:
-        lines.extend(gaze_estimator.lines())
-        policy = getattr(models[primary], 'downward_policy', None)
-        if policy is not None:
-            lines.append(policy.diagnostic)
-    wrapped = [part for line in lines for part in (textwrap.wrap(line, 83) or [''])]
-    line_height = 23 if debug else 48
-    canvas = np.zeros((max(500, 32 + len(wrapped) * line_height), 1400, 3), dtype=np.uint8)
+    canvas = np.full((860, 1400, 3), (19, 22, 29), dtype=np.uint8)
     canvas[:preview.shape[0], :preview.shape[1]] = preview
-    for row, line in enumerate(wrapped):
-        scale_text = .47 if debug else (.9 if row == 1 else .65)
-        cv2.putText(canvas, line, (655, 30 + row * line_height), cv2.FONT_HERSHEY_SIMPLEX,
-                    scale_text, (235, 235, 235), 1, cv2.LINE_AA)
+    result = models[primary].latest
+    current = result.get('current_direction_score') if primary == 'gaussian' else result.get('score')
+    aggregate = result.get('score') if primary == 'gaussian' else None
+    angles = result.get('source_angles') or {}
+    calibration = feature['features'].get('head_calibration_status', 'waiting')
+    cal_info = feature['features'].get('head_calibration_diagnostics') or {}
+    gaze = vars(face).get('gaze')
+    gaze_data = gaze.latest if gaze is not None else {}
+    def label(text, x, y, scale=.55, color=(190, 196, 205), thickness=1):
+        cv2.putText(canvas, str(text), (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+    # 고정 좌표: 모델 점수와 카메라 기준 시선은 서로 다른 의미의 실험값이다.
+    label(f'MODEL: {primary.upper()}  |  EXPERIMENTAL', 660, 30)
+    label('CURRENT DIRECTION' if primary == 'gaussian' else 'MODEL SCORE', 660, 65)
+    label('10s AGGREGATE' if primary == 'gaussian' else 'AGGREGATE: N/A', 1030, 65)
+    label(_score_label(current), 660, 125, 1.65, (245, 245, 245), 3)
+    label(_score_label(aggregate), 1030, 125, 1.65, (245, 245, 245), 3)
+    label('/ 100', 810, 125, .6)
+    label('/ 100', 1180, 125, .6)
+    label('RELATIVE HEAD PITCH / YAW', 660, 165)
+    label(f"{_score_label(angles.get('pitch'))} / {_score_label(angles.get('yaw'))} deg", 660, 200, .85, (245, 245, 245), 2)
+    label('GAZE CANDIDATE (NOT SCREEN GAZE)', 660, 245)
+    label(str(gaze_data.get('state', 'OFF')).upper()[:35], 660, 280, .8, (170, 220, 255), 2)
+    label(f"Gaze Y/P: {_score_label(gaze_data.get('yaw'))} / {_score_label(gaze_data.get('pitch'))} deg", 660, 310, .55)
+    label(f"Calibration: {calibration}  {100 * cal_info.get('progress', 0):.0f}%", 660, 345, .6)
+    label(f"State: {result.get('orientation_state', 'not_observable')} | Down: {result.get('downward_status') or '--'}"[:80], 660, 375, .52)
+    reason = cal_info.get('last_reason_code') or gaze_data.get('reason') or ', '.join(result.get('reason_codes') or [])
+    label(('Reason: ' + str(reason or '--'))[:82], 660, 403, .48)
+    if debug:
+        pages = _debug_pages(feature, models, primary, diagnostics, face)
+        page = debug_page % len(pages)
+        label(f'DEBUG  {page + 1}/{len(pages)}  |  [ / ] change page', 660, 448, .55, (120, 210, 255), 1)
+        for index, line in enumerate(pages[page]):
+            column, row = divmod(index, 18)
+            label(line, 660 + column*365, 471 + row*21, .40, (220, 224, 230))
+    else:
+        label('D: debug  |  V: overlay  |  Q / Esc: quit', 660, 448, .55)
     left, top, right, bottom = CALIBRATE_BUTTON
     cv2.rectangle(canvas, (left, top), (right, bottom), (80, 70, 20), -1)
     cv2.putText(canvas, 'CLICK TO CALIBRATE', (left + 12, top + 28),
@@ -662,6 +702,7 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
             started = time.monotonic()
             next_report = 0.0
             show_overlay = True
+            debug_page = 0
             print('Click video window; C/Space: calibrate, D: debug, V: overlay, Q/Esc: quit. No files are saved.', flush=True)
             if guided is not None:
                 print('수동 좌우 진단: 정면을 보고 준비한 뒤 CALIBRATE 버튼 또는 C/Space를 한 번 누르세요.\n'
@@ -693,7 +734,7 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                     panel = render_panel(capture.last_frame, feature, models,
                                          overlay_smoother=smoother, face=face, pose=pose,
                                          show_overlay=show_overlay, primary=primary, debug=debug,
-                                         diagnostics=diagnostics, guided=guided)
+                                         diagnostics=diagnostics, guided=guided, debug_page=debug_page)
                     cv2.imshow(WINDOW, panel)
                     if debug and time.monotonic() >= next_report:
                         print(json.dumps({name: {'score': model.latest['score'],
@@ -710,6 +751,10 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                     show_overlay = not show_overlay
                 elif key in (ord('d'), ord('D')):
                     debug = not debug
+                elif key == ord('[') and debug:
+                    debug_page -= 1
+                elif key == ord(']') and debug:
+                    debug_page += 1
     finally:
         if guided is not None and guided.state in {'collecting', 'running'}:
             guided.finish('종료 또는 오류로 진단 미완료')
