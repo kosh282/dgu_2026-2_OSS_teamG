@@ -230,6 +230,7 @@ class GuidedYawDiagnostic:
         self.reported = False
         self.report = None
         self.model_info = None
+        self.calibration_range = None
         self.report_sink = report_sink
 
     def calibration_started(self):
@@ -243,6 +244,7 @@ class GuidedYawDiagnostic:
         self.truncated = self.reported = False
         self.report = None
         self.model_info = None
+        self.calibration_range = None
         self.state = 'collecting'
 
     def phase(self, timestamp):
@@ -267,6 +269,7 @@ class GuidedYawDiagnostic:
             self.calibration_samples = deepcopy(getattr(calibration, 'diagnostic_samples', []))
         if self.state == 'collecting' and calibration.status == 'ready':
             self.baseline = diagnostic_angles(calibration.baseline)
+            self.calibration_range = deepcopy(getattr(calibration, 'observed_range', None))
             self.model_info = dict(model_id=model.model_id, model_version=model.model_version,
                 config_version=model.config.config_version, angle_mode=model.config.gaussian_angle_mode,
                 sigma_pitch=model.config.gaussian_sigma_pitch_degrees,
@@ -382,7 +385,8 @@ class GuidedYawDiagnostic:
             all_stages_have_valid_hold_observations=all(s['valid_hold_count'] > 0 for s in stages.values()),
             timing=dict(move_seconds=self.move_ms/1000, hold_seconds=self.hold_ms/1000),
             model=self.model_info,
-            baseline=self.baseline, calibration_count=len(self.calibration_samples),
+            baseline=self.baseline, calibration_range=self.calibration_range,
+            calibration_count=len(self.calibration_samples),
             calibration_distribution={axis: diagnostic_angle_stats([sample[1].get(axis) for sample in self.calibration_samples])
                                       for axis in AXES}, stages=stages, yaw_comparison=pairs,
             front_return_yaw=returns,
@@ -670,7 +674,7 @@ def _debug_pages(feature, models, primary, diagnostics, face):
 
 def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_overlay,
                  primary='gaussian', debug=False, diagnostics=None, guided=None, debug_page=0,
-                 live=False):
+                 live=False, calibration_range=None):
     """주요 정보의 위치는 고정하고 상세 정보는 페이지별로 표시한다."""
     preview = (render_video_frame(frame, feature, face.last_landmarks, pose.last_landmarks,
                                   overlay_smoother, show_overlay=show_overlay)
@@ -679,7 +683,7 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
     height, width = preview.shape[:2]
     scale = min(640 / width, 480 / height)
     preview = cv2.resize(preview, (max(1, round(width * scale)), max(1, round(height * scale))))
-    canvas = np.full((860, 1400, 3), (19, 22, 29), dtype=np.uint8)
+    canvas = np.zeros((860, 1400, 3), dtype=np.uint8)
     canvas[:preview.shape[0], :preview.shape[1]] = preview
     result = models[primary].latest
     current = result.get('current_direction_score') if primary == 'gaussian' else result.get('score')
@@ -690,7 +694,8 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
     gaze = vars(face).get('gaze')
     gaze_data = gaze.latest if gaze is not None else {}
     def label(text, x, y, scale=.55, color=(190, 196, 205), thickness=1):
-        cv2.putText(canvas, str(text), (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+        cv2.putText(canvas, str(text), (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    scale * 1.2, color, max(2, thickness), cv2.LINE_AA)
     # 고정 좌표: 모델 점수와 카메라 기준 시선은 서로 다른 의미의 실험값이다.
     group = bool(getattr(models[primary], 'display_group', False))
     label(f'MODEL: {primary.upper()}  |  ' + ('GROUP | ' if group else '') + 'EXPERIMENTAL', 660, 30)
@@ -706,6 +711,11 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
     label(str(gaze_data.get('state', 'OFF')).upper()[:35], 660, 280, .8, (170, 220, 255), 2)
     label(f"Gaze Y/P: {_score_label(gaze_data.get('yaw'))} / {_score_label(gaze_data.get('pitch'))} deg", 660, 310, .55)
     label(f"Calibration: {calibration}  {100 * cal_info.get('progress', 0):.0f}%", 660, 345, .6)
+    if calibration_range:
+        yaw_range = calibration_range.get('axes', {}).get('yaw')
+        range_text = (f"Yaw range P10-P90: {yaw_range['low']:+.1f} to {yaw_range['high']:+.1f} deg"
+                      if yaw_range else 'Yaw range: insufficient samples')
+        label(f"{range_text} ({calibration_range['status']}; diagnostic only)", 10, 540, .48)
     label(f"State: {result.get('orientation_state', 'not_observable')} | Down: {result.get('downward_status') or '--'}"[:80], 660, 375, .52)
     reason = cal_info.get('last_reason_code') or gaze_data.get('reason') or ', '.join(result.get('reason_codes') or [])
     label(('Reason: ' + str(reason or '--'))[:82], 660, 403, .48)
@@ -843,7 +853,8 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                     panel = render_panel(capture.last_frame, feature, models,
                                          overlay_smoother=smoother, face=face, pose=pose,
                                          show_overlay=show_overlay, primary=primary, debug=debug,
-                                         diagnostics=diagnostics, guided=guided, debug_page=debug_page)
+                                         diagnostics=diagnostics, guided=guided, debug_page=debug_page,
+                                         calibration_range=pipeline.head_calibration.observed_range)
                     cv2.imshow(WINDOW, panel)
                     if debug and time.monotonic() >= next_report:
                         print(json.dumps({name: {'score': model.latest['score'],
