@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from frontend.live_session import LiveSession
-from engagement_model.gaussian import GaussianRuntime
+from engagement_model.position_tracks import PositionTrackGaussianRuntime
 from engagement_model.tests.test_runtime import feature_window
 from engagement_model.tests.test_multi_face import frame as multi_frame
 from video_recognition.window_capture import FrameNotAvailable
@@ -27,14 +27,14 @@ class MultiGaussianLiveTests(unittest.TestCase):
     def test_single_default_and_group_factory_are_gaussian(self):
         single = self.live()
         single._start_model()
-        self.assertIsInstance(single.model_runtime, GaussianRuntime)
+        self.assertIsInstance(single.model_runtime, PositionTrackGaussianRuntime)
         group = self.live(True)
         group._start_model()
         self.assertEqual(group.model_runtime.model_id, 'multi-face-gaussian')
         self.assertEqual(group.model_runtime.config.scoring_method, 'gaussian')
 
     def test_started_session_uses_matching_gaussian_metadata(self):
-        for enabled, expected in ((False,'gaussian-head-direction'),(True,'multi-face-gaussian')):
+        for enabled, expected in ((False,'position-track-gaussian'),(True,'multi-face-gaussian')):
             live = LiveSession(123,reidentification_enabled=enabled)
             with patch('frontend.live_session.threading.Thread'):
                 live.start('synthetic')

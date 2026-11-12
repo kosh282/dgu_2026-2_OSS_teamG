@@ -246,7 +246,7 @@ def preparation():
             model_enabled=st.checkbox('실험 행동 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
             reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
                 key='reidentification_enabled',disabled=running or not video_enabled)
-            st.caption('점수는 Gaussian 모델입니다. 재식별을 함께 켜면 ID별로 정면 기준과 점수를 계산합니다. 재식별을 끄면 한 얼굴만 점수화합니다.')
+            st.caption('점수는 Gaussian 모델입니다. 재식별을 켜면 임시 ID별로, 끄면 단기 위치 트랙별로 계산합니다. 위치 트랙은 사람을 식별하지 않습니다.')
             if reidentification_enabled and video_enabled:
                 st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
                 if importlib.util.find_spec('insightface') is None:
@@ -404,14 +404,17 @@ def live_page():
             reasons={'no_face_detected':'얼굴이 감지되지 않았습니다.', 'multiple_faces_detected':'얼굴이 여러 개 감지되어 단일 얼굴 보정을 할 수 없습니다.',
                      'face_quality_not_observable':'얼굴을 충분히 관찰할 수 없습니다.', 'head_angles_unavailable':'머리 각도를 계산할 수 없습니다.',
                      'head_pose_unstable':'머리 움직임이 커서 다시 수집합니다.', 'calibration_frame_gap':'영상 입력이 끊겨 다시 수집합니다.',
-                     'calibration_timestamp_not_increasing':'영상 시각이 정상적으로 진행되지 않았습니다.'}
-            b.caption({'starting':'정면 기준: 영상 분석 준비 중', 'waiting':'정면 기준: 재보정이 필요합니다',
+                     'calibration_timestamp_not_increasing':'영상 시각이 정상적으로 진행되지 않았습니다.',
+                     'calibration_gap_expired':'관측 공백이 길어 정면 기준을 다시 수집합니다.',
+                     'calibration_track_changed':'대상 연결이 바뀌어 정면 기준을 다시 수집합니다.',
+                     'calibration_track_unavailable':'얼굴 추적이 불안정해 보정을 기다립니다.'}
+            b.caption({'starting':'정면 기준: 영상 분석 준비 중', 'waiting':'정면 기준: 재보정이 필요합니다', 'recovering':'얼굴을 다시 찾는 중 · 점수 일시 보류',
                        'collecting':f"정면 기준 수집 중 · {calibration.get('progress', 0)*100:.0f}%", 'ready':'정면 기준 수집 완료'}.get(state, '정면 기준: 상태 확인 중'))
             if reason:
                 b.caption(reasons.get(reason, f'보정 상태: {reason}'))
             b.caption(('각 ID의 정면 기준을 따로 수집합니다. 관측 중인 모두가 정면을 약 3초 유지해 주세요.'
                        if getattr(live, 'reidentification_enabled', False) else
-                       '얼굴 한 명이 정면을 보고 약 3초간 유지해 주세요.') + ' 자동 기준은 실제 정면인지 확인하지 못합니다.')
+                       '각 얼굴이 정면을 보고 약 3초간 유지해 주세요. 위치 트랙은 신원 확인이 아닙니다.') + ' 자동 기준은 실제 정면인지 확인하지 못합니다.')
             if b.button('정면 기준 재보정', disabled=not live.is_running(), key='recalibrate-head'):
                 live.request_head_calibration()
                 st.rerun()
@@ -503,22 +506,25 @@ def live_page():
                     st.warning('말소리가 매우 작아 전사가 빠질 수 있습니다. 마이크를 가까이 하거나 Windows 입력·출력 볼륨을 높이세요.')
         if diagnostics['video_result_age_ms'] is not None:
             st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
-        if getattr(live, 'reidentification_enabled', False):
-            st.subheader('세션 내 ID별 Gaussian 점수')
-            st.caption('참고용 관찰 점수입니다. 개인별 표는 수업 중에만 표시되며, 저장·재열기 대상은 ID 없는 그룹 집계입니다.')
-            st.caption('상단 점수는 유효 관측된 사람·시간의 가중 집계이며, 전체 수강생 평균이나 참여율이 아닙니다.')
+        if live.model_enabled:
+            reid = getattr(live, 'reidentification_enabled', False)
+            st.subheader('세션 내 ID별 Gaussian 점수' if reid else '단기 위치 트랙별 Gaussian 점수')
+            st.caption('참고용 관찰 점수입니다. 표는 수업 중에만 표시되며, 저장·재열기 대상은 ID 없는 그룹 집계입니다.')
+            if not reid:
+                st.caption('위치 트랙은 사람을 식별하지 않으며, 얼굴이 끊기거나 배치가 바뀌면 보정을 다시 시작할 수 있습니다.')
+            st.caption('상단 점수는 유효 관측된 ' + ('사람' if reid else '위치 트랙') + '·시간의 가중 집계이며, 전체 수강생 평균이나 참여율이 아닙니다.')
             if live.reidentification_error:
                 st.warning(live.reidentification_error)
             rows=live.participant_snapshot()
             if rows:
                 states={'scored':'관측 중','deferred':'점수 보류','calibrating':'정면 기준 수집 중',
                         'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
-                st.dataframe([{'임시 ID':row['id'], '상태':states.get(row['status'],row['status']),
+                st.dataframe([{('임시 ID' if reid else '임시 위치 트랙'):row['id'], '상태':states.get(row['status'],row['status']),
                     '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
                     '현재 방향 점수':row['current_direction_score'], '최근 10초 점수':row['score']}
                     for row in rows],hide_index=True,use_container_width=True)
             else:
-                st.caption('재식별 ID 확인 대기 중입니다. 작은 얼굴·가림·겹침은 확인되지 않을 수 있습니다.')
+                st.caption('재식별 ID 확인 대기 중입니다.' if reid else '안정적인 위치 트랙 확인 대기 중입니다.')
         if result:
             st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
         if latest_window:

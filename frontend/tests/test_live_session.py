@@ -45,25 +45,24 @@ class LiveSessionIsolationTests(unittest.TestCase):
     def test_calibration_blocks_old_scores_until_new_window_is_published(self):
         live = LiveSession(123)
         live.sid = live.service.start_session('test')
+        live.model_runtime = live._make_model()
         class Publisher:
             def __init__(self, service, sid, runtime, start_ms=0):
                 self._last_end = start_ms
             def __call__(self, feature):
                 if feature.get('publish'):
                     self._last_end = feature['start_ms']
-            def advance(self, now):
-                self._last_end = now
+            def finish(self, now): pass
         live.window_publisher = Publisher(None, None, None)
-        with patch('frontend.live_session.WindowPublisher', Publisher):
-            live._consume_model({'start_ms': 10, 'features': {'head_calibration_status': 'collecting'}})
-            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
-            live._consume_model({'start_ms': 100, 'features': {'head_calibration_status': 'ready'}})
-            live._advance_model()
-            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
-            live._consume_model({'start_ms': 10100, 'publish': True, 'features': {'head_calibration_status': 'ready'}})
+        with patch('frontend.live_session.WindowPublisher', Publisher), \
+             patch.object(live.service, 'elapsed_ms', return_value=0):
+            live._recalibrate_pipeline(None)
+            self.assertTrue(live._calibration_blocked)
+            live._consume_model({'start_ms': 100, 'publish': False})
+            self.assertTrue(live._calibration_blocked)
+            live._consume_model({'start_ms': 10100, 'publish': True})
+            self.assertFalse(live._calibration_blocked)
             self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'running')
-            live._consume_model({'start_ms': 10101, 'features': {'head_calibration_status': 'waiting'}})
-            self.assertEqual(live.service.get_dashboard_snapshot(live.sid)['status']['model'], 'unavailable')
         live.service.stop_session(live.sid)
 
     def test_recalibration_request_clears_previous_preview_and_blocks_model(self):
@@ -242,7 +241,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
              patch('frontend.live_session.PoseAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
              patch('frontend.live_session.PreviewCapture', FakeResource), \
-             patch('frontend.live_session.GaussianRuntime', side_effect=RuntimeError('model init')), \
+             patch('frontend.live_session.PositionTrackGaussianRuntime', side_effect=RuntimeError('model init')), \
              patch('frontend.live_session.VisionPipeline', FakePipeline), \
              patch.object(LiveSession, '_close_developer_windows'):
             live = LiveSession(123)
@@ -343,7 +342,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
         live = LiveSession(123)
         live.sid = live.service.start_session('test', {'config_version': 'test', 'participation_model': {}})
         with patch('frontend.live_session.RETRY_DELAYS_SECONDS', (0.01,)), \
-             patch('frontend.live_session.GaussianRuntime', side_effect=[RuntimeError('model failed'), Mock(model_version='test', latest={})]), \
+             patch('frontend.live_session.PositionTrackGaussianRuntime', side_effect=[RuntimeError('model failed'), Mock(model_version='test', latest={})]), \
              patch('frontend.live_session.WindowPublisher', return_value=object()):
             live._start_model()
             self.assertTrue(live._model_failed)

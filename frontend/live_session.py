@@ -9,6 +9,7 @@ from integration import IntegrationService
 from engagement_model.gaussian import GaussianRuntime
 from engagement_model.config import ModelConfig
 from engagement_model.multi_face import MultiFaceGaussianRuntime
+from engagement_model.position_tracks import PositionTrackGaussianRuntime
 from engagement_model.window_publisher import WindowPublisher
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
@@ -339,16 +340,8 @@ class LiveSession:
                 self._start_model()
             pipeline = VisionPipeline(
                 self.service, self.sid, capture, face,
-                model_consumer=(self._consume_frame if self.reidentification_enabled else self._consume_model)
-                    if self.model_enabled or self.reidentification_enabled else None, pose_analyzer=pose,
+                model_consumer=self._consume_frame if self.model_enabled or self.reidentification_enabled else None, pose_analyzer=pose,
             )
-            if self.model_enabled and not self.reidentification_enabled:
-                # 초기 기준은 첫 유효 얼굴을 기다려 수집한다. 정면 여부 자체는 확인할 수 없다.
-                pipeline.head_calibration.start()
-                if not self._model_failed:
-                    self._calibration_blocked = True
-                    self._calibration_window_start = None
-                    self._model_status('unavailable', '정면 기준을 자동 수집합니다.', ['baseline_unavailable'])
             while not self.stop_event.is_set():
                 self._maybe_restart_model()
                 if self._calibration_request.is_set():
@@ -421,21 +414,20 @@ class LiveSession:
                         self.reidentifier.close()
                 finally:
                     self.reidentifier = None
-                    if self.reidentification_enabled and self.model_runtime is not None:
+                    if self.model_runtime is not None:
                         self.model_runtime.reset()
                     with self.lock:
                         self._participant_rows = []
-                        if self.reidentification_enabled:
-                            self.model_latest = {}
+                        self.model_latest = {}
                     self._active_capture = self._active_face = None
 
     def _model_identity(self):
-        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.1+face-transform'}
+        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.2+face-transform'}
                 if self.reidentification_enabled else
-                {'model_id': 'gaussian-head-direction', 'model_version': 'angle-time-0.3+face-transform'})
+                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.1+face-transform'})
 
     def _make_model(self):
-        model = MultiFaceGaussianRuntime() if self.reidentification_enabled else GaussianRuntime()
+        model = MultiFaceGaussianRuntime() if self.reidentification_enabled else PositionTrackGaussianRuntime()
         model.model_version += '+face-transform'
         model.latest['model_version'] = model.model_version
         return model
@@ -453,7 +445,8 @@ class LiveSession:
                 self.reidentifier.close()
                 self.reidentifier = None
         if self.model_enabled and self.model_runtime is not None:
-            self.model_runtime.update_identities(identities)
+            if self.reidentification_enabled:
+                self.model_runtime.update_identities(identities)
             self._consume_model(feature)
             if not self._model_failed:
                 with self.lock:
@@ -463,7 +456,7 @@ class LiveSession:
                 self._model_status('unavailable', self.reidentification_error, ['reidentification_unavailable'])
 
     def _recalibrate_pipeline(self, pipeline):
-        if self.reidentification_enabled and self.model_runtime is not None:
+        if self.model_runtime is not None and callable(getattr(self.model_runtime, 'aggregate_window', None)):
             now = self.service.elapsed_ms(self.sid)
             if self.window_publisher is not None:
                 self.window_publisher.finish(now)
@@ -480,7 +473,7 @@ class LiveSession:
         if self._model_failed:
             return
         try:
-            if self.reidentification_enabled:
+            if callable(getattr(self.model_runtime, 'aggregate_window', None)):
                 self.window_publisher(feature)
                 self._finish_calibration_window()
                 return
@@ -546,7 +539,7 @@ class LiveSession:
             self._calibration_blocked = False
             self._calibration_window_start = None
             self._model_status('running', 'ID별 Gaussian 실험 모델이 실행 중입니다.'
-                               if self.reidentification_enabled else '단일 얼굴 Gaussian 실험 모델이 실행 중입니다.')
+                               if self.reidentification_enabled else '임시 위치 트랙별 Gaussian 실험 모델이 실행 중입니다.')
         except Exception as exc:
             self._fail_model(exc)
 
@@ -597,12 +590,12 @@ class LiveSession:
                 return {'status': 'collecting', 'last_reason_code': None, 'progress': 0.0}
             if not self.latest:
                 return {'status': 'starting', 'last_reason_code': None, 'progress': 0.0}
-            if self.reidentification_enabled:
-                rows = self._participant_rows
-                ready = sum(row.get('calibration_status') == 'ready' for row in rows
-                            if row.get('status') not in {'missing', 'not_observable', 'unavailable'})
-                return {'status': 'ready' if ready else 'collecting', 'last_reason_code': None,
-                        'progress': ready / len(rows) if rows else 0.0}
+            if self.model_enabled:
+                rows = [row for row in self._participant_rows
+                        if row.get('status') not in {'missing', 'not_observable', 'unavailable'}]
+                ready = sum(row.get('calibration_status') == 'ready' for row in rows)
+                return {'status': 'ready' if rows and ready == len(rows) else 'collecting',
+                        'last_reason_code': None, 'progress': ready / len(rows) if rows else 0.0}
             return dict(self.latest.get('features', {}).get('head_calibration_diagnostics') or {})
 
     def set_developer_preview(self, enabled):
@@ -649,7 +642,7 @@ class LiveSession:
         config = runtime.config if runtime is not None else ModelConfig.gaussian()
         sampler = getattr(runtime, 'sampling_diagnostics', None)
         model = SimpleNamespace(latest=latest, config=config,
-            display_group=self.reidentification_enabled,
+            display_group=self.model_enabled,
             sampling_diagnostics=sampler if callable(sampler) else lambda: {
                 'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
         quality = self._pose_input_diagnostics.observe(face.last_landmarks, image)
@@ -667,7 +660,12 @@ class LiveSession:
         diagnostics = SimpleNamespace(lines=lines)
         frame = (self.reidentifier.render(image.copy(), result['features'].get('faces', []),
                  boxes=face.last_face_boxes) if self.reidentifier is not None else image)
-        panel = render_panel(frame, result, {'gaussian': model},
+        # 전체 파이프라인의 단일 얼굴 보정 상태 대신 실제 다인 런타임의 보정 상태를 표시한다.
+        calibration = self.calibration_state() if self.model_enabled else {}
+        display_result = {**result, 'features': {**result.get('features', {}),
+                          'head_calibration_status': calibration.get('status', 'waiting'),
+                          'head_calibration_diagnostics': calibration}}
+        panel = render_panel(frame, display_result, {'gaussian': model},
             overlay_smoother=self._landmark_overlay_smoother, face=face, pose=pose,
             show_overlay=show_landmarks, primary='gaussian', debug=True,
             diagnostics=diagnostics, debug_page=page, live=True)
