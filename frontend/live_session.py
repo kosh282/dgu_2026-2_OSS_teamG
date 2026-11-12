@@ -322,7 +322,7 @@ class LiveSession:
         face = pose = window = capture = pipeline = None
         try:
             # 좌표는 개발자 창을 위해서만 메모리에 유지하며 JSON 이벤트나 최종 세션에는 넣지 않는다.
-            face = FaceAnalyzer(show_landmarks=True)
+            face = FaceAnalyzer(show_landmarks=True, pose_source='face-transform')
             pose = PoseAnalyzer(show_landmarks=True)
             window = WindowCapture(self.hwnd, expected_process_id=self._window_process_id)
             if self._window_process_id is None:
@@ -430,12 +430,15 @@ class LiveSession:
                     self._active_capture = self._active_face = None
 
     def _model_identity(self):
-        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.1'}
+        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.1+face-transform'}
                 if self.reidentification_enabled else
-                {'model_id': 'gaussian-head-direction', 'model_version': 'angle-time-0.3'})
+                {'model_id': 'gaussian-head-direction', 'model_version': 'angle-time-0.3+face-transform'})
 
     def _make_model(self):
-        return MultiFaceGaussianRuntime() if self.reidentification_enabled else GaussianRuntime()
+        model = MultiFaceGaussianRuntime() if self.reidentification_enabled else GaussianRuntime()
+        model.model_version += '+face-transform'
+        model.latest['model_version'] = model.model_version
+        return model
 
     def _consume_frame(self, feature):
         """같은 분석 프레임에서 ID를 갱신한 뒤 점수화한다. ID는 특징에 넣지 않는다."""
@@ -650,7 +653,7 @@ class LiveSession:
             sampling_diagnostics=sampler if callable(sampler) else lambda: {
                 'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
         quality = self._pose_input_diagnostics.observe(face.last_landmarks, image)
-        lines = ['POSE INPUT QUALITY (single face only)']
+        lines = ['LANDMARK STABILITY (diagnostic only)']
         for key, value in quality.items():
             lines.append(f'{key}: {value:.4f}' if value is not None else f'{key}: unavailable')
         for index, item in enumerate(result.get('features', {}).get('faces', []), 1):

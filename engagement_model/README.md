@@ -20,23 +20,16 @@
 - [웹캠 조작·자동 좌우 진단·결과 해석](docs/webcam-diagnostics.md)
 - [MediaPipe 통합 범위·검증·남은 제약](docs/integration-review.md)
 
-### 독립 웹캠의 자세 추정 비교
+### MediaPipe 얼굴 변환행렬 자세 추정
 
-기존 PnP는 기본값으로 유지합니다. `--pose-source face-transform`은 MediaPipe 얼굴 변환행렬을
-주 표시·진단 입력으로 선택하며, 같은 검출의 PnP 결과도 비교용으로 계산합니다.
-`--validated-pose`는 양의 깊이 PnP 후보 검증을 추가합니다. 두 옵션은 프런트·ID별 다인 경로를 바꾸지 않습니다.
-`--pose-source pnp`로 복귀할 수 있으며 행렬 결측 때 PnP 점수를 대신 표시하지 않습니다.
-Gaussian 수식·sigma·Euler 정면 보정과 기본 하향 보류 정책은 유지합니다.
+프런트와 독립 웹캠은 MediaPipe 얼굴 변환행렬을 기본으로 사용합니다. 유효하지 않은 행렬은 관측 불가로 처리합니다. Gaussian 점수와 정면 보정은 유지되며, 각도 정확도와 수업 화면 다인 성능은 별도 검증이 필요합니다.
 
 ```powershell
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --pose-source face-transform --validated-pose --single-model
-# 동일 프레임의 정면 안정성·좌우·하향 진단. 저장은 --yaw-log 명시 시에만 수행
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --pose-source face-transform --validated-pose --yaw-diagnostic --diagnostic-down --front-stability --single-model
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --single-model --debug
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --diagnostic-down --front-stability --single-model --yaw-log
 ```
 
-독립 자세 비교는 단일 얼굴 실험입니다. 기존 프런트의 다인 Gaussian·재식별 기능은 아래 설명대로 유지합니다.
-`--gaze`는 기존 PnP 경로에서 유지하며, 검증 PnP/행렬 비교 옵션과의 동시 사용은 지원하지 않습니다.
-서로 다른 하향 정책을 조용히 섞지 않고 명시적 오류로 안내합니다.
+이전 `--pose-source`, `--validated-pose`, `--compare-face-transform` 옵션은 제거했습니다. `--gaze`는 별도 시선 모델 선택 기능입니다. 실험용 회전행렬 보정(`--calibration-method matrix`)은 기본 Euler 보정과 별개입니다.
 
 ## 프런트 다인 Gaussian
 
@@ -320,7 +313,7 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_hua
 
 웹캠에서 큰 좌우 상대각 차이와 회전 중 Pitch/Roll 변동이 관찰됐지만 원인은 확정하지 못했습니다.
 보정·완화 산술의 일치가 원본 추정이나 보정 자세의 정확성을 증명하지는 않습니다.
-실제 좌우 회전량의 정답, solvePnP 깊이·재투영 오차, 실제 참여도 정확도는 현재 코드만으로 확인할 수 없습니다.
+실제 좌우 회전량의 정답과 실제 참여도 정확도는 현재 코드만으로 확인할 수 없습니다.
 A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기본 정책으로 구현하지 않았습니다.
 개별 계산은 임시 정면 보정을 사용하며 다인 경로는 ID별 계산을 분리합니다. 실제 참여도 정확도나 논문 성능을 달성했다고 주장하지 않습니다.
 

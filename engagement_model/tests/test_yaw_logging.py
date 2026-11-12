@@ -21,7 +21,7 @@ class YawLoggingTests(unittest.TestCase):
                 guided.rows.append({'timestamp_ms': ts, 'stage': 'left', 'phase': 'hold',
                     'face_count': 1, 'quality_status': 'valid', 'window_quality': 'valid',
                     'track_changed': False, 'current_score': 75.0,
-                    'pose_diagnostics': {'reprojection_error_px': 2.0},
+                    'pose_diagnostics': {'face_width_px': 20.0},
                     'raw': values, 'smoothed': values, 'relative': values, 'used': values,
                     'relative_formula_error': {'yaw': 0.0}, 'used_formula_error': {'yaw': 0.0},
                     'private_identity': 'MUST NOT BE WRITTEN'})
@@ -35,7 +35,7 @@ class YawLoggingTests(unittest.TestCase):
             self.assertTrue(data['summary']['completed'])
             self.assertEqual([row['sample_count'] for row in data['timeline']], [2, 1])
             self.assertAlmostEqual(data['timeline'][0]['yaw']['raw']['mean'], -20)
-            self.assertEqual(data['timeline'][0]['pose_input']['reprojection_error_px']['mean'], 2.0)
+            self.assertEqual(data['timeline'][0]['pose_input']['face_width_px']['mean'], 20.0)
             self.assertNotIn('rows', data)
 
     def test_cli_log_requires_diagnostic_mode(self):
@@ -57,7 +57,7 @@ class YawLoggingTests(unittest.TestCase):
         second = diagnostic.observe([landmarks], frame)
         self.assertIsNone(first['landmark_shape_change_ratio'])
         self.assertAlmostEqual(second['landmark_shape_change_ratio'], 0)
-        self.assertGreaterEqual(second['reprojection_error_px'], 0)
+        self.assertGreater(second['face_width_px'], 0)
         diagnostic.observe([], frame)
         self.assertIsNone(diagnostic.observe([landmarks], frame)['landmark_shape_change_ratio'])
 

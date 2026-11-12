@@ -4,36 +4,15 @@
 
 ## 실행 환경과 기본 조작
 
-### 독립 웹캠 자세 경로 선택
+### 얼굴 변환행렬 자세 추정
 
-기본값 `--pose-source pnp`와 기존 gaze·yaw-log·디버그 페이지 기능은 유지합니다.
-`--pose-source face-transform`은 같은 얼굴 검출의 변환행렬을 별도 스무딩·Euler 보정에 전달하고,
-같은 설정의 Gaussian을 주 화면·진단에 표시합니다. PnP는 비교 기준으로 계속 계산합니다.
-`--validated-pose`는 비교 PnP에 양의 깊이·재투영 오차·연속성 검사를 적용합니다.
-실패 관측은 null이며 다른 경로 점수로 채우지 않습니다. 프런트나 다인 runtime에는 주입하지 않습니다.
+프런트와 독립 웹캠은 MediaPipe 얼굴 변환행렬을 기본 사용합니다. 불량·누락된 행렬은 관측 불가로 처리합니다. 기존 PnP 관련 선택·비교·검증 옵션은 제거됐습니다.
 
 ```powershell
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --pose-source face-transform --validated-pose --yaw-diagnostic --diagnostic-down --front-stability --single-model --diagnostic-move-seconds 2 --diagnostic-hold-seconds 4
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --diagnostic-down --front-stability --single-model --diagnostic-move-seconds 2 --diagnostic-hold-seconds 4 --yaw-log
 ```
 
-수동 C/Space 보정 후 정면 고정 → 정면을 유지한 작은 몸 이동 → 정면 → 좌우·복귀 → 아래 보기·복귀를 안내합니다.
-전체 구간 수는 동적으로 표시합니다. 실제 자세가 안내 구간과 일치한다는 보장은 없습니다.
-아래 보기의 상대 Pitch가 +15도 이상일 때 looking_down, +10도 초과는 기존 하향 전이 보류입니다.
-Gaussian 식·sigma·10초 집계·히스테리시스를 경로 선택 때문에 변경하지 않습니다.
-
-`FACE_TRANSFORM_COMPARE`는 같은 프레임의 Raw·스무딩·Relative 각도, 보정 기준, 상태·현재/집계 점수를 출력합니다.
-종료 요약에는 구간별 각도 평균·표준편차·최대–최소 폭, null/하향 수와 첫 정면 복귀가 포함됩니다.
-MediaPipe의 canonical→runtime 행렬에서 스케일을 SVD로 분리하고 `diag(1,-1,-1)`로 기존 카메라 축을 맞춥니다.
-행렬 결측·반사·퇴화는 보류합니다. 실제 각도 정답 없이 좌우 정확도를 검증했다고 표현하지 않습니다.
-`--calibration-method matrix`는 별도의 이전 실험 보정이며 기본값은 euler입니다. 두 행렬 기능은 서로 다릅니다.
-
-기본 진단 수치는 메모리와 터미널 전용입니다. 기존 `--yaw-log`를 함께 명시하면 main의 집계 저장 기능을 사용합니다.
-원본 미디어·얼굴/랜드마크·개인 ID·회전/이동 벡터는 저장 요약에 추가하지 않습니다.
-20도 정면 후보 진단은 현재 정면보다 넓고 이탈 임계값보다 작은 경우만 실행하며, 아니면 후보만 비활성화합니다.
-
-기존 gaze의 하향 정책을 보존하기 위해 `--gaze`와 검증 PnP/변환행렬/실험 행렬 보정의 동시 사용은 거부합니다.
-gaze 단독·yaw-log 단독과 live/debug_page 호출은 계속 지원합니다.
-MediaPipe 지원 환경과 통합 검증 범위는 [통합 검토](integration-review.md)를 참고하세요.
+C/Space 보정 후 정면·좌우·아래 방향 안내를 따릅니다. 기준점 변화와 눈 사이 거리의 초별 통계는 `--yaw-log`를 지정할 때만 저장합니다. 회전 각도·점수의 실제 정확도는 별도 검증이 필요합니다.
 
 저장소 루트에서 실행합니다. 환경은 `video_recognition/requirements-integrated.txt`를 기준으로 합니다.
 독립 실행기는 기존 얼굴·상체 분석, `VisionPipeline`, 웹캠 어댑터와 렌더러를 import합니다.
@@ -146,12 +125,4 @@ D 모드의 `GaussianDiagnostics`는 현재 입력과 같은 입력의 sigmaYaw 
 한편 정면 복귀 점수가 회복되고 보정·완화 산술 오차가 0인 실행도 확인했습니다.
 이 기록만으로 실제 좌우 회전량, solvePnP 오류, 안내와 자세의 일치 여부를 확정하지 못합니다.
 
-`--yaw-log`를 사용하면 `timeline`의 초별 `pose_input`에 기존 6개 기준점을 사용한
-재투영 평균 오차(px), 눈 사이 거리 대비 오차 비율, 눈 사이 거리(px), 직전 프레임 대비
-얼굴 중심과 크기를 정규화한 기준점 평균 변화량을 집계합니다. 좌표·영상·회전/이동 벡터는 저장하지 않습니다.
-눈 사이 거리는 얼굴 전체 너비가 아니라 크기 비교용 근사치입니다. 기준점 변화에는 실제 고개 회전도 포함되며,
-샘플 간격이 일정하지 않아 값 자체가 속도나 인식 오류를 의미하지 않습니다. 직전 단일 얼굴이 없으면 변화량은 null입니다.
-재투영 오차가 작아도 실제 각도가 정확하다는 뜻은 아니며, 카메라 초점거리·3D 모형이 근사치인 점에 유의합니다.
-각 수치는 임계값 없이 진단용으로만 쓰이며 세션 계약이나 점수에는 반영되지 않습니다.
-오른쪽에만 다른 sigma를 주거나 좌우 측정값의 중간으로 baseline을 임의 교체하지 않습니다.
-이 문서는 각도 추정 문제를 해결했다거나 참여도 정확도를 검증했다고 주장하지 않습니다.
+`--yaw-log`의 `pose_input`에는 눈 사이 거리와 직전 관측 대비 기준점 형태 변화량이 저장됩니다. 실제 고개 회전도 변화량에 포함되며 샘플 간격이 일정하지 않아 추정 오류나 속도로 단정할 수 없습니다. 원본 좌표와 영상은 저장하지 않습니다.

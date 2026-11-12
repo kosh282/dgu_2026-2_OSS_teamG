@@ -11,7 +11,6 @@ from engagement_model.runtime import EngagementRuntime
 from engagement_model.config import ModelConfig
 from engagement_model.tests.test_runtime import feature_window
 from engagement_model.tests.test_yaw_calibration import calibrated, observe, face
-from engagement_model.tests import test_yaw_calibration as yaw_fixtures
 from engagement_model.webcam_demo import DualWebcamCalibration, ScoreTrace
 from integration import IntegrationService
 from video_recognition.integrated_analysis import VisionPipeline
@@ -113,13 +112,13 @@ class RotationCalibrationTests(unittest.TestCase):
                 self.assertAlmostEqual(c.relative['yaw'], delta)
                 self.assertAlmostEqual(c.relative['roll'], 0)
 
-    def test_real_head_angles_projection_connects_to_matrix_gaussian(self):
+    def test_rotation_angles_connect_to_matrix_gaussian(self):
         for baseline in (-20, 0, 20):
-            c = ready(yaw_fixtures.IdealPnPFlowTests.estimate(baseline))
+            c = ready(dict(pitch=170, yaw=baseline, roll=0))
             model = RotationGaussianRuntime(c)
             pair = []
             for timestamp, delta in ((200, -30), (300, 30)):
-                raw = yaw_fixtures.IdealPnPFlowTests.estimate(baseline+delta)
+                raw = dict(pitch=170, yaw=baseline+delta, roll=0)
                 result = model(feature(c, raw, timestamp))
                 self.assertAlmostEqual(result['source_angles']['yaw'], delta, places=5)
                 pair.append(result['current_direction_score'])

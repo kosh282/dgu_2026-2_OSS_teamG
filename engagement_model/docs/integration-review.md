@@ -1,4 +1,6 @@
-# 최신 main 기반 통합 검토
+# 과거 통합 검토 기록
+
+> 이 문서는 이전 비교 실험의 기록입니다. 현재는 PnP 코드와 관련 옵션이 제거됐으며 MediaPipe 얼굴 변환행렬이 기본입니다. 현재 실행 방법은 [웹캠 진단 안내](webcam-diagnostics.md)를 확인하세요.
 
 통합 브랜치 `integration/engagement-mediapipe-main`은 main `5292724`에서 생성했다.
 기존 작업은 feature 브랜치의 `5bc6ccc`로 백업됐으며 이 통합 작업은 별도 worktree에서 수행한다.

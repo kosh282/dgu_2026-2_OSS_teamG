@@ -44,36 +44,16 @@ def periodic_angles(angles):
     }
 
 
-def head_angles(landmarks, width, height):
-    """기존 solvePnP 머리 방향 추정. 보정 전 실험값이며 참여도 판정이 아니다."""
-    import cv2
-    import numpy as np
-    # 코·턱·양쪽 눈과 입의 2D 위치를 기존 얼굴 모형과 대응시킨다.
-    image_points = np.array(
-        [[landmarks[i].x * width, landmarks[i].y * height]
-         for i in (1, 152, 33, 263, 61, 291)],
-        dtype=np.float64,
-    )
-    model_points = np.array(
-        [[0, 0, 0], [0, -330, -65], [-225, 170, -135],
-         [225, 170, -135], [-150, -150, -125], [150, -150, -125]],
-        dtype=np.float64,
-    )
-    camera = np.array([[width, 0, width / 2], [0, width, height / 2], [0, 0, 1]], dtype=np.float64)
-    ok, rotation, _ = cv2.solvePnP(model_points, image_points, camera, np.zeros((4, 1)))
-    if not ok:
-        return None
-    matrix, _ = cv2.Rodrigues(rotation)
-    angles = cv2.RQDecomp3x3(matrix)[0]
-    return {key: float(value) for key, value in zip(('pitch', 'yaw', 'roll'), angles)}
-
 
 class FaceAnalyzer:
     """프레임 단위 다중 얼굴 분석. 순서는 개인 식별이나 추적 정보가 아니다."""
-    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20, show_landmarks=False):
+    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20, show_landmarks=False, pose_source='face-transform'):
         import mediapipe as mp
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision
+        if pose_source != 'face-transform':
+            raise ValueError('지원하지 않는 얼굴 자세 추정 방식입니다')
+        self.pose_source = pose_source
         self.mp = mp
         # Windows의 한글 경로에서도 읽도록 Python에서 모델 바이트를 전달한다.
         base_options = python.BaseOptions(model_asset_buffer=Path(model_path).read_bytes())
@@ -82,6 +62,7 @@ class FaceAnalyzer:
             running_mode=vision.RunningMode.VIDEO,
             num_faces=max_faces,
             output_face_blendshapes=True,
+            output_facial_transformation_matrixes=pose_source == 'face-transform',
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
         self.last_timestamp = -1
@@ -125,7 +106,14 @@ class FaceAnalyzer:
             left = eye_ratio(points, LEFT_EYE, frame.width, frame.height) if eye_observable else None
             right = eye_ratio(points, RIGHT_EYE, frame.width, frame.height) if eye_observable else None
             openness = (left + right) / 2 if left is not None and right is not None else None
-            angles = head_angles(points, frame.width, frame.height) if pose_observable else None
+            if self.pose_source == 'face-transform':
+                # 같은 검출의 행렬을 사용한다. 행렬이 없으면 PnP로 대체하지 않는다.
+                from engagement_model.face_transform import transform_angles
+                import numpy as np
+                try:
+                    angles = transform_angles(getattr(result, 'facial_transformation_matrixes', [])[index]) if pose_observable else None
+                except (ValueError, IndexError, TypeError, np.linalg.LinAlgError):
+                    angles = None
             orientation = periodic_angles(angles)
             if orientation is None:
                 angles = None
@@ -140,6 +128,8 @@ class FaceAnalyzer:
             if expression.keys() != EXPRESSION_KEYS:
                 expression = {}
             reasons = []
+            if angles is None and self.pose_source == 'face-transform':
+                reasons.append('pose_unreliable')
             if openness is None or angles is None or not expression:
                 reasons.append('insufficient_observation')
             faces.append({

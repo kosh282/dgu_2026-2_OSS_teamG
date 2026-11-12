@@ -27,51 +27,6 @@ class MainIntegrationTests(unittest.TestCase):
             show_overlay=False,debug=True,debug_page=1,live=True)
         self.assertEqual(rendered.shape,(860,1400,3))
 
-    def test_transform_primary_runs_both_calibrations_and_keeps_main_callback(self):
-        image=np.zeros((480,640,3),np.uint8)
-        analyzer=SimpleNamespace(last_landmarks=[],last_face_centers=[(.5,.5)],close=Mock(),
-                                 transform_faces=[face(dict(pitch=180,yaw=0,roll=0))])
-        counter=[0]
-        class Pipeline:
-            def __init__(self,*args,**kwargs):
-                self.consumer=kwargs['model_consumer']
-                self.face_postprocessor=SimpleNamespace(reset=Mock())
-            def process_one(self):
-                counter[0]+=1
-                timestamp=counter[0]*100
-                frame=feature_window(timestamp)
-                frame['features']['faces']=[face(dict(pitch=170,yaw=0,roll=0))]
-                self.head_calibration.update(frame['features']['faces'],timestamp)
-                frame['features']['head_calibration_status']=self.head_calibration.status
-                frame['features']['head_calibration_diagnostics']=self.head_calibration.diagnostics(timestamp)
-                self.consumer(frame)
-                return frame
-        camera=Mock()
-        camera.isOpened.return_value=True
-        with patch.object(demo.cv2,'VideoCapture',return_value=camera), \
-             patch.object(demo,'FaceAnalyzer'), \
-             patch.object(demo,'FaceTransformAnalyzer',return_value=analyzer), \
-             patch.object(demo,'PoseAnalyzer'), \
-             patch.object(demo,'PreviewCapture',return_value=SimpleNamespace(last_frame=image)), \
-             patch.object(demo,'VisionPipeline',side_effect=Pipeline) as factory, \
-             patch.object(demo.cv2,'namedWindow'),patch.object(demo.cv2,'resizeWindow'), \
-             patch.object(demo.cv2,'setMouseCallback'),patch.object(demo.cv2,'imshow'), \
-             patch.object(demo.cv2,'getWindowProperty',return_value=1), \
-             patch.object(demo.cv2,'waitKey',side_effect=lambda _: ord('q') if counter[0]>=40 else -1), \
-             patch.object(demo,'close_window'), \
-             patch.object(demo,'render_panel',return_value=image) as render, \
-             contextlib.redirect_stdout(io.StringIO()) as output:
-            demo.run(compare=False,pose_source='face-transform',calibrate=True)
-        self.assertIsInstance(factory.call_args.kwargs['model_consumer'],GaussianRuntime)
-        displayed=render.call_args.args[2]
-        self.assertEqual(displayed['gaussian'].latest['angle_estimator'],'mediapipe_face_transform')
-        self.assertEqual(displayed['gaussian'].latest['current_direction_score'],100)
-        self.assertEqual(displayed['gaussian_pnp'].latest['current_direction_score'],100)
-        self.assertIn('FACE_TRANSFORM_COMPARE',output.getvalue())
-        self.assertIn('display primary=face-transform',output.getvalue())
-        analyzer.close.assert_called_once()
-        camera.release.assert_called_once()
-
     def test_frontend_reidentification_to_person_scores_and_anonymous_events(self):
         live=LiveSession(123,reidentification_enabled=True)
         live.sid=live.service.start_session('integration test')
@@ -99,14 +54,13 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertNotIn('private-person',json.dumps(events))
 
     def test_new_cli_preserves_yaw_log_and_old_gaze_flags(self):
-        for flags in (['--pose-source','face-transform','--yaw-diagnostic','--yaw-log'],['--gaze']):
+        for flags in (['--yaw-diagnostic','--yaw-log'],['--gaze']):
             with patch('sys.argv',['webcam_demo',*flags]),patch.object(demo,'run') as run:
                 demo.main()
             if '--gaze' in flags:
                 self.assertTrue(run.call_args.kwargs['gaze'])
             else:
                 self.assertTrue(run.call_args.kwargs['yaw_log'])
-                self.assertEqual(run.call_args.kwargs['pose_source'],'face-transform')
 
 
 if __name__=='__main__':

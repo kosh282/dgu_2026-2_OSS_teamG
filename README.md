@@ -79,7 +79,7 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --yaw-log --single-model --diagnostic-move-seconds 3 --diagnostic-hold-seconds 5
 ```
 
-초별 각도·기준점 변화·재투영 오차 통계는 `engagement_model/diagnostic_logs/`에 저장됩니다. 영상과 기준점 원본은 저장하지 않지만 진단 수치는 민감할 수 있으므로 사용 후 직접 삭제하세요. 자세한 해석과 한계는 [웹캠 진단 안내](engagement_model/docs/webcam-diagnostics.md)를 참고하세요.
+초별 각도·기준점 변화 통계는 `engagement_model/diagnostic_logs/`에 저장됩니다. 영상과 기준점 원본은 저장하지 않지만 진단 수치는 민감할 수 있으므로 사용 후 직접 삭제하세요. 자세한 해석과 한계는 [웹캠 진단 안내](engagement_model/docs/webcam-diagnostics.md)를 참고하세요.
 
 ### 수업 창 캡처 확인
 

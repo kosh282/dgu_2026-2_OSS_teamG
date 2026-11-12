@@ -230,7 +230,7 @@ CLI에서는 `--face-hz`, `--pose-hz`, `--max-analysis-dimension`으로 조정�
 | --- | --- | --- |
 | 얼굴 랜드마크와 blendshape | `FaceAnalyzer`의 기존 MediaPipe 결과 | 감지·특징 계산은 기존 결과만 사용 |
 | 좌우 EAR, 눈 열림, 깜빡임 카운터 | 좌우 EAR와 `BlinkMetrics` | EAR는 한 번 계산하고 눈 열림 평균을 깜빡임 판정에도 재사용 |
-| 머리 pitch/yaw/roll | 기존 `solvePnP` 각도와 1-Euro 스무딩 | 기존 축·정면 보정 호환을 위해 각도 추정은 유지하고, 별도 추정기를 병렬 실행하지 않음 |
+| 머리 pitch/yaw/roll | 프런트와 독립 데모 모두 MediaPipe 얼굴 변환행렬 | 공통 후처리에서 1-Euro 스무딩. 변환행렬 결측 시 관측을 보류 |
 | 전체 메시 랜드마크 1-Euro 스무딩 | `LandmarkOverlaySmoother` | 개발자 화면 표시 복사본에만 적용. 분석용 EAR·각도·blendshape는 원본 랜드마크 사용 |
 | 홍채 시선 및 화면 좌표 보정 | 현재 미적용 | 수업 화면 타일에서 신뢰할 수 있는 시선 기준을 별도로 검증해야 함 |
 | PERCLOS·마이크로수면·하품(MAR) | 현재 미적용 | 졸림·하품을 수업 참여도와 동일시하지 않으며, 기준도 검증되지 않음 |

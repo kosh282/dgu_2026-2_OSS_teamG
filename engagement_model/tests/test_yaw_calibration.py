@@ -12,7 +12,6 @@ import unittest
 import cv2
 import numpy as np
 
-from video_recognition.face_analysis import head_angles
 from video_recognition.head_calibration import HeadCalibration
 from engagement_model.config import ModelConfig
 from engagement_model.gaussian import GaussianRuntime
@@ -134,36 +133,6 @@ class YawCalibrationTests(unittest.TestCase):
         # 행렬 기준의 상대 회전은 항등행렬이다. 운영 보정 로직은 이 테스트에서 변경하지 않는다.
         relative_rotation = rotation_matrix(**first).T @ rotation_matrix(**equivalent)
         np.testing.assert_allclose(relative_rotation, np.eye(3), atol=1e-12)
-
-
-class IdealPnPFlowTests(unittest.TestCase):
-    @staticmethod
-    def estimate(yaw):
-        # 현 head_angles()와 같은 6점 모형. 잡음·개인 얼굴 차이 없는 이상적인 투영이다.
-        model = np.array([[0, 0, 0], [0, -330, -65], [-225, 170, -135],
-                          [225, 170, -135], [-150, -150, -125], [150, -150, -125]], dtype=np.float64)
-        camera = np.array([[640., 0, 320], [0, 640., 240], [0, 0, 1]])
-        rotation, _ = cv2.Rodrigues(rotation_matrix(170, yaw, 0))
-        points, _ = cv2.projectPoints(model, rotation, np.array([0., 0., 1600.]), camera, np.zeros(4))
-        landmarks = [SimpleNamespace(x=0., y=0.) for _ in range(292)]
-        for index, point in zip((1, 152, 33, 263, 61, 291), points.reshape(-1, 2)):
-            landmarks[index] = SimpleNamespace(x=point[0]/640, y=point[1]/480)
-        return head_angles(landmarks, 640, 480)
-
-    def test_ideal_projection_through_real_head_angles_calibration_and_gaussian(self):
-        for baseline in (-20, 20):
-            with self.subTest(baseline=baseline):
-                origin = self.estimate(baseline)
-                self.assertAlmostEqual(origin['yaw'], baseline, places=5)
-                calibration = calibrated(origin)
-                scores = []
-                for timestamp, delta in ((200, -30), (300, 30)):
-                    raw = self.estimate(baseline+delta)
-                    self.assertAlmostEqual(raw['yaw'], baseline+delta, places=5)
-                    observed, result = observe(calibration, raw, timestamp=timestamp)
-                    self.assertAlmostEqual(observed['head_angles_relative_degrees']['yaw'], delta, places=5)
-                    scores.append(result['current_direction_score'])
-                self.assertEqual(scores[0], scores[1])
 
 
 if __name__ == '__main__':
