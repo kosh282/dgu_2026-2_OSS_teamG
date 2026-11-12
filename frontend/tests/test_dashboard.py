@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, overlap, score, suggestion_phase,
+from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, overlap, score, suggestion_phase,
                                      related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -38,6 +38,23 @@ class DashboardTests(unittest.TestCase):
             return dict(event_id=eid, start_ms=start, end_ms=end, payload={'model_output': {'value': 80}}, quality={'status': 'valid'})
         fig = chart([event(0, 1000, 'a'), event(3000, 4000, 'b')], [], 4000)
         self.assertEqual(list(fig.data[0].y), [80, None, 80])
+
+    def test_live_chart_preserves_gaps_and_merges_unobservable_intervals(self):
+        def event(start, end, value, eid):
+            return dict(event_id=eid, start_ms=start, end_ms=end,
+                        payload={'model_output': {'value': value}}, quality={'status': 'valid'})
+        windows = [event(0, 1000, 80, 'a'), event(3000, 5000, None, 'b'),
+                   event(4000, 6000, None, 'c'), event(6000, 7000, 70, 'd')]
+        notes = [{'start_ms': 3500, 'payload': {'text': '확인할 내용'}}]
+        data = live_chart_data(windows, notes, 7200000)
+        points = data[data['kind'] == 'score']
+        self.assertEqual(points['time'].tolist(), [1, 3, 5, 6, 7])
+        self.assertEqual(points['value'].notna().tolist(), [True, False, False, False, True])
+        intervals = data[data['kind'] == 'unobservable']
+        self.assertEqual(list(zip(intervals['time'], intervals['end'])), [(3, 6)])
+        self.assertEqual(data[data['kind'] == 'bound']['time'].tolist(), [0, 7200])
+        self.assertEqual(data[data['kind'] == 'note']['text'].tolist(), ['확인할 내용'])
+        self.assertEqual(len(chart(windows, notes, 7200000).layout.shapes), 1)
 
     def test_overlap_includes_crossing_transcript(self):
         self.assertTrue(overlap({'start_ms':100,'end_ms':500},200,300))

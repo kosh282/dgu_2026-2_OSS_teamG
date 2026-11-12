@@ -11,7 +11,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, overlap, score, suggestion_phase,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, overlap, score, suggestion_phase,
                                      related_suggestions, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
@@ -418,7 +418,8 @@ def live_page():
         with st.container(border=True):
             st.subheader('공통 타임라인')
             st.caption('계약에 저장된 engagement_window 구간과 메모를 표시합니다.')
-            st.plotly_chart(chart(windows,snapshot['notes'],duration),use_container_width=True,key='live-chart')
+            st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration), live_chart_spec(),
+                               use_container_width=True, key='live-chart')
             if not windows:
                 state=snapshot['status'].get('model')
                 st.caption('실험 모델을 사용하지 않거나 실행할 수 없습니다.' if state in ('stopped','unavailable') else '첫 구간을 집계하는 중입니다. 기본 설정에서는 수업 시작 후 10초가 필요합니다.')
