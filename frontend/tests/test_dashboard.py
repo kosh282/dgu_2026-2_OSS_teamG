@@ -156,11 +156,14 @@ class DashboardTests(unittest.TestCase):
 
     def test_window_selection_survives_changing_window_title_and_refresh(self):
         from streamlit.testing.v1 import AppTest
+        # 운영체제 판정을 이 화면의 namespace에서만 모의한다. 전역 sys.platform을 바꾸지 않는다.
         with patch('video_recognition.integrated_analysis.list_windows') as list_windows:
             list_windows.side_effect = [[(1, '수업 창'), (2, '다른 창')],
                                         [(2, '다른 창'), (1, '수업 창 새 제목')],
                                         [(2, '다른 창')]]
-            app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20).run()
+            script=(ROOT/'frontend'/'app.py').read_text(encoding='utf-8')
+            script=script.replace('import sys', "import sys as _real_sys\nfrom types import SimpleNamespace\nsys = SimpleNamespace(platform='win32', path=_real_sys.path)")
+            app=AppTest.from_string(script,default_timeout=20).run()
             selector=next(s for s in app.selectbox if s.label=='분석할 수업 창')
             selector.select('수업 창').run()
             self.assertFalse(app.exception)

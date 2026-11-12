@@ -242,7 +242,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
              patch('frontend.live_session.PoseAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
              patch('frontend.live_session.PreviewCapture', FakeResource), \
-             patch('frontend.live_session.EngagementRuntime', side_effect=RuntimeError('model init')), \
+             patch('frontend.live_session.GaussianRuntime', side_effect=RuntimeError('model init')), \
              patch('frontend.live_session.VisionPipeline', FakePipeline), \
              patch.object(LiveSession, '_close_developer_windows'):
             live = LiveSession(123)
@@ -343,7 +343,7 @@ class LiveSessionIsolationTests(unittest.TestCase):
         live = LiveSession(123)
         live.sid = live.service.start_session('test', {'config_version': 'test', 'participation_model': {}})
         with patch('frontend.live_session.RETRY_DELAYS_SECONDS', (0.01,)), \
-             patch('frontend.live_session.EngagementRuntime', side_effect=[RuntimeError('model failed'), object()]), \
+             patch('frontend.live_session.GaussianRuntime', side_effect=[RuntimeError('model failed'), object()]), \
              patch('frontend.live_session.WindowPublisher', return_value=object()):
             live._start_model()
             self.assertTrue(live._model_failed)

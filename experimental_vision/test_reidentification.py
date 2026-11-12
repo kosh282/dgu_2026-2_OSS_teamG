@@ -120,6 +120,61 @@ class MultiFaceTests(unittest.TestCase):
         self.assertFalse(adapter.connections)
         self.assertFalse(adapter.gallery.entries)
 
+    def test_identify_without_render_returns_independent_mapping(self):
+        adapter = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        original = frame.copy()
+        for stamp in (0, 500, 1000):
+            mapping = adapter.identify(frame, stamp, faces, boxes=boxes)
+        self.assertEqual(mapping, {10: 'S001', 20: 'S002'})
+        mapping.clear()
+        self.assertEqual(adapter.connections, {10: 'S001', 20: 'S002'})
+        np.testing.assert_array_equal(frame, original)
+
+    def test_render_uses_cached_results_without_inference_or_state_changes(self):
+        import copy
+        adapter = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        for stamp in (0, 500, 1000):
+            adapter.identify(frame, stamp, faces, boxes=boxes)
+        original = frame.copy()
+        before = copy.deepcopy((adapter.connections, adapter.gallery.__dict__,
+                                adapter.last_inference_ms, adapter.last_observation_ms,
+                                adapter.last_results))
+        calls = adapter.app.det_model.detect.call_count
+        recognition_calls = adapter.app.models['recognition'].get.call_count
+        for _ in range(2):
+            rendered = adapter.render(frame, faces, boxes=boxes)
+            self.assertFalse(np.array_equal(rendered, original))
+        np.testing.assert_array_equal(frame, original)
+        self.assertEqual(adapter.app.det_model.detect.call_count, calls)
+        self.assertEqual(adapter.app.models['recognition'].get.call_count, recognition_calls)
+        after = (adapter.connections, adapter.gallery.__dict__, adapter.last_inference_ms,
+                 adapter.last_observation_ms, adapter.last_results)
+        self.assertEqual(repr(before), repr(after))
+        adapter.close()
+        self.assertEqual(adapter.last_results, {})
+
+    def test_annotate_matches_identify_then_render(self):
+        wrapped = self.make_adapter()
+        split = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        for stamp in (0, 500, 1000, 1500):
+            actual = wrapped.annotate(frame, stamp, faces, boxes=boxes)
+            split.identify(frame, stamp, faces, boxes=boxes)
+            expected = split.render(frame, faces, boxes=boxes)
+            np.testing.assert_array_equal(actual, expected)
+            self.assertEqual(wrapped.connections, split.connections)
+
+    def test_render_before_identification_is_read_only(self):
+        adapter = self.make_adapter()
+        frame, faces, boxes = self.scene()
+        rendered = adapter.render(frame, faces, boxes=boxes)
+        self.assertFalse(np.array_equal(rendered, frame))
+        adapter.app.det_model.detect.assert_not_called()
+        self.assertIsNone(adapter.last_observation_ms)
+        self.assertFalse(adapter.connections)
+
     def test_duplicate_embedding_does_not_assign_same_id_twice(self):
         adapter = self.make_adapter()
         frame, faces, boxes = self.scene()

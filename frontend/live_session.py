@@ -1,16 +1,20 @@
 """한 대시보드 세션이 소유하는 영상 분석 작업."""
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
 import cv2
 import numpy as np
 from integration import IntegrationService
-from engagement_model.runtime import EngagementRuntime, MODEL_ID, MODEL_VERSION
+from engagement_model.gaussian import GaussianRuntime
+from engagement_model.config import ModelConfig
+from engagement_model.multi_face import MultiFaceGaussianRuntime
 from engagement_model.window_publisher import WindowPublisher
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
 from video_recognition.pose_analysis import PoseAnalyzer
+from video_recognition.face_reidentification import FaceReidentifier
 from video_recognition.preview import (
     PreviewCapture, LandmarkOverlaySmoother, draw_landmarks, draw_face_postprocessing,
 )
@@ -43,7 +47,8 @@ def _load_stt_engine(config):
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
-    def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True, recovery_root=None):
+    def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True,
+                 reidentification_enabled=False, recovery_root=None):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
@@ -51,6 +56,11 @@ class LiveSession:
         self.hwnd = hwnd
         self.video_enabled = bool(video_enabled)
         self.model_enabled = bool(model_enabled and video_enabled)
+        self.reidentification_enabled = bool(reidentification_enabled and video_enabled)
+        self.reidentifier = None
+        self.reidentification_error = None
+        self._participant_rows = []
+        self._active_capture = self._active_face = None
         if self.video_enabled and hwnd is None:
             raise ValueError('영상 분석을 사용하려면 수업 창을 선택하세요.')
         self.audio_source = audio_source
@@ -110,8 +120,8 @@ class LiveSession:
             if self.thread is not None:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
             self.sid = self.service.start_session(title.strip(), config={
-                'config_version': 'initial',
-                'participation_model': {'model_id': MODEL_ID, 'model_version': MODEL_VERSION} if self.model_enabled else None,
+                'config_version': ModelConfig.gaussian().config_version,
+                'participation_model': self._model_identity() if self.model_enabled else None,
                 # source: 루프백(스피커 출력) 또는 마이크. 장치 이름·경로는 넣지 않는다.
                 'stt_model': {**stt_config.public_info(), 'source': self.audio_source} if stt_config else None,
             })
@@ -321,13 +331,21 @@ class LiveSession:
             if self._window_process_id is None:
                 self._window_process_id = getattr(window, 'process_id', None)
             capture = PreviewCapture(window, keep_frame=False)
+            self._active_capture, self._active_face = capture, face
+            if self.reidentification_enabled:
+                try:
+                    self.reidentifier = FaceReidentifier()
+                    self.reidentification_error = None
+                except Exception as exc:
+                    self.reidentification_error = f'재식별 모델 준비 실패: {exc}'
             if self.model_enabled:
                 self._start_model()
             pipeline = VisionPipeline(
                 self.service, self.sid, capture, face,
-                model_consumer=self._consume_model if self.model_enabled else None, pose_analyzer=pose,
+                model_consumer=(self._consume_frame if self.reidentification_enabled else self._consume_model)
+                    if self.model_enabled or self.reidentification_enabled else None, pose_analyzer=pose,
             )
-            if self.model_enabled:
+            if self.model_enabled and not self.reidentification_enabled:
                 # 초기 기준은 첫 유효 얼굴을 기다려 수집한다. 정면 여부 자체는 확인할 수 없다.
                 pipeline.head_calibration.start()
                 if not self._model_failed:
@@ -338,17 +356,21 @@ class LiveSession:
                 self._maybe_restart_model()
                 if self._calibration_request.is_set():
                     self._calibration_request.clear()
-                    pipeline.head_calibration.start()
+                    self._recalibrate_pipeline(pipeline)
                 with self.lock:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
                 # 개발자 미리보기가 꺼져 있으면 랜드마크 좌표 복사와 오버레이 준비를 생략한다.
-                capture.keep_frame = preview_enabled
+                capture.keep_frame = preview_enabled or self.reidentification_enabled
                 face.show_landmarks = preview_enabled and show_landmarks
                 pose.show_landmarks = preview_enabled and show_landmarks
                 try:
                     result = pipeline.process_one()
                 except FrameNotAvailable:
+                    with self.lock:
+                        for row in self._participant_rows:
+                            row.update(status='not_observable', current_direction_score=None, score=None,
+                                       reason_codes=['capture_unavailable'])
                     self._advance_model()
                     continue
                 if result is None:
@@ -363,7 +385,7 @@ class LiveSession:
                 if preview_enabled and capture.last_frame is not None:
                     if self._render_developer_preview(capture.last_frame, result, face, pose, show_landmarks):
                         # 키 입력도 분석기와 같은 스레드에서 처리해 보정 상태를 안전하게 바꾼다.
-                        pipeline.head_calibration.start()
+                        self._recalibrate_pipeline(pipeline)
                 else:
                     self._close_developer_windows()
         except Exception as exc:
@@ -396,11 +418,71 @@ class LiveSession:
                         self.error = f'마지막 모델 구간 저장 실패: {exc}'
                 if self.error is not None:
                     self._component_status('vision', 'unavailable', f'영상 분석 오류: {self.error}', 'vision', ['analysis_failed'])
+                try:
+                    if self.reidentifier is not None:
+                        self.reidentifier.close()
+                finally:
+                    self.reidentifier = None
+                    if self.reidentification_enabled and self.model_runtime is not None:
+                        self.model_runtime.reset()
+                    with self.lock:
+                        self._participant_rows = []
+                        if self.reidentification_enabled:
+                            self.model_latest = {}
+                    self._active_capture = self._active_face = None
+
+    def _model_identity(self):
+        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.1'}
+                if self.reidentification_enabled else
+                {'model_id': 'gaussian-head-direction', 'model_version': 'angle-time-0.3'})
+
+    def _make_model(self):
+        return MultiFaceGaussianRuntime() if self.reidentification_enabled else GaussianRuntime()
+
+    def _consume_frame(self, feature):
+        """같은 분석 프레임에서 ID를 갱신한 뒤 점수화한다. ID는 특징에 넣지 않는다."""
+        identities = {}
+        if self.reidentifier is not None:
+            try:
+                identities = self.reidentifier.identify(
+                    self._active_capture.last_frame, feature['start_ms'], feature['features']['faces'],
+                    boxes=self._active_face.last_face_boxes)
+            except Exception as exc:
+                self.reidentification_error = f'재식별 처리 실패: {exc}'
+                self.reidentifier.close()
+                self.reidentifier = None
+        if self.model_enabled and self.model_runtime is not None:
+            self.model_runtime.update_identities(identities)
+            self._consume_model(feature)
+            if not self._model_failed:
+                with self.lock:
+                    self._participant_rows = self.model_runtime.participants()
+                    self.model_latest = dict(self.model_runtime.latest)
+            if self.reidentification_error:
+                self._model_status('unavailable', self.reidentification_error, ['reidentification_unavailable'])
+
+    def _recalibrate_pipeline(self, pipeline):
+        if self.reidentification_enabled and self.model_runtime is not None:
+            now = self.service.elapsed_ms(self.sid)
+            if self.window_publisher is not None:
+                self.window_publisher.finish(now)
+            self.model_runtime.recalibrate()
+            self.window_publisher = WindowPublisher(self.service, self.sid, self.model_runtime, start_ms=now)
+            self._calibration_blocked = True
+            self._calibration_window_start = now
+            with self.lock:
+                self._participant_rows = self.model_runtime.participants()
+        else:
+            pipeline.head_calibration.start()
 
     def _consume_model(self, feature):
         if self._model_failed:
             return
         try:
+            if self.reidentification_enabled:
+                self.window_publisher(feature)
+                self._finish_calibration_window()
+                return
             calibration = feature.get('features', {}).get('head_calibration_status')
             if calibration != 'ready' and not self._calibration_blocked:
                 self._calibration_blocked = True
@@ -410,7 +492,7 @@ class LiveSession:
                 self._calibration_window_start = None
             elif calibration == 'ready' and self._calibration_blocked and self._calibration_window_start is None:
                 # 이전 기준으로 수집한 점수와 새로운 기준의 점수가 한 구간에서 섞이지 않게 한다.
-                self.model_runtime = EngagementRuntime()
+                self.model_runtime = self._make_model()
                 self._calibration_window_start = feature['start_ms']
                 self.window_publisher = WindowPublisher(self.service, self.sid, self.model_runtime,
                                                         start_ms=self._calibration_window_start)
@@ -436,6 +518,9 @@ class LiveSession:
 
     def _fail_model(self, error):
         self._model_failed = True
+        with self.lock:
+            self._participant_rows = []
+            self.model_latest = {}
         if self._model_retry_count < len(RETRY_DELAYS_SECONDS):
             delay = RETRY_DELAYS_SECONDS[self._model_retry_count]
             self._model_retry_count += 1
@@ -450,7 +535,7 @@ class LiveSession:
 
     def _start_model(self):
         try:
-            self.model_runtime = EngagementRuntime()
+            self.model_runtime = self._make_model()
             self.window_publisher = WindowPublisher(
                 self.service, self.sid, self.model_runtime,
                 start_ms=self.service.elapsed_ms(self.sid),
@@ -459,7 +544,8 @@ class LiveSession:
             self._model_retry_at = None
             self._calibration_blocked = False
             self._calibration_window_start = None
-            self._model_status('running', '단일 얼굴 실험 모델이 실행 중입니다.')
+            self._model_status('running', 'ID별 Gaussian 실험 모델이 실행 중입니다.'
+                               if self.reidentification_enabled else '단일 얼굴 Gaussian 실험 모델이 실행 중입니다.')
         except Exception as exc:
             self._fail_model(exc)
 
@@ -482,7 +568,7 @@ class LiveSession:
         event = self.service.make_event(
             self.sid, 'analysis_status', {'component': 'model', 'state': state, 'message': message},
             now, now, 'model', quality_status='not_observable' if state == 'unavailable' else 'valid',
-            reason_codes=reasons, model_id=MODEL_ID, model_version=MODEL_VERSION,
+            reason_codes=reasons, **self._model_identity(),
         )
         self.service.receive_event(event)
 
@@ -510,6 +596,12 @@ class LiveSession:
                 return {'status': 'collecting', 'last_reason_code': None, 'progress': 0.0}
             if not self.latest:
                 return {'status': 'starting', 'last_reason_code': None, 'progress': 0.0}
+            if self.reidentification_enabled:
+                rows = self._participant_rows
+                ready = sum(row.get('calibration_status') == 'ready' for row in rows
+                            if row.get('status') not in {'missing', 'not_observable', 'unavailable'})
+                return {'status': 'ready' if ready else 'collecting', 'last_reason_code': None,
+                        'progress': ready / len(rows) if rows else 0.0}
             return dict(self.latest.get('features', {}).get('head_calibration_diagnostics') or {})
 
     def set_developer_preview(self, enabled):
@@ -639,6 +731,8 @@ class LiveSession:
             with self.lock:
                 face_page = self._debug_face_page
         frame = draw_face_postprocessing(frame, result['features'].get('faces', []))
+        if self.reidentifier is not None:
+            frame = self.reidentifier.render(frame, result['features'].get('faces', []), boxes=face.last_face_boxes)
         panel = self._feature_panel(result, face_page=face_page)
         panel_shape = (panel.shape[1], panel.shape[0])
         if panel_shape != self._developer_info_shape:
@@ -676,6 +770,19 @@ class LiveSession:
         """현재 분석 특징에서 계산한 최신 실험 점수의 복사본을 반환한다."""
         with self.lock:
             return dict(self.model_latest)
+
+    def participant_snapshot(self):
+        """개인 표는 메모리 복사본만 제공한다. 입력이 끊기면 현재 점수를 지운다."""
+        with self.lock:
+            rows = deepcopy(self._participant_rows)
+            timestamp = self.latest.get('start_ms') if self.latest else None
+        stale = (timestamp is None or self.sid is None or
+                 self.service.elapsed_ms(self.sid) - timestamp > 1500 or self._model_failed)
+        if stale:
+            for row in rows:
+                row.update(status='not_observable', current_direction_score=None, score=None,
+                           reason_codes=['observation_unavailable'])
+        return rows
 
     def transcription_error(self):
         """오디오 초기화 또는 전사 중 발생한 오류를 화면에 전달한다."""

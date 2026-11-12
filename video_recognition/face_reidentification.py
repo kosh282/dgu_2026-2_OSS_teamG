@@ -193,6 +193,7 @@ class FaceReidentifier:
         self.app.prepare(ctx_id=-1, det_size=(640, 640))
         self.gallery = MultiIdentityGallery()
         self.connections = {}
+        self.last_results = {}
         self.last_inference_ms = None
         self.last_observation_ms = None
 
@@ -225,10 +226,8 @@ class FaceReidentifier:
                     duplicates.update((key, other))
         return {key: box for key, box in geometry.items() if key not in duplicates}
 
-    def annotate(self, frame, timestamp_ms, faces, *, boxes):
-        """개인별 ID는 표시 복사본과 별도 메모리에만 유지한다."""
-        import cv2
-        output = frame.copy()
+    def identify(self, frame, timestamp_ms, faces, *, boxes):
+        """표시 없이 세션 내 ID 연결을 갱신하고 독립 사본을 반환한다."""
         geometry = self._geometry(faces, boxes)
         gap = timestamp_ms - self.last_observation_ms if self.last_observation_ms is not None else None
         if gap is not None and (gap <= 0 or gap > 1500):
@@ -298,6 +297,15 @@ class FaceReidentifier:
             for identity, entry in list(self.gallery.entries.items()):
                 if identity not in reserved and timestamp_ms-entry['last_seen'] > self.gallery.retention_ms:
                     del self.gallery.entries[identity]
+        self.last_results = results
+        return dict(self.connections)
+
+    def render(self, frame, faces, *, boxes):
+        """마지막 분석 결과만 복사본에 그리며 추론·시간 상태를 바꾸지 않는다."""
+        import cv2
+        output = frame.copy()
+        geometry = self._geometry(faces, boxes)
+        results = getattr(self, 'last_results', {})
         for key, box in geometry.items():
             identity = self.connections.get(key)
             state = results.get(key, {}).get('state', 'tracked' if identity else 'waiting')
@@ -313,7 +321,13 @@ class FaceReidentifier:
             cv2.putText(output, 'ReID: missing/overlapping faces deferred', (12, 28), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 220, 255), 1)
         return output
 
+    def annotate(self, frame, timestamp_ms, faces, *, boxes):
+        """기존 데모용 추론·표시 API를 유지한다."""
+        self.identify(frame, timestamp_ms, faces, boxes=boxes)
+        return self.render(frame, faces, boxes=boxes)
+
     def close(self):
+        self.last_results = {}
         self.gallery.clear()
         self.connections.clear()
         self.app = None

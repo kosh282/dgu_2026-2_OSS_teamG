@@ -124,12 +124,23 @@ flowchart LR
 
 `engagement_window.payload`는 다음처럼 확장합니다.
 
-현재 라이브 세션에서는 최종 모델 합의 전 연결 확인을 위해 단일 얼굴 **실험 모델**을 사용합니다. 실험 이벤트의 0~100 출력과 시간 기준 관측 비율은 [모델 안내](../engagement_model/README.md)에 정의하며 최종 팀 공통 점수 정의가 아닙니다. 참가자 수 분모는 계속 `null`입니다.
+현재 라이브 세션은 Gaussian **실험 모델**을 사용하며, 선택 재식별을 켜면 ID별 메모리 계산에서 그룹 집계만 발행합니다. 실험 이벤트의 0~100 출력과 시간 기준 관측 비율은 [모델 안내](../engagement_model/README.md)에 정의하며 최종 팀 공통 점수 정의가 아닙니다. 참가자 수 분모는 계속 `null`입니다.
 
 - `model_output`: `null` 또는 객체. 모델이 정해지면 `kind`(예: `continuous`/`categorical`), `value`, `scale_or_labels`를 정의하고 `provenance.model_id/model_version`과 함께 사용합니다. 숫자 범위나 라벨은 현재 미정입니다.
 - `observation`: `valid_count`, `eligible_count`, `observable_ratio`, `count_unit`을 포함합니다. `eligible_count`의 관측 단위·선정 방법이 합의되기 전에는 세 수치를 모두 `null`로 둡니다. 0으로 나눌 수 없거나 모수가 불명확할 때 `observable_ratio`는 `null`입니다. 화면에서 검출한 수를 실제 참가자 수로 간주하지 않습니다.
 - `signals`: 합의된 신호 이름을 키로 하는 객체. 신호별 `value`, `unit`, `status`를 포함합니다. 미정이면 `{}`입니다.
 - `model_extensions`: 선택적 객체. 모델 고유 출력은 `model_id`에 대응하는 이름 공간 아래에 담고 버전·단위·해석을 별도 명세합니다. 원본 랜드마크, 개인 ID, 개인별 이력은 포함하지 않습니다.
+
+다인 Gaussian 실험의 provenance는 `model_id=multi-face-gaussian`, `model_version=multi-gaussian-0.1`입니다.
+`model_extensions.multi-face-gaussian`은 기존 Gaussian의 구간/관측/점수화 시간·sigma·최근성 설정과 함께
+`aggregation=reidentified-person-time-weighted-gaussian`을 기록합니다.
+`scoreable_person_duration_ms`는 점수화 가능한 사람·밀리초 합(2명을 각각10초 관측하면20000)이며,
+벽시계 구간 길이보다 클 수 있습니다. `observable_duration_ms`/`scoreable_duration_ms`와 그 비율은
+적어도 한 사람의 유효 관측/점수화가 있는 벽시계 시간입니다. 사람 수나 비율과 혼용하지 않습니다.
+그룹 점수는 각 유효한 사람·관측 구간의 Gaussian 점수를 최근성 시간 적분으로 가중한 값입니다.
+ID 미확정·개인 보정 중·미검출·아래 보기 보류를 0점으로 넣지 않으며,
+ID·개인별 점수 표·보정 기준·원시 각도는 이벤트나 최종 JSON에 포함하지 않습니다.
+이 확장은 기존 선택 model_extensions 이름 공간 안에 있으며 최상위 스키마는 바꾸지 않습니다.
 
 `model_output`과 `signals`의 세부 타입은 모델 확정 후 별도 문서로 합의합니다. 모델이 없을 때 가상의 0점이나 임의 가중치를 반환하지 않습니다. `FeatureWindow`는 실행 중에만 전달하는 중간 데이터입니다. 최소 공통 틀은 `session_id`, `start_ms`, `end_ms`, `features`, `quality`, `feature_version`이며, `features`의 이름·단위·결측 표현과 윈도우 길이는 영상/모델 담당이 확정합니다. 임시 트랙 키가 필요한 경우 메모리에서만 사용하고 장기 신원으로 간주하지 않습니다.
 
