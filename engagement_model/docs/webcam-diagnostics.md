@@ -4,6 +4,37 @@
 
 ## 실행 환경과 기본 조작
 
+### 독립 웹캠 자세 경로 선택
+
+기본값 `--pose-source pnp`와 기존 gaze·yaw-log·디버그 페이지 기능은 유지합니다.
+`--pose-source face-transform`은 같은 얼굴 검출의 변환행렬을 별도 스무딩·Euler 보정에 전달하고,
+같은 설정의 Gaussian을 주 화면·진단에 표시합니다. PnP는 비교 기준으로 계속 계산합니다.
+`--validated-pose`는 비교 PnP에 양의 깊이·재투영 오차·연속성 검사를 적용합니다.
+실패 관측은 null이며 다른 경로 점수로 채우지 않습니다. 프런트나 다인 runtime에는 주입하지 않습니다.
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --pose-source face-transform --validated-pose --yaw-diagnostic --diagnostic-down --front-stability --single-model --diagnostic-move-seconds 2 --diagnostic-hold-seconds 4
+```
+
+수동 C/Space 보정 후 정면 고정 → 정면을 유지한 작은 몸 이동 → 정면 → 좌우·복귀 → 아래 보기·복귀를 안내합니다.
+전체 구간 수는 동적으로 표시합니다. 실제 자세가 안내 구간과 일치한다는 보장은 없습니다.
+아래 보기의 상대 Pitch가 +15도 이상일 때 looking_down, +10도 초과는 기존 하향 전이 보류입니다.
+Gaussian 식·sigma·10초 집계·히스테리시스를 경로 선택 때문에 변경하지 않습니다.
+
+`FACE_TRANSFORM_COMPARE`는 같은 프레임의 Raw·스무딩·Relative 각도, 보정 기준, 상태·현재/집계 점수를 출력합니다.
+종료 요약에는 구간별 각도 평균·표준편차·최대–최소 폭, null/하향 수와 첫 정면 복귀가 포함됩니다.
+MediaPipe의 canonical→runtime 행렬에서 스케일을 SVD로 분리하고 `diag(1,-1,-1)`로 기존 카메라 축을 맞춥니다.
+행렬 결측·반사·퇴화는 보류합니다. 실제 각도 정답 없이 좌우 정확도를 검증했다고 표현하지 않습니다.
+`--calibration-method matrix`는 별도의 이전 실험 보정이며 기본값은 euler입니다. 두 행렬 기능은 서로 다릅니다.
+
+기본 진단 수치는 메모리와 터미널 전용입니다. 기존 `--yaw-log`를 함께 명시하면 main의 집계 저장 기능을 사용합니다.
+원본 미디어·얼굴/랜드마크·개인 ID·회전/이동 벡터는 저장 요약에 추가하지 않습니다.
+20도 정면 후보 진단은 현재 정면보다 넓고 이탈 임계값보다 작은 경우만 실행하며, 아니면 후보만 비활성화합니다.
+
+기존 gaze의 하향 정책을 보존하기 위해 `--gaze`와 검증 PnP/변환행렬/실험 행렬 보정의 동시 사용은 거부합니다.
+gaze 단독·yaw-log 단독과 live/debug_page 호출은 계속 지원합니다.
+MediaPipe 지원 환경과 통합 검증 범위는 [통합 검토](integration-review.md)를 참고하세요.
+
 저장소 루트에서 실행합니다. 환경은 `video_recognition/requirements-integrated.txt`를 기준으로 합니다.
 독립 실행기는 기존 얼굴·상체 분석, `VisionPipeline`, 웹캠 어댑터와 렌더러를 import합니다.
 팀원 영상 데모·프런트를 수정하거나 별도 시선 추정기를 실행하지 않습니다.
