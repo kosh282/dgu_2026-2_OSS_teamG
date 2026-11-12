@@ -59,6 +59,7 @@ def feature_quality(faces, bodies, pose_enabled, pose_observation_age_ms=None,
 def list_windows():
     """선택 가능한 표시 중인 최상위 Windows 창의 (핸들, 제목) 목록."""
     import ctypes
+    import os
     from ctypes import wintypes
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -66,6 +67,8 @@ def list_windows():
     user32.EnumWindows.restype = wintypes.BOOL
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
     user32.GetWindowTextLengthW.restype = ctypes.c_int
     user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -78,6 +81,10 @@ def list_windows():
     def collect(hwnd, _):
         try:
             if user32.IsWindowVisible(hwnd):
+                owner = wintypes.DWORD()
+                if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner)) or owner.value == os.getpid():
+                    # 같은 프로세스의 응답 없는 프리뷰 창은 제목 조회를 무한 대기시킬 수 있다.
+                    return True
                 length = user32.GetWindowTextLengthW(hwnd)
                 if length:
                     title = ctypes.create_unicode_buffer(length + 1)
