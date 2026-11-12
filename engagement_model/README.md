@@ -18,6 +18,25 @@
 - [모델별 수식·원식과 변형·버전](docs/model-formulas.md)
 - [실험 조건·버전별 결과·검증 범위](docs/experiments.md)
 - [웹캠 조작·자동 좌우 진단·결과 해석](docs/webcam-diagnostics.md)
+- [MediaPipe 통합 범위·검증·남은 제약](docs/integration-review.md)
+
+### 독립 웹캠의 자세 추정 비교
+
+기존 PnP는 기본값으로 유지합니다. `--pose-source face-transform`은 MediaPipe 얼굴 변환행렬을
+주 표시·진단 입력으로 선택하며, 같은 검출의 PnP 결과도 비교용으로 계산합니다.
+`--validated-pose`는 양의 깊이 PnP 후보 검증을 추가합니다. 두 옵션은 프런트·ID별 다인 경로를 바꾸지 않습니다.
+`--pose-source pnp`로 복귀할 수 있으며 행렬 결측 때 PnP 점수를 대신 표시하지 않습니다.
+Gaussian 수식·sigma·Euler 정면 보정과 기본 하향 보류 정책은 유지합니다.
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --pose-source face-transform --validated-pose --single-model
+# 동일 프레임의 정면 안정성·좌우·하향 진단. 저장은 --yaw-log 명시 시에만 수행
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --pose-source face-transform --validated-pose --yaw-diagnostic --diagnostic-down --front-stability --single-model
+```
+
+독립 자세 비교는 단일 얼굴 실험입니다. 기존 프런트의 다인 Gaussian·재식별 기능은 아래 설명대로 유지합니다.
+`--gaze`는 기존 PnP 경로에서 유지하며, 검증 PnP/행렬 비교 옵션과의 동시 사용은 지원하지 않습니다.
+서로 다른 하향 정책을 조용히 섞지 않고 명시적 오류로 안내합니다.
 
 ## 프런트 다인 Gaussian
 
