@@ -15,6 +15,8 @@
 
 상세 문서:
 
+- [최신 main 호환성 검토·커밋 대상 명세](docs/integration-review.md)
+
 - [모델별 수식·원식과 변형·버전](docs/model-formulas.md)
 - [실험 조건·버전별 결과·검증 범위](docs/experiments.md)
 - [웹캠 조작·자동 좌우 진단·결과 해석](docs/webcam-diagnostics.md)
@@ -37,6 +39,9 @@ runtime.py: 상태·관측 시간 관리, Legacy 또는 Huang 계산
 독립 `webcam_demo.py`는 런타임을 직접 연결하며 `WindowPublisher`를 연결하지 않습니다.
 따라서 독립 웹캠 점수가 세션 파일에 저장되거나 프런트로 전달되는 것은 아닙니다.
 현재 `frontend/live_session.py`는 Legacy 런타임과 publisher를 연결합니다.
+독립 Gaussian 웹캠 기본은 기존 Euler 보정입니다. 명시적으로 선택하는 실험용 matrix 경로만
+`rotation_calibration.py`에서 Raw 회전행렬 기준으로 보정한 입력 복사본을 사용합니다.
+Legacy·Huang은 기존 보정 입력을 유지합니다. 이 행렬 보정은 프런트나 일반 `GaussianRuntime()`에 자동 적용되지 않습니다.
 
 | 파일 | 책임 |
 |---|---|
@@ -45,6 +50,7 @@ runtime.py: 상태·관측 시간 관리, Legacy 또는 Huang 계산
 | [scoring.py](scoring.py) | 공통 상태 분류, Legacy 규칙, Huang 순수 함수·구간 계산 |
 | [runtime.py](runtime.py) | `EngagementRuntime`, 세 모델을 같은 입력으로 실행하는 `ComparisonRuntime` |
 | [gaussian.py](gaussian.py) | `GaussianRuntime`, 방향 점수·시간 가중 집계 |
+| [rotation_calibration.py](rotation_calibration.py) | 독립 Gaussian 웹캠의 상대 회전행렬 보정·입력 어댑터 |
 | [window_publisher.py](window_publisher.py) | 구간 집계와 공통 계약 이벤트 발행 |
 | [webcam_demo.py](webcam_demo.py) | 기존 영상 기능을 재사용하는 독립 웹캠·메모리 진단 |
 | [tests/](tests/) | 입력·산정식·시간 상태·복귀·계약·실행기 모의 검사 |
@@ -96,7 +102,11 @@ Yaw 완화는 Legacy와 같은 `soften_angle()`을 재사용합니다.
 Pitch 완화와 sigma 15/20도는 프로젝트 실험 설정이며 논문의 최적값이 아닙니다.
 큰 각도의 기울기는 1을 유지합니다. Roll은 점수에 사용하지 않습니다.
 relative 비교 모드는 완화 전 P/Y를 그대로 사용합니다.
-스무딩·보정은 영상 모듈에서 수행하며 모델이 얼굴 각도를 다시 추정하지 않습니다.
+일반 입력의 스무딩·보정은 영상 모듈이 담당합니다. 독립 Gaussian 웹캠의 matrix 경로는
+Raw Euler를 회전행렬로 복원해 보정하며, Euler 축별 스무딩 결과를 사용하지 않습니다.
+상대 회전은 기준 Yaw/Roll을 반영한 좌표계에서 해석해 아래 보기의 양의 Pitch 계약을 유지합니다.
+이 좌표계 수정은 합성 회전으로 검증했으며 실제 웹캠의 좌우 비대칭 개선 여부는 재검증이 필요합니다.
+얼굴 특징이나 solvePnP를 재추정하지 않으며 Gaussian 식·sigma·상태 정책은 유지합니다.
 
 softened 0.3이 현재 기본이며, relative 0.2는 하향 전이 보류를 유지하는 비교 모드입니다.
 0.1은 과거 설명으로, 현재 코드에 별도 실행 모드가 없습니다. 버전별 실험 표를 혼용하지 마세요.
@@ -174,6 +184,18 @@ EAR·깜빡임·표정·상체 이동을 참여 점수나 필기 근거로 합�
 
 ## 6. 실행 방법 및 테스트 명령어
 
+MediaPipe 얼굴 변환행렬 비교는 `--compare-face-transform`으로 선택합니다.
+주 표시·진단 후보로 사용하려면 `--pose-source face-transform`, PnP 복귀는 `--pose-source pnp`입니다.
+행렬 결측을 PnP 점수로 대체하지 않습니다. 전체 기본값은 검증 완료 전까지 PnP로 유지합니다.
+한 번의 동일 얼굴 검출에서 PnP와 행렬 각도를 얻고, 같은 설정의 스무딩·Euler 보정·Gaussian을 각각 실행합니다.
+기본 주 모델과 공통 영상 코드는 교체하지 않습니다. `--validated-pose`를 함께 쓰면 비교 기준은 검증 PnP입니다.
+실행 예시와 좌표계·해석 한계는 [웹캠 진단 문서](docs/webcam-diagnostics.md)를 참고하세요.
+
+원본 PnP의 음의 깊이 해를 제외하는 독립 웹캠 실험은 `--validated-pose --debug`로 선택합니다.
+기존 검출·눈·표정 추출을 재사용하고 머리 자세만 SQPnP로 다시 추정합니다.
+양의 깊이·재투영 오차·회전 연속성을 검사하며 실패 관측은 `pose_unreliable`로 보류합니다.
+공통 영상 모듈과 프런트에는 적용하지 않습니다. 실제 개선 여부는 웹캠 검증이 필요합니다.
+
 저장소 루트에서 실행합니다. 영상 환경은 `video_recognition/requirements-integrated.txt`를 기준으로 합니다.
 기존 가상환경이 없다면 해당 requirements로 별도 환경을 준비해야 합니다.
 
@@ -182,6 +204,9 @@ EAR·깜빡임·표정·상체 이동을 참여 점수나 필기 근거로 합�
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo
 # 상세 진단 / 선택 모델 단독 / 이전 Gaussian 입력 방식
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --debug
+# 새 행렬 보정과 기존 Euler 보정의 Gaussian 점수를 같은 영상에서 비교
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --single-model --calibration-method matrix --compare-calibration
+# 기존 보정만 사용하려면 --calibration-method euler
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --model huang --single-model
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --gaussian-angle-mode relative
 # 수동 보정 후 정면→왼쪽→정면→오른쪽→정면 자동 진단
@@ -220,6 +245,8 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_hua
 ### 검증 중인 문제와 미확인 사항
 
 웹캠에서 큰 좌우 상대각 차이와 회전 중 Pitch/Roll 변동이 관찰됐지만 원인은 확정하지 못했습니다.
+같은 회전의 Euler 표현 전환에 대한 보정 오류는 새 행렬 경로에서 회귀 검증했습니다.
+실제 solvePnP 회전 자체의 오류나 카메라·얼굴 모형 오차가 해결됐다는 뜻은 아닙니다.
 보정·완화 산술의 일치가 원본 추정이나 보정 자세의 정확성을 증명하지는 않습니다.
 실제 좌우 회전량의 정답, solvePnP 깊이·재투영 오차, 실제 참여도 정확도는 현재 코드만으로 확인할 수 없습니다.
 A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기본 정책으로 구현하지 않았습니다.

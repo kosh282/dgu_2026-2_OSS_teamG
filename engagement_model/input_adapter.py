@@ -94,6 +94,8 @@ def parse_feature_window(data, config=None):
         if not isinstance(face, dict):
             raise ValueError("얼굴 항목은 사전이어야 합니다")
         face_quality = face.get("quality")
+        if isinstance(face_quality, dict) and 'pose_unreliable' in face_quality.get('reason_codes', []):
+            reasons.append('pose_unreliable')
         # 이 모델은 머리 각도만 사용한다. 눈/표정 누락으로 전체 얼굴 품질이 partial이어도
         # 유효한 상대 각도가 있으면 쓸 수 있지만, 얼굴 자체를 관측할 수 없으면 제외한다.
         if (not isinstance(face_quality, dict)
