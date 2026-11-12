@@ -2,6 +2,7 @@
 import math
 from pathlib import Path
 from uuid import UUID
+import pandas as pd
 import plotly.graph_objects as go
 from integration import IntegrationService
 
@@ -48,6 +49,76 @@ def suggestion_in_range(event, start, end, transcripts):
     return any(t['event_id'] in ids and overlap(t, start, end) for t in transcripts)
 
 
+def unobservable_intervals(windows):
+    """점수가 없는 구간을 합쳐 겹친 부분이 진해지지 않게 한다."""
+    intervals = sorted((e['start_ms'], e['end_ms']) for e in windows if score(e) is None)
+    merged = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def live_chart_data(windows, notes, duration):
+    """실시간 차트의 시간 경계, 점수, 관측 불가 구간과 메모를 만든다."""
+    rows = [{'kind': 'bound', 'time': 0.0},
+            {'kind': 'bound', 'time': max(duration / 1000, 1)}]
+    ordered = sorted(windows, key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))
+    previous_end = None
+    sequence = 0
+    for event in ordered:
+        if previous_end is not None and event['start_ms'] > previous_end:
+            rows.append({'kind': 'score', 'time': event['start_ms'] / 1000,
+                         'value': None, 'sequence': sequence})
+            sequence += 1
+        rows.append({'kind': 'score', 'time': event['end_ms'] / 1000,
+                     'time_label': clock(event['end_ms']), 'value': score(event),
+                     'sequence': sequence})
+        sequence += 1
+        previous_end = max(previous_end or 0, event['end_ms'])
+    for start, end in unobservable_intervals(windows):
+        rows.append({'kind': 'unobservable', 'time': start / 1000, 'end': end / 1000})
+    for event in notes:
+        rows.append({'kind': 'note', 'time': event['start_ms'] / 1000, 'value': -12,
+                     'time_label': clock(event['start_ms']), 'text': event['payload']['text']})
+    return pd.DataFrame(rows, columns=['kind', 'time', 'end', 'value', 'sequence', 'time_label', 'text'])
+
+
+def live_chart_spec():
+    """데이터와 분리된 고정 차트 설정으로 실시간 갱신 시 요소를 유지한다."""
+    time_axis = {
+        'title': None, 'grid': False, 'tickCount': 7,
+        'labelExpr': "(floor(datum.value / 3600) < 10 ? '0' : '') + floor(datum.value / 3600) + ':' + (floor(datum.value / 60) % 60 < 10 ? '0' : '') + floor(datum.value / 60) % 60 + ':' + (floor(datum.value) % 60 < 10 ? '0' : '') + floor(datum.value) % 60",
+    }
+    x = {'field': 'time', 'type': 'quantitative', 'scale': {'zero': False, 'nice': False}, 'axis': time_axis}
+    y = {'field': 'value', 'type': 'quantitative', 'scale': {'domain': [-20, 105]},
+         'axis': {'title': None, 'values': [0, 50, 100], 'gridColor': '#e6e9ed'}}
+    return {
+        'height': 265, 'background': 'white',
+        'layer': [
+            {'transform': [{'filter': "datum.kind === 'bound'"}],
+             'mark': {'type': 'point', 'opacity': 0}, 'encoding': {'x': x}},
+            {'transform': [{'filter': "datum.kind === 'unobservable'"}],
+             'mark': {'type': 'rect', 'color': '#e6e9ed', 'opacity': 0.7},
+             'encoding': {'x': x, 'x2': {'field': 'end'}}},
+            {'transform': [{'filter': "datum.kind === 'score'"}],
+             'mark': {'type': 'line', 'color': '#2457d6', 'strokeWidth': 2,
+                      'point': {'size': 16}, 'invalid': 'break-paths-show-domains'},
+             'encoding': {'x': x, 'y': y, 'order': {'field': 'sequence', 'type': 'quantitative'},
+                          'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
+                                      {'field': 'value', 'type': 'quantitative', 'title': '실험 점수'}]}},
+            {'transform': [{'filter': "datum.kind === 'note'"}],
+             'mark': {'type': 'point', 'filled': True, 'color': '#1f2328', 'size': 49},
+             'encoding': {'x': x, 'y': y,
+                          'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
+                                      {'field': 'text', 'type': 'nominal', 'title': '메모'}]}},
+        ],
+        'config': {'view': {'stroke': None}, 'axis': {'labelColor': '#57606a'}},
+    }
+
+
 def chart(windows, notes, duration, selected=None):
     fig = go.Figure()
     ordered = sorted(windows, key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))
@@ -64,10 +135,9 @@ def chart(windows, notes, duration, selected=None):
                             mode='lines+markers', connectgaps=False, name='참여 점수',
                             marker={'size': 4}, line={'color': '#2457d6', 'width': 2},
                             hovertemplate='%{x:.1f}초 · %{y:.1f}점<extra></extra>'))
-    for event in ordered:
-        if score(event) is None:
-            fig.add_vrect(x0=event['start_ms']/1000, x1=event['end_ms']/1000,
-                          fillcolor='#e6e9ed', opacity=.7, line_width=0, layer='below')
+    for start, end in unobservable_intervals(ordered):
+        fig.add_vrect(x0=start/1000, x1=end/1000,
+                      fillcolor='#e6e9ed', opacity=.7, line_width=0, layer='below')
     fig.add_trace(go.Scatter(x=[e['start_ms']/1000 for e in notes], y=[-12]*len(notes),
                             mode='markers', marker={'color':'#1f2328','size':7}, name='메모',
                             text=[e['payload']['text'] for e in notes], hovertemplate='%{text}<extra>메모</extra>'))
