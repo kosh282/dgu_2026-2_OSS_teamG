@@ -244,7 +244,13 @@ def preparation():
             title = st.text_input('수업 제목',key='lesson_title',disabled=running,placeholder='예: 오픈소스 소프트웨어 8주차')
             video_enabled=st.checkbox('영상 분석 사용',value=True,key='video_enabled',disabled=running)
             model_enabled=st.checkbox('실험 행동 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
-            st.caption('실험 점수는 영상 분석 결과를 사용합니다. 수업 시작 전에 기능을 선택하세요.')
+            reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
+                key='reidentification_enabled',disabled=running or not video_enabled)
+            st.caption('점수는 Gaussian 모델입니다. 재식별을 함께 켜면 ID별로 정면 기준과 점수를 계산합니다. 재식별을 끄면 한 얼굴만 점수화합니다.')
+            if reidentification_enabled and video_enabled:
+                st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
+                if importlib.util.find_spec('insightface') is None:
+                    st.warning('재식별 패키지 설치가 필요합니다: python -m pip install -r video_recognition/requirements-reidentification.txt. 준비에 실패하면 개인별 점수는 보류됩니다.')
             windows=st.session_state.get('class_window_list', [])
             window_error=None
             refresh_windows=st.button('창 목록 새로고침',disabled=running or not video_enabled)
@@ -339,6 +345,7 @@ def preparation():
                     live=LiveSession(selected[0] if selected and video_enabled else None,
                                      audio_source=audio_source if stt_enabled else None,
                                      video_enabled=video_enabled, model_enabled=model_enabled,
+                                     reidentification_enabled=reidentification_enabled,
                                      recovery_root=files.root / '.recovery')
                     live.start(title)
                     st.session_state.live=live
@@ -402,7 +409,9 @@ def live_page():
                        'collecting':f"정면 기준 수집 중 · {calibration.get('progress', 0)*100:.0f}%", 'ready':'정면 기준 수집 완료'}.get(state, '정면 기준: 상태 확인 중'))
             if reason:
                 b.caption(reasons.get(reason, f'보정 상태: {reason}'))
-            b.caption('얼굴 한 명이 정면을 보고 약 3초간 유지해 주세요. 자동 기준은 실제 정면인지 확인하지 못합니다.')
+            b.caption(('각 ID의 정면 기준을 따로 수집합니다. 관측 중인 모두가 정면을 약 3초 유지해 주세요.'
+                       if getattr(live, 'reidentification_enabled', False) else
+                       '얼굴 한 명이 정면을 보고 약 3초간 유지해 주세요.') + ' 자동 기준은 실제 정면인지 확인하지 못합니다.')
             if b.button('정면 기준 재보정', disabled=not live.is_running(), key='recalibrate-head'):
                 live.request_head_calibration()
                 st.rerun()
@@ -487,6 +496,22 @@ def live_page():
             st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
         if diagnostics['video_result_age_ms'] is not None:
             st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
+        if getattr(live, 'reidentification_enabled', False):
+            st.subheader('세션 내 ID별 Gaussian 점수')
+            st.caption('참고용 관찰 점수입니다. 개인별 표는 수업 중에만 표시되며, 저장·재열기 대상은 ID 없는 그룹 집계입니다.')
+            st.caption('상단 점수는 유효 관측된 사람·시간의 가중 집계이며, 전체 수강생 평균이나 참여율이 아닙니다.')
+            if live.reidentification_error:
+                st.warning(live.reidentification_error)
+            rows=live.participant_snapshot()
+            if rows:
+                states={'scored':'관측 중','deferred':'점수 보류','calibrating':'정면 기준 수집 중',
+                        'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
+                st.dataframe([{'임시 ID':row['id'], '상태':states.get(row['status'],row['status']),
+                    '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
+                    '현재 방향 점수':row['current_direction_score'], '최근 10초 점수':row['score']}
+                    for row in rows],hide_index=True,use_container_width=True)
+            else:
+                st.caption('재식별 ID 확인 대기 중입니다. 작은 얼굴·가림·겹침은 확인되지 않을 수 있습니다.')
         if result:
             st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
         if latest_window:

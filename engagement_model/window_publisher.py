@@ -38,10 +38,11 @@ class WindowPublisher:
         timestamp = feature_window['start_ms']
         self.advance(timestamp)
         result = self.runtime(feature_window)
+        reset_reasons = {'tracking_key_changed', 'baseline_unavailable', 'non_monotonic_timestamp'}
+        single_reset = (not callable(getattr(self.runtime, 'aggregate_window', None))
+                        and bool(set(result.get('reason_codes', ())) & reset_reasons))
         if self.config.scoring_method in {'huang', 'gaussian'} and (
-                result.get('status') == 'input_error'
-                or set(result.get('reason_codes', ())) & {
-                    'tracking_key_changed', 'baseline_unavailable', 'non_monotonic_timestamp'}):
+                result.get('status') == 'input_error' or single_reset):
             # 재보정/대상 변경 전후의 상대각을 같은 통계에 섞지 않는다.
             self._segments.clear()
         self._sample = (timestamp, result.get('angles') is not None, result.get('score'),
@@ -98,7 +99,15 @@ class WindowPublisher:
         if not scoreable_ms:
             reasons.append('no_scoreable_time')
         value = round(weighted / scoreable_ms, 1) if not reasons else None
-        if self.config.scoring_method == 'huang':
+        aggregate = getattr(self.runtime, 'aggregate_window', None)
+        if callable(aggregate):
+            summary = aggregate(self._segments, start, end)
+            observable_ms = summary['observable_duration_ms']
+            scoreable_ms = summary['scoreable_duration_ms']
+            observable_ratio = observable_ms / duration
+            scoreable_ratio = scoreable_ms / duration
+            value, reasons = summary['score'], summary['reason_codes']
+        elif self.config.scoring_method == 'huang':
             # 이미 계산된 이동 점수를 다시 평균하지 않고 같은 구간의 P/Y를 결합한다.
             summary = huang_window_score(self._segments, start, end, self.config)
             observable_ms = summary['observable_duration_ms']
@@ -151,6 +160,11 @@ class WindowPublisher:
                 'max_observation_hold_seconds': self.config.max_observation_hold_seconds,
                 'min_observable_ratio': self.config.min_observable_ratio,
                 'min_scoreable_ratio': self.config.min_scoreable_ratio,
+            })
+        if callable(aggregate):
+            payload['model_extensions'][self.model_id].update({
+                'aggregation': 'reidentified-person-time-weighted-gaussian',
+                'scoreable_person_duration_ms': summary['scoreable_person_duration_ms'],
             })
         event = self.service.make_event(
             self.session_id, 'engagement_window', payload, start, end, 'model',
