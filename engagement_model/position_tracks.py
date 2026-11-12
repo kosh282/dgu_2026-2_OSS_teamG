@@ -11,10 +11,10 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
     minimum_separation = 0.12
     aggregation_label = 'position-track-time-weighted-gaussian'
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, eye_fusion=False):
         self._positions = {}
         self._position_time = None
-        super().__init__(config)
+        super().__init__(config, eye_fusion=eye_fusion)
 
     def reset(self):
         super().reset()

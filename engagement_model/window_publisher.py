@@ -170,6 +170,21 @@ class WindowPublisher:
                 'aggregation': getattr(self.runtime, 'aggregation_label', 'reidentified-person-time-weighted-gaussian'),
                 'scoreable_person_duration_ms': summary['scoreable_person_duration_ms'],
             })
+        if getattr(self.runtime, 'eye_fusion', False):
+            payload['model_extensions'][self.model_id].update({
+                'version': 'head-eye-time-window-1',
+                'head_weight': 0.8, 'eye_weight': 0.2,
+                'eye_window_seconds': 10, 'eye_min_coverage': 0.7,
+                'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
+                'eye_score_policy': 'prolonged_bilateral_closure_observable_ratio',
+            })
+            if getattr(self.runtime, 'eye_fusion', False):
+                payload['model_extensions'][self.model_id].update({
+                    'head_weight': 0.8, 'eye_weight': 0.2,
+                    'eye_window_seconds': 10, 'eye_min_coverage': 0.7,
+                    'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
+                    'eye_score_policy': 'prolonged_bilateral_closure_observable_ratio',
+                })
         event = self.service.make_event(
             self.session_id, 'engagement_window', payload, start, end, 'model',
             quality_status=quality, reason_codes=reasons,

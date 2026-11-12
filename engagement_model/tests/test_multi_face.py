@@ -12,6 +12,7 @@ def frame(ms, angles=(0, 20)):
     for i, (face, yaw) in enumerate(zip(value['features']['faces'], angles), 1):
         face['transient_track_key'] = i
         face['head_angles_degrees'] = dict(pitch=0, yaw=yaw, roll=0)
+        face['eye_aspect_ratio_left'] = face['eye_aspect_ratio_right'] = 0.3
     return value
 
 

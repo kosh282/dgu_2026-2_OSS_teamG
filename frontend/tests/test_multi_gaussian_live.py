@@ -83,12 +83,13 @@ class MultiGaussianLiveTests(unittest.TestCase):
         live._active_face = Mock(last_face_boxes=[[.1,.1,.4,.9],[.6,.1,.9,.9]])
         live.reidentifier = Mock()
         live.reidentifier.identify.return_value = {0:'PRIVATE-A', 1:'PRIVATE-B'}
-        for ms in range(0,16001,100):
+        for ms in range(0,24001,100):
             live.service.elapsed_ms.return_value = ms
             feature = feature_window(ms, track_key=0)
             feature['session_id'] = live.sid
             face = feature['features']['faces'][0]
             face['head_angles_degrees'] = {'pitch':0.,'yaw':0.,'roll':0.}
+            face['eye_aspect_ratio_left'] = face['eye_aspect_ratio_right'] = 0.3
             face['head_angles_smoothed_degrees'] = dict(face['head_angles_degrees'])
             other = deepcopy(face)
             other['transient_track_key'] = 1
@@ -123,9 +124,9 @@ class MultiGaussianLiveTests(unittest.TestCase):
         live = self.live(True)
         live._start_model()
         live.model_runtime.update_identities({1:'A',2:'B'})
-        for ms in range(0,13101,100):
+        for ms in range(0,23101,100):
             live.service.elapsed_ms.return_value = ms
-            feature = multi_frame(ms, (0,) if ms <= 12000 else (0,20))
+            feature = multi_frame(ms, (0,) if ms <= 22000 else (0,20))
             feature['session_id'] = live.sid
             live._consume_model(feature)
         self.assertFalse(live._model_failed)
@@ -160,13 +161,13 @@ class MultiGaussianLiveTests(unittest.TestCase):
             process_id=1
             def read(self):
                 clock['ms']+=100
-                if clock['ms']==15000:
+                if clock['ms']==25000:
                     raise FrameNotAvailable('synthetic capture gap')
-                if clock['ms']==15100:
+                if clock['ms']==25100:
                     self_test.assertTrue(live._participant_rows)
                     self_test.assertTrue(all(row['current_direction_score'] is None
                                              for row in live._participant_rows))
-                if clock['ms']>=16000:
+                if clock['ms']>=26000:
                     live.stop_event.set()
                 return image
             close=Mock()
@@ -178,7 +179,7 @@ class MultiGaussianLiveTests(unittest.TestCase):
             def analyze(self, frame):
                 return [dict(quality={'status':'valid','reason_codes':[]},
                              head_angles_degrees={'pitch':0.,'yaw':yaw,'roll':0.},
-                             eye_openness=.3, head_position={'x':x,'y':.5})
+                             eye_openness=.3, eye_aspect_ratio_left=.3, eye_aspect_ratio_right=.3, head_position={'x':x,'y':.5})
                         for x,yaw in ((.25,0.),(.75,20.))]
             close=Mock()
 

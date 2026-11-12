@@ -422,13 +422,14 @@ class LiveSession:
                     self._active_capture = self._active_face = None
 
     def _model_identity(self):
-        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.2+face-transform'}
+        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.3+face-transform-eye'}
                 if self.reidentification_enabled else
-                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.1+face-transform'})
+                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.2+face-transform-eye'})
 
     def _make_model(self):
-        model = MultiFaceGaussianRuntime() if self.reidentification_enabled else PositionTrackGaussianRuntime()
-        model.model_version += '+face-transform'
+        model = (MultiFaceGaussianRuntime(eye_fusion=True) if self.reidentification_enabled
+                 else PositionTrackGaussianRuntime(eye_fusion=True))
+        model.model_version = self._model_identity()['model_version']
         model.latest['model_version'] = model.model_version
         return model
 
@@ -643,6 +644,7 @@ class LiveSession:
         sampler = getattr(runtime, 'sampling_diagnostics', None)
         model = SimpleNamespace(latest=latest, config=config,
             display_group=self.model_enabled,
+            eye_fusion=getattr(runtime, 'eye_fusion', False),
             sampling_diagnostics=sampler if callable(sampler) else lambda: {
                 'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
         quality = self._pose_input_diagnostics.observe(face.last_landmarks, image)

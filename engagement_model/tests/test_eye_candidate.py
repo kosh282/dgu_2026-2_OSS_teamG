@@ -39,14 +39,14 @@ class EyeCandidateTests(unittest.TestCase):
         self.assertIsNone(after['candidate_total'])
         self.assertEqual(after['closed_seconds'], 0)
 
-    def test_observation_gaps_and_looking_down_defer_candidate(self):
+    def test_observation_gaps_defer_but_downward_can_be_observed(self):
         candidate = EyeCandidate()
         head = {'angles': {'pitch': 0}, 'score': 100, 'downward_status': None}
         for t in range(0, 12000, 1000): output = candidate.update(frame(t), head)
         self.assertIsNone(output['eye_score'])
         self.assertLess(output['coverage'], .7)
         head['downward_status'] = 'looking_down_confirmed'
-        self.assertEqual(candidate.update(frame(12100), head)['status'], 'eye_unavailable')
+        self.assertNotEqual(candidate.update(frame(12100), head)['status'], 'eye_unavailable')
 
     def test_group_candidate_requires_every_face_to_be_matched_and_observable(self):
         model = MultiFaceGaussianRuntime()

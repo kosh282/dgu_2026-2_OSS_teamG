@@ -1,4 +1,4 @@
-"""눈 관측 안정성 점수와 머리 점수의 비교용 후보. 최종 이벤트에는 쓰지 않는다."""
+"""눈 관측 점수와 머리 점수의 실험 결합. 개인별 값은 최종 이벤트에 저장하지 않는다."""
 from collections import deque
 import math
 
@@ -31,8 +31,7 @@ class EyeCandidate:
                   and isinstance(track, int) and not isinstance(track, bool)
                   and feature.get('quality', {}).get('status') in ('valid', 'partial')
                   and quality.get('status') in ('valid', 'partial') and values_ok
-                  and head_result.get('angles') is not None
-                  and head_result.get('downward_status') is None)
+                  and head_result.get('angles') is not None)
         if not usable:
             self.previous_time = self.closed_since = None
             self.previous_closed = False

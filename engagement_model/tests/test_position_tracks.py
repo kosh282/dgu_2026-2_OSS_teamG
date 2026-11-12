@@ -15,6 +15,7 @@ def sample(t, xs=(0.25, 0.75)):
         face['transient_track_key']=i
         face['head_position']={'x':x, 'y':0.5}
         face['head_angles_degrees']={'pitch':0.,'yaw':0.,'roll':0.}
+        face['eye_aspect_ratio_left']=face['eye_aspect_ratio_right']=0.3
     return item
 
 class PositionTrackTests(unittest.TestCase):
@@ -86,14 +87,14 @@ class PositionTrackTests(unittest.TestCase):
         live.sid = live.service.start_session('test')
         with patch.object(live.service, 'elapsed_ms', return_value=0):
             live._start_model()
-        for t in range(0, 15001, 100):
+        for t in range(0, 24001, 100):
             value = sample(t)
             value['session_id'] = live.sid
             with patch.object(live.service, 'elapsed_ms', return_value=t):
                 live._consume_frame(value)
         self.assertFalse(live._model_failed)
         self.assertEqual(len(live.participant_snapshot()), 2)
-        events = live.service.get_events_in_range(live.sid, 0, 15000)
+        events = live.service.get_events_in_range(live.sid, 0, 24000)
         self.assertTrue(any(e['event_type'] == 'engagement_window' and e['payload']['model_output'] for e in events))
 
 if __name__=='__main__': unittest.main()

@@ -247,6 +247,7 @@ def preparation():
             reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
                 key='reidentification_enabled',disabled=running or not video_enabled)
             st.caption('점수는 Gaussian 모델입니다. 재식별을 켜면 임시 ID별로, 끄면 단기 위치 트랙별로 계산합니다. 위치 트랙은 사람을 식별하지 않습니다.')
+            st.caption('실험 구간 점수는 머리 방향 80%와 최근 눈 관측 점수 20%를 결합합니다. 눈을 관측할 수 없는 얼굴은 해당 구간에서 보류합니다.')
             if reidentification_enabled and video_enabled:
                 st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
                 if importlib.util.find_spec('insightface') is None:
@@ -521,7 +522,8 @@ def live_page():
                         'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
                 st.dataframe([{('임시 ID' if reid else '임시 위치 트랙'):row['id'], '상태':states.get(row['status'],row['status']),
                     '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
-                    '현재 방향 점수':row['current_direction_score'], '최근 10초 점수':row['score']}
+                    '현재 결합 점수':row['current_direction_score'], '최근 결합 점수':row['score'],
+                    '보류 사유':', '.join(row.get('reason_codes', []))}
                     for row in rows],hide_index=True,use_container_width=True)
             else:
                 st.caption('재식별 ID 확인 대기 중입니다.' if reid else '안정적인 위치 트랙 확인 대기 중입니다.')

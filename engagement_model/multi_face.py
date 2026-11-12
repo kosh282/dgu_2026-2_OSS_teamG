@@ -18,8 +18,9 @@ class MultiFaceGaussianRuntime:
     ttl_ms = 120000
     calibration_grace_ms = 3000
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, eye_fusion=False):
         self.config = config or ModelConfig.gaussian()
+        self.eye_fusion = eye_fusion
         if self.config.scoring_method != 'gaussian':
             raise ValueError('Gaussian 설정이 필요합니다')
         self.reset()
@@ -129,10 +130,18 @@ class MultiFaceGaussianRuntime:
                     calibration.update([single_face], timestamp)
             single['features']['head_calibration_status'] = calibration.status
             result = person['runtime'](single)
-            person['row'].update(status=(result['status'] if calibration.status == 'ready' else 'calibrating'),
+            eye = (result.get('eye_candidate') or {}).get('eye_score')
+            fused_current = (round(0.8 * result['current_direction_score'] + 0.2 * eye, 1)
+                             if self.eye_fusion and eye is not None
+                             and result.get('current_direction_score') is not None else None)
+            fused_recent = (result.get('eye_candidate') or {}).get('candidate_total') if self.eye_fusion else None
+            person['row'].update(status=(('deferred' if self.eye_fusion and fused_current is None else result['status'])
+                                         if calibration.status == 'ready' else 'calibrating'),
                                  calibration_status=calibration.status,
-                                 current_direction_score=result.get('current_direction_score'),
-                                 score=result['score'], reason_codes=list(result['reason_codes']))
+                                 current_direction_score=fused_current if self.eye_fusion else result.get('current_direction_score'),
+                                 score=fused_recent if self.eye_fusion else result['score'],
+                                 reason_codes=list(result['reason_codes']) + (['eye_observation_unavailable']
+                                     if self.eye_fusion and eye is None else []))
             outputs.append(result)
         for identity, person in self._people.items():
             if identity not in active:
@@ -140,10 +149,20 @@ class MultiFaceGaussianRuntime:
                 person['runtime'].reset()
                 person['row'].update(status='missing', score=None, current_direction_score=None,
                                      reason_codes=['identity_not_observed'])
-        primitives = [r['gaussian_observation'] for r in outputs if r.get('gaussian_observation') is not None]
+        if self.eye_fusion:
+            # 같은 얼굴에서 현재 머리 점수와 최근 10초 눈 점수가 모두 있는 경우만 집계한다.
+            primitives = [(None, None, 0.8 * r['current_direction_score'] + 0.2 * r['eye_candidate']['eye_score'])
+                          for r in outputs if r.get('current_direction_score') is not None
+                          and (r.get('eye_candidate') or {}).get('eye_score') is not None]
+        else:
+            primitives = [r['gaussian_observation'] for r in outputs if r.get('gaussian_observation') is not None]
         observable_count = sum(r['angles'] is not None for r in outputs)
-        current = [r['current_direction_score'] for r in outputs if r.get('current_direction_score') is not None]
-        recent = [r['score'] for r in outputs if r['score'] is not None]
+        current = ([p[2] for p in primitives] if self.eye_fusion else
+                   [r['current_direction_score'] for r in outputs if r.get('current_direction_score') is not None])
+        recent = ([r['eye_candidate']['candidate_total'] for r in outputs
+                   if (r.get('eye_candidate') or {}).get('candidate_total') is not None
+                   and r.get('current_direction_score') is not None] if self.eye_fusion else
+                  [r['score'] for r in outputs if r['score'] is not None])
         self.latest = self._empty('no_scoreable_observation')
         self.latest.update(angles={} if observable_count else None,
                            gaussian_observation=primitives,
@@ -152,19 +171,23 @@ class MultiFaceGaussianRuntime:
                            detected_count=len(faces), observable_count=observable_count,
                            scoreable_count=len(primitives))
         candidates = [r.get('eye_candidate') for r in outputs]
-        # 다인 비교는 모든 검출 얼굴이 ID와 후보 점수를 가진 경우에만 표시한다.
-        if (candidates and len(outputs) == len(faces) and all(
-                isinstance(item, dict) and item.get('candidate_total') is not None for item in candidates)):
+        # 최종 경로는 유효 관측만 집계하고, 비교 전용 경로는 모든 얼굴이 유효할 때만 표시한다.
+        usable_candidates = [item for item in candidates if isinstance(item, dict)
+                             and item.get('candidate_total') is not None]
+        if usable_candidates and (self.eye_fusion or len(usable_candidates) == len(faces)):
             self.latest['eye_candidate'] = {
-                key: round(sum(item[key] for item in candidates) / len(candidates), 1)
+                key: round(sum(item[key] for item in usable_candidates) / len(usable_candidates), 1)
                 for key in ('candidate_total', 'head_score', 'eye_score')}
-            self.latest['eye_candidate'].update(status='group_candidate', count=len(candidates))
+            self.latest['eye_candidate'].update(status='group_candidate', count=len(usable_candidates),
+                                                detected_count=len(faces))
         else:
             self.latest['eye_candidate'] = {'candidate_total': None, 'head_score': None,
                                             'eye_score': None, 'status': 'group_unavailable'}
         self.latest['status'] = 'scored' if recent else 'deferred'
         self.latest['reason_codes'] = list(dict.fromkeys(
             reason for result in outputs for reason in result['reason_codes']))
+        if self.eye_fusion and len(primitives) < len(outputs):
+            self.latest['reason_codes'].append('eye_observation_unavailable')
         if len(active) < len(faces):
             self.latest['reason_codes'].append('identity_unconfirmed')
         if not outputs:

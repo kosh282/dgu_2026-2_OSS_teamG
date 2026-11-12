@@ -37,6 +37,7 @@ from video_recognition.webcam_test_mac import WebcamCapture
 from .config import ModelConfig
 from .runtime import EngagementRuntime, ComparisonRuntime
 from .gaussian import GaussianRuntime, gaussian_angle_score, gaussian_score_angles
+from .eye_fusion_runtime import EyeFusionGaussianRuntime
 from .input_adapter import HeadAngles
 from .rotation_calibration import RotationCalibration, RotationGaussianRuntime, rotation_euler
 
@@ -546,7 +547,7 @@ class GaussianDiagnostics:
             self.previous = None
             self.drops.clear()
             self.previous_snapshot = None
-            self.lines.append(f'Looking-down policy score: {primitive[2]:.1f}; angle terms unavailable')
+            self.lines.append(f'Policy/combined score: {primitive[2]:.1f}; angle terms unavailable')
             return
         if primitive is None:
             self.previous = None
@@ -864,7 +865,9 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
     # 고정 좌표: 모델 점수와 카메라 기준 시선은 서로 다른 의미의 실험값이다.
     group = bool(getattr(models[primary], 'display_group', False))
     label(f'MODEL: {primary.upper()}  |  ' + ('GROUP | ' if group else '') + 'EXPERIMENTAL', 660, 30)
-    label(('GROUP CURRENT' if group else 'CURRENT DIRECTION') if primary == 'gaussian' else 'MODEL SCORE', 660, 65)
+    fused = bool(getattr(models[primary], 'eye_fusion', False))
+    label(('GROUP CURRENT' if group else 'CURRENT COMBINED' if fused else 'CURRENT DIRECTION')
+          if primary == 'gaussian' else 'MODEL SCORE', 660, 65)
     label('10s AGGREGATE' if primary == 'gaussian' else 'AGGREGATE: N/A', 1030, 65)
     label(_score_label(current), 660, 125, 1.65, (245, 245, 245), 3)
     label(_score_label(aggregate), 1030, 125, 1.65, (245, 245, 245), 3)
@@ -885,7 +888,7 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
         label(f"{range_text} ({calibration_range['status']}; diagnostic only)", 10, 540, .48)
     label(f"State: {result.get('orientation_state', 'not_observable')} | Down: {result.get('downward_status') or '--'}"[:80], 660, 375, .52)
     candidate = result.get('eye_candidate') or {}
-    label('EYE + HEAD COMPARISON (NOT FINAL)', 12, 590, .48, (100, 215, 255))
+    label('EYE + HEAD (LIVE ESTIMATE)' if group or fused else 'EYE + HEAD COMPARISON (NOT FINAL)', 12, 590, .48, (100, 215, 255))
     label('TOTAL 80/20', 12, 630, .43)
     label('HEAD 10s', 215, 630, .43)
     label('EYE 10s', 420, 630, .43)
@@ -958,8 +961,9 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                                  include_down=diagnostic_down, front_stability=front_stability) if yaw_diagnostic else None
     if compare:
         runtime = ComparisonRuntime(primary, include_gaussian=True, gaussian_config=gaussian_config)
+        runtime.runtimes['gaussian'] = EyeFusionGaussianRuntime(gaussian_config)
     elif primary == 'gaussian':
-        runtime = GaussianRuntime(gaussian_config)
+        runtime = EyeFusionGaussianRuntime(gaussian_config)
     else:
         runtime = EngagementRuntime(ModelConfig.huang() if primary == 'huang' else ModelConfig())
     models = runtime.runtimes if compare else {primary: runtime}

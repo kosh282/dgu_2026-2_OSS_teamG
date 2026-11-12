@@ -37,11 +37,12 @@ class MainIntegrationTests(unittest.TestCase):
         with patch.object(live.service,'elapsed_ms',return_value=0):
             live._start_model()
         self.assertIsInstance(live.model_runtime,MultiFaceGaussianRuntime)
-        for timestamp in range(0,14001,100):
+        for timestamp in range(0,24001,100):
             frame=feature_window(timestamp,faces=2)
             for index,item in enumerate(frame['features']['faces'],1):
                 item['transient_track_key']=index
                 item['head_angles_degrees']=dict(pitch=0,yaw=index*5,roll=0)
+                item['eye_aspect_ratio_left']=item['eye_aspect_ratio_right']=0.3
             before=deepcopy(frame)
             with patch.object(live.service,'elapsed_ms',return_value=timestamp):
                 live._consume_frame(frame)
@@ -49,7 +50,7 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertFalse(live._model_failed)
         self.assertEqual(len(live.model_runtime.participants()),2)
         self.assertEqual(live.model_latest['score'],100)
-        events=live.service.get_events_in_range(live.sid,0,15000)
+        events=live.service.get_events_in_range(live.sid,0,25000)
         self.assertTrue(any(event['event_type']=='engagement_window' for event in events))
         self.assertNotIn('private-person',json.dumps(events))
 
