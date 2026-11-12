@@ -93,6 +93,13 @@ publisher는 전체 근거 구간을 별도로 유지하므로 같은 시점에 
 
 ## Gaussian 각도 공간 모델
 
+독립 데모에서 `--gaze`를 켜면 사전 학습 MobileGaze 모델로 하향 관측 선택을 대체합니다.
+Gaussian 수식 자체는 유지하며, 머리만 숙인 경우 점수를 계산합니다.
+상대 머리 Pitch≥15°와 모델 시선 Pitch≤−30°/|Yaw|<35°가 0.4초 이상 함께
+확인될 때 보류합니다. 머리 각도와 모델 시선 각도는 서로 다른 좌표 의미이며,
+시선 불명확만으로 아래 보기나 0점으로 바꾸지 않습니다. 기본 실행 정책은 유지합니다.
+보정·실행 범위는 [README](../README.md#선택-옵션-보정-없는-시선-방향-모델)를 참고하세요.
+
 출처: Li, B.; Liu, P. (2024),
 *Online Learning State Evaluation Method Based on Face Detection and Head Pose Estimation*,
 Sensors 24(5), 1365, §3.3 식(8)~(10).

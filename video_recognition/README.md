@@ -1,5 +1,9 @@
 # 수업 창 영상 분석
 
+선택 시선 실험: 독립 `engagement_model.webcam_demo --gaze`에 사전 학습
+MobileGaze MobileOne S0 ONNX를 연결했습니다. 지점 보정 없이 카메라 기준 시선 후보를
+표시합니다. [설치·실행과 한계](docs/pretrained-gaze.md)를 참고하세요.
+
 `integrated_analysis.py`는 수업 창을 캡처해 `face_analysis.py`의 공통 MediaPipe 분석기를 호출하고, 특징을 모델 입력 콜백과 통합부 상태 이벤트로 연결합니다. 웹캠 데모와 개발자 미리보기에는 실험 행동 점수를 표시하고, 라이브 세션은 시간 구간 집계를 이벤트로 저장합니다. 검증된 참여도 점수는 아니며 얼굴 순서는 개인 식별자가 아닙니다.
 
 ## 코드 구조

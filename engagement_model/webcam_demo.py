@@ -565,6 +565,12 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
     scale = min(640 / width, 480 / height)
     preview = cv2.resize(preview, (max(1, round(width * scale)), max(1, round(height * scale))))
     lines = panel_lines(feature, models, primary=primary, debug=debug, diagnostics=diagnostics)
+    gaze_estimator = vars(face).get('gaze')
+    if gaze_estimator is not None:
+        lines.extend(gaze_estimator.lines())
+        policy = getattr(models[primary], 'downward_policy', None)
+        if policy is not None:
+            lines.append(policy.diagnostic)
     wrapped = [part for line in lines for part in (textwrap.wrap(line, 83) or [''])]
     line_height = 23 if debug else 48
     canvas = np.zeros((max(500, 32 + len(wrapped) * line_height), 1400, 3), dtype=np.uint8)
@@ -588,12 +594,14 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
 
 def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gaussian_config=None,
         debug=False, calibrate=False, yaw_diagnostic=False, diagnostic_move_seconds=2,
-        diagnostic_hold_seconds=3):
+        diagnostic_hold_seconds=3, gaze=False):
     """카메라·분석기·독립 세션을 소유하며 오류/종료 시 자원을 반환한다."""
     if not math.isfinite(duration) or duration < 0:
         raise ValueError('duration은 유한한 0 이상의 초여야 합니다.')
     if primary not in {'legacy', 'huang', 'gaussian'}:
         raise ValueError('primary는 legacy, huang 또는 gaussian이어야 합니다')
+    if gaze and primary != 'gaussian':
+        raise ValueError('--gaze는 Gaussian 독립 데모에서 사용하세요 (--model gaussian).')
     if yaw_diagnostic and (primary != 'gaussian' or calibrate):
         raise ValueError('좌우 진단은 Gaussian 모델에서 수동 보정으로 실행하세요 (--calibrate 제외)')
     guided = GuidedYawDiagnostic(diagnostic_move_seconds, diagnostic_hold_seconds) if yaw_diagnostic else None
@@ -605,9 +613,21 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
         runtime = EngagementRuntime(ModelConfig.huang() if primary == 'huang' else ModelConfig())
     models = runtime.runtimes if compare else {primary: runtime}
     diagnostics = GaussianDiagnostics() if 'gaussian' in models else None
+    gaze_estimator = None
+    if gaze:
+        from video_recognition.gaze_estimation import GazeEstimator, GazeDownPolicy
+        gaze_estimator = GazeEstimator()
+        if 'gaussian' in models:
+            gaussian = models['gaussian']
+            gaussian.downward_policy = GazeDownPolicy(gaze_estimator)
+            gaussian.model_version += '+mobilegaze-s0-0.1'
+            gaussian.config = replace(gaussian.config,
+                config_version=gaussian.config.config_version+'+mobilegaze-s0-0.1')
     frames = 0
     try:
         with ExitStack() as resources:
+            if gaze_estimator is not None:
+                resources.callback(gaze_estimator.close)
             camera = cv2.VideoCapture(camera_index)
             resources.callback(camera.release)
             if not camera.isOpened():
@@ -622,6 +642,9 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
             resources.callback(service.stop_session, sid)
             face = FaceAnalyzer(show_landmarks=True)
             resources.callback(face.close)
+            if gaze_estimator is not None:
+                from video_recognition.gaze_estimation import GazeFaceAnalyzer
+                face = GazeFaceAnalyzer(face, gaze_estimator)
             pose = PoseAnalyzer(show_landmarks=True)
             resources.callback(pose.close)
             capture = PreviewCapture(WebcamCapture(camera))
@@ -651,6 +674,10 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                     pipeline.head_calibration.start()
                     for model in models.values():
                         model.reset()
+                    if gaze_estimator is not None:
+                        gaze_estimator.reset()
+                        if 'gaussian' in models:
+                            models['gaussian'].downward_policy.reset()
                     if diagnostics is not None:
                         diagnostics.reset()
                     print('Calibration started: hold face forward for 3 seconds.', flush=True)
@@ -706,6 +733,7 @@ def main():
     parser.add_argument('--huang-only', action='store_true', help='기존 모델 비교 없이 Huang만 표시')
     parser.add_argument('--model', choices=('legacy', 'huang', 'gaussian'), default=None)
     parser.add_argument('--debug', action='store_true', help='집계 점수·상대각·사유·모델 비교 표시')
+    parser.add_argument('--gaze', action='store_true', help='Gaussian 전용: 지점 보정 없는 MobileGaze 시선 후보 및 하향 보류 실험')
     parser.add_argument('--calibrate', action='store_true', help='키 입력 없이 시작할 때 정면 보정')
     parser.add_argument('--yaw-diagnostic', action='store_true',
                         help='수동 보정 후 정면/왼쪽/정면/오른쪽/정면 자동 수치 진단 (저장 없음)')
@@ -734,7 +762,7 @@ def main():
         run(args.camera, args.duration, not (args.huang_only or args.single_model),
             primary=args.model, gaussian_config=config, debug=args.debug, calibrate=args.calibrate,
             yaw_diagnostic=args.yaw_diagnostic, diagnostic_move_seconds=args.diagnostic_move_seconds,
-            diagnostic_hold_seconds=args.diagnostic_hold_seconds)
+            diagnostic_hold_seconds=args.diagnostic_hold_seconds, gaze=args.gaze)
     except KeyboardInterrupt:
         print('웹캠 테스트를 종료합니다.')
     except Exception as exc:

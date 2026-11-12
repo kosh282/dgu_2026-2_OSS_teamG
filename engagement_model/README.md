@@ -174,6 +174,55 @@ EAR·깜빡임·표정·상체 이동을 참여 점수나 필기 근거로 합�
 
 ## 6. 실행 방법 및 테스트 명령어
 
+### 선택 옵션: 보정 없는 시선 방향 모델
+
+독립 데모의 `--gaze`는 MobileGaze **MobileOne S0 ONNX**로 얼굴 영상에서 시선 방향을
+추정합니다. 여러 화면 지점을 바라보는 보정은 없습니다. 카메라 기준 방향 후보이므로
+실제 모니터 주시·집중도·필기를 확정하지 않습니다. 단일 얼굴용이며 프런트와
+`video_recognition.webcam_test`/`webcam_test_mac`에는 연결하지 않았습니다.
+주 모델은 Gaussian 전용입니다. 비교 표시를 켜도 Legacy/Huang 정책은 바뀌지 않습니다.
+
+| 화면 표시 | 의미 |
+|---|---|
+| `forward_candidate` | 모델 시선의 abs(Yaw)≤20°, abs(Pitch)≤15°인 정면 방향 후보 |
+| `away_candidate` | abs(Yaw)≥35° 또는 abs(Pitch)≥30°인 이탈 방향 후보 |
+| `unknown` | 중간 각도, 미검출, 다중 얼굴, 작은 얼굴, 눈 관측 불가 등 |
+| `Gaze Y/P` | 시선 모델의 각도. 기존 머리 `Relative P/Y`와 다른 값 |
+| `inference … ms` | 마지막 시선 추론·전처리 시간. 전체 영상 처리 지연이 아님 |
+
+Gaussian에서 이 옵션을 켜면 머리만 숙인 경우에도 각도 점수를 계속 계산합니다.
+상대 머리 Pitch≥15°와 모델 시선 Pitch≤−30°/|Yaw|<35°가 함께 유효 추론으로
+0.4초 이상 확인될 때 `gaze_down_confirmed`로 점수를 보류합니다. 0점으로 바꾸지 않습니다.
+대기 상태는 `gaze_down_pending`입니다. 시선 불명확은 `gaze_unavailable`로 표시하며
+유효한 머리 각도가 있으면 각도 점수만 계산합니다. 얼굴 관측 불가는 기존 null 정책입니다.
+확인 전 관측은 계산하고 이미 계산한 구간을 소급해서 제외하지 않습니다.
+모든 임계값은 검증 전 실험값입니다. 기본 실행·Legacy·Huang의 보류 정책은 바뀌지 않습니다.
+
+기존 얼굴 경계를 재사용하고 최대 약 3Hz로 시선만 추가 추론합니다.
+333ms 미만 동안 현재 얼굴 품질이 유효하면 직전 시선 결과를 사용하고,
+작은 얼굴·눈 감김·미검출·임시 추적 변경에서는 캐시를 무효화합니다.
+얼굴 이미지·시선 이력은 저장하지 않고 기존 FeatureWindow와 JSON 계약도 변경하지 않습니다.
+시선 지점 보정과 별개로 기존 **머리 각도 점수를 위한 C/Space 정면 보정은 여전히 필요**합니다.
+
+```bash
+# macOS: 기본 영상 환경을 설치한 뒤 최초 한 번
+video_recognition/.venv/bin/python -m pip install -r video_recognition/requirements-gaze.txt
+video_recognition/.venv/bin/python -m video_recognition.download_gaze_model
+# 실행
+video_recognition/.venv/bin/python -m engagement_model.webcam_demo --gaze --single-model --debug
+```
+
+```powershell
+# Windows: 기본 영상 환경을 설치한 뒤 최초 한 번
+video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-gaze.txt
+video_recognition/.venv/Scripts/python.exe -m video_recognition.download_gaze_model
+# 실행
+video_recognition/.venv/Scripts/python.exe -m engagement_model.webcam_demo --gaze --single-model --debug
+```
+
+모델은 명시적 다운로드 명령으로만 받고 실행 중 영상은 전송하지 않습니다.
+설치 범위·출처·검증 한계는 [시선 모델 문서](../video_recognition/docs/pretrained-gaze.md)를 참고하세요.
+
 저장소 루트에서 실행합니다. 영상 환경은 `video_recognition/requirements-integrated.txt`를 기준으로 합니다.
 기존 가상환경이 없다면 해당 requirements로 별도 환경을 준비해야 합니다.
 

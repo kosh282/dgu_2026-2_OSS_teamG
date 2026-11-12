@@ -87,7 +87,8 @@ def gaussian_window_score(segments, start, end, config):
 class GaussianRuntime(EngagementRuntime):
     """기존 어댑터/자세/시간 상태를 재사용하며 Gaussian 점수만 별도로 계산한다."""
 
-    def __init__(self, config=None, **kwargs):
+    def __init__(self, config=None, *, downward_policy=None, **kwargs):
+        self.downward_policy = downward_policy
         config = config or ModelConfig.gaussian()
         if config.scoring_method != 'gaussian':
             raise ValueError('GaussianRuntime에는 gaussian 설정이 필요합니다')
@@ -161,6 +162,14 @@ class GaussianRuntime(EngagementRuntime):
             'looking_down_confirmed' if confirmed else
             'looking_down_uncertain' if down else
             'transition_uncertain' if transition else None)
+        if self.downward_policy is not None:
+            blocked, gaze_status = self.downward_policy(feature_window, result)
+            transition, down = False, observable and blocked
+            result['downward_status'] = gaze_status
+            if observable:
+                result['orientation_state'] = ('looking_down' if blocked else
+                    'head_lowered' if angles['pitch'] > self.config.gaussian_down_transition_pitch_degrees
+                    else result['orientation_state'])
         primitive = None
         if observable and not (transition or down):
             score_angles = gaussian_score_angles(HeadAngles(**angles), self.config)

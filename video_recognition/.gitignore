@@ -4,3 +4,5 @@ analysis_result.json
 demo_logs/
 .DS_Store
 .venv/
+models/*_gaze.onnx
+models/*.part
