@@ -3,8 +3,8 @@ import threading
 import time
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 import cv2
-import numpy as np
 from integration import IntegrationService
 from engagement_model.gaussian import GaussianRuntime
 from engagement_model.config import ModelConfig
@@ -15,15 +15,13 @@ from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
 from video_recognition.pose_analysis import PoseAnalyzer
 from video_recognition.face_reidentification import FaceReidentifier
-from video_recognition.preview import (
-    PreviewCapture, LandmarkOverlaySmoother, draw_landmarks, draw_face_postprocessing,
-)
+from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother
+from engagement_model.webcam_demo import PoseInputDiagnostics, render_panel
 
 
 # 별도 웹캠을 열지 않고, 실제 분석기에 전달한 프레임을 그대로 보여 주는 창 이름이다.
 # OpenCV 창이므로 Streamlit 페이지 안에 삽입되지 않고 Windows의 별도 창으로 열린다.
-DEBUG_CAPTURE_WINDOW = 'Developer preview - captured frame and landmarks'
-DEBUG_INFO_WINDOW = 'Developer preview - MediaPipe features'
+DEBUG_INFO_WINDOW = 'Developer preview - model and vision'
 RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 CHECKPOINT_INTERVAL_SECONDS = 15.0
 
@@ -77,12 +75,11 @@ class LiveSession:
         # 개발자 미리보기는 필요할 때만 창을 갱신한다. 분석·세션 저장 데이터에는 영향을 주지 않는다.
         self.developer_preview = False
         self._show_landmarks = True
-        self._show_tessellation = False
         self._debug_face_page = 0
         self._landmark_overlay_smoother = LandmarkOverlaySmoother()
+        self._pose_input_diagnostics = PoseInputDiagnostics()
         # OpenCV 창은 한 번만 초기 크기를 정한다. 이후 사용자가 조절한 크기를 매 프레임 덮어쓰지 않는다.
         self._developer_windows_ready = False
-        self._developer_info_shape = None
         self.thread = None
         self.vision_thread = None
         self._window_process_id = None
@@ -362,7 +359,8 @@ class LiveSession:
                     show_landmarks = self._show_landmarks
                 # 개발자 미리보기가 꺼져 있으면 랜드마크 좌표 복사와 오버레이 준비를 생략한다.
                 capture.keep_frame = preview_enabled or self.reidentification_enabled
-                face.show_landmarks = preview_enabled and show_landmarks
+                # 오버레이를 숨겨도 자세 입력 품질 진단에는 기준점이 필요하다.
+                face.show_landmarks = preview_enabled
                 pose.show_landmarks = preview_enabled and show_landmarks
                 try:
                     result = pipeline.process_one()
@@ -619,148 +617,69 @@ class LiveSession:
             return self.developer_preview
 
     def _close_developer_windows(self):
-        """창이 이미 닫힌 경우도 무시하고 두 개발자 창만 정리한다."""
-        for name in (DEBUG_CAPTURE_WINDOW, DEBUG_INFO_WINDOW):
-            try:
-                cv2.destroyWindow(name)
-            except cv2.error:
-                pass
+        """창이 이미 닫힌 경우도 무시하고 개발자 창을 정리한다."""
+        try:
+            cv2.destroyWindow(DEBUG_INFO_WINDOW)
+        except cv2.error:
+            pass
         self._developer_windows_ready = False
-        self._developer_info_shape = None
-
-    @staticmethod
-    def _feature_panel(result, face_page=0):
-        """MediaPipe 원본이 아닌, 현재 파이프라인이 만든 특징값만 표시한다."""
-        features = result['features']
-        faces = features.get('faces', [])
-        page_size = 2
-        page_count = max(1, (len(faces) + page_size - 1) // page_size)
-        face_page = min(max(0, face_page), page_count - 1)
-        start = face_page * page_size
-        shown_faces = faces[start:start + page_size]
-        sampling = features.get('sampling', {})
-        source_size = sampling.get('source_size', {})
-        analysis_size = sampling.get('analysis_size', {})
-        lines = [
-            'Developer view: the same frame sent to the analyzers',
-            f"Capture: {result['start_ms']} ms | faces: {len(faces)} | bodies: {len(features.get('upper_bodies', []))}",
-            f"Quality: {result['quality']['status']} | calibration: {features.get('head_calibration_status', 'waiting')}",
-            f"Postprocess: {features.get('face_postprocessing_version', 'unavailable')} | temporary position-only tracking",
-            (f"Analysis Hz: face {sampling.get('target_face_hz', 0):.0f}/"
-             f"{sampling.get('actual_face_hz') or 0:.1f}, pose "
-             f"{sampling.get('target_pose_hz') or 0:.0f}/{sampling.get('actual_pose_hz') or 0:.1f}"),
-            (f"Frame: {source_size.get('width', 0)}x{source_size.get('height', 0)} -> "
-             f"{analysis_size.get('width', 0)}x{analysis_size.get('height', 0)} | "
-             f"pose age {sampling.get('pose_observation_age_ms') if sampling.get('pose_observation_age_ms') is not None else 'n/a'} ms"),
-            f'Faces {start + 1}-{min(start + page_size, len(faces))} / {len(faces)} | page {face_page + 1}/{page_count}',
-            'V: contour/pose on-off  M: dense mesh on-off  [ ]: face page  C: calibrate  Q: hide',
-        ]
-        for number, face in enumerate(shown_faces, start=1):
-            angles = face.get('head_angles_degrees') or {}
-            smoothed = face.get('head_angles_smoothed_degrees') or {}
-            relative = face.get('head_angles_relative_degrees') or {}
-            position = face.get('head_position') or {}
-            left_ear = face.get('eye_aspect_ratio_left')
-            right_ear = face.get('eye_aspect_ratio_right')
-            blink = face.get('blink_metrics') or {}
-            movement = face.get('head_angle_change_candidate') or {}
-            track_key = face.get('transient_track_key', '?')
-            tracking_quality = face.get('tracking_quality', 'unavailable')
-            blink_state = (f"both={blink.get('closed', False)} "
-                           f"left={blink.get('left_closed', False)} "
-                           f"right={blink.get('right_closed', False)}")
-            blink_counts = (f"left/right/total={blink.get('left_count', 0)}/"
-                            f"{blink.get('right_count', 0)}/{blink.get('total_count', 0)}")
-            blink_window = (f"window={blink.get('count_in_window', 0)}/"
-                            f"{blink.get('count_window_ms', 0)}ms "
-                            f"rate={blink.get('blinks_per_minute', 0):.1f}/min "
-                            f"event={blink.get('event_completed', False)}")
-            delta = movement.get('delta_degrees') or {}
-            lines.extend([
-                f"Face {start + number} / temporary T{track_key} | tracking={tracking_quality} | pp={face.get('postprocessing_version', 'n/a')}",
-                f"  EAR L/R={left_ear if left_ear is not None else 'n/a'} / {right_ear if right_ear is not None else 'n/a'} | eye openness={face.get('eye_openness') if face.get('eye_openness') is not None else 'n/a'}",
-                (f"  raw pitch/yaw/roll: {angles.get('pitch', 0):.1f}, {angles.get('yaw', 0):.1f}, {angles.get('roll', 0):.1f} deg"
-                 if angles else '  raw pitch/yaw/roll: unavailable'),
-                (f"  smoothed pitch/yaw/roll: {smoothed.get('pitch', 0):.1f}, {smoothed.get('yaw', 0):.1f}, {smoothed.get('roll', 0):.1f} deg"
-                 if smoothed else '  smoothed pitch/yaw/roll: unavailable'),
-                (f"  angle delta P/Y/R: {delta.get('pitch', 0):.2f}, {delta.get('yaw', 0):.2f}, {delta.get('roll', 0):.2f} deg / {movement.get('interval_ms')} ms"
-                 if movement else '  angle delta candidate: waiting for next observation'),
-                f"  blink state: {blink_state}",
-                f"  blink counts: {blink_counts}",
-                f"  blink recent: {blink_window}",
-                (f"  relative pitch/yaw/roll: {relative.get('pitch', 0):.1f}, {relative.get('yaw', 0):.1f}, {relative.get('roll', 0):.1f} deg"
-                 if relative else '  relative pitch/yaw/roll: not calibrated'),
-                (f"  nose position: {position.get('x', 0):.3f}, {position.get('y', 0):.3f}"
-                 if position else '  nose position: unavailable'),
-            ])
-        if not faces:
-            lines.append('No face detected in the selected window.')
-        panel = np.zeros((max(190, 42 + len(lines) * 24), 980, 3), dtype=np.uint8)
-        for index, line in enumerate(lines):
-            cv2.putText(panel, line, (14, 27 + index * 24), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.46, (235, 235, 235), 1, cv2.LINE_AA)
-        return panel
+        self._pose_input_diagnostics.reset()
 
     def _render_developer_preview(self, image, result, face, pose, show_landmarks):
-        """분석에 사용된 동일 이미지에만 점을 겹쳐 그린다. 원본을 저장·변경하지 않는다."""
+        """웹캠 모델 데모와 같은 패널에 현재 수업 프레임과 실제 모델 결과를 표시한다."""
         if image is None:
-            return
+            return False
         if not self._developer_windows_ready:
-            # WINDOW_NORMAL은 창 테두리를 드래그해 확대·축소할 수 있게 한다.
-            # 처음 열 때만 화면을 과도하게 가리지 않을 크기를 제안하고, 이후에는 사용자 크기를 보존한다.
-            cv2.namedWindow(DEBUG_CAPTURE_WINDOW, cv2.WINDOW_NORMAL)
             cv2.namedWindow(DEBUG_INFO_WINDOW, cv2.WINDOW_NORMAL)
-            height, width = image.shape[:2]
-            scale = min(1.0, 720 / max(width, 1), 540 / max(height, 1))
-            cv2.resizeWindow(DEBUG_CAPTURE_WINDOW, max(320, int(width * scale)), max(240, int(height * scale)))
+            cv2.resizeWindow(DEBUG_INFO_WINDOW, 1050, 645)
             self._developer_windows_ready = True
-        frame = image
-        if show_landmarks:
-            features = result['features']
-            with self.lock:
-                show_tessellation = self._show_tessellation
-                face_page = self._debug_face_page
-            # 영상 분석용 원본 랜드마크는 건드리지 않고, 개발자 화면 복사본만 시간축으로 부드럽게 한다.
-            overlay_landmarks = self._landmark_overlay_smoother.smooth(
-                face.last_landmarks, features.get('faces', []), result['start_ms'])
-            frame = draw_landmarks(
-                frame, overlay_landmarks, pose.last_landmarks,
-                face_mesh=True, tessellation=show_tessellation, show_points=False,
-            )
-        else:
-            with self.lock:
-                face_page = self._debug_face_page
-        frame = draw_face_postprocessing(frame, result['features'].get('faces', []))
-        if self.reidentifier is not None:
-            frame = self.reidentifier.render(frame, result['features'].get('faces', []), boxes=face.last_face_boxes)
-        panel = self._feature_panel(result, face_page=face_page)
-        panel_shape = (panel.shape[1], panel.shape[0])
-        if panel_shape != self._developer_info_shape:
-            # 얼굴 수가 바뀔 때만 내용에 맞춰 조정해 사용자가 직접 바꾼 창 크기는 유지한다.
-            cv2.resizeWindow(DEBUG_INFO_WINDOW, *panel_shape)
-            self._developer_info_shape = panel_shape
-        cv2.imshow(DEBUG_CAPTURE_WINDOW, frame)
+        with self.lock:
+            runtime = (self.model_runtime if self.model_enabled and not self._model_failed
+                       and not self._calibration_blocked else None)
+            page = self._debug_face_page
+        # 모델이 비활성/오류이거나 다인 모드일 때 가짜 단일 얼굴 점수를 만들지 않는다.
+        latest = dict(runtime.latest) if runtime is not None else {
+            'score': None, 'current_direction_score': None,
+            'orientation_state': 'not_observable', 'status': 'unavailable',
+            'reason_codes': ['model_unavailable'],
+        }
+        config = runtime.config if runtime is not None else ModelConfig.gaussian()
+        sampler = getattr(runtime, 'sampling_diagnostics', None)
+        model = SimpleNamespace(latest=latest, config=config,
+            display_group=self.reidentification_enabled,
+            sampling_diagnostics=sampler if callable(sampler) else lambda: {
+                'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
+        quality = self._pose_input_diagnostics.observe(face.last_landmarks, image)
+        lines = ['POSE INPUT QUALITY (single face only)']
+        for key, value in quality.items():
+            lines.append(f'{key}: {value:.4f}' if value is not None else f'{key}: unavailable')
+        for index, item in enumerate(result.get('features', {}).get('faces', []), 1):
+            lines.append(f'FACE {index}:')
+            for label, field in [('raw', 'head_angles_degrees'),
+                                 ('smoothed', 'head_angles_smoothed_degrees'),
+                                 ('relative', 'head_angles_relative_degrees')]:
+                lines.append(f'{label} P/Y/R: {item.get(field) or "unavailable"}')
+        if self.reidentification_enabled:
+            lines.append('MULTI-FACE: aggregate score; angles are per detected face')
+        diagnostics = SimpleNamespace(lines=lines)
+        frame = (self.reidentifier.render(image.copy(), result['features'].get('faces', []),
+                 boxes=face.last_face_boxes) if self.reidentifier is not None else image)
+        panel = render_panel(frame, result, {'gaussian': model},
+            overlay_smoother=self._landmark_overlay_smoother, face=face, pose=pose,
+            show_overlay=show_landmarks, primary='gaussian', debug=True,
+            diagnostics=diagnostics, debug_page=page, live=True)
         cv2.imshow(DEBUG_INFO_WINDOW, panel)
         key = cv2.waitKey(1) & 0xFF
-        start_calibration = False
         with self.lock:
-            if key in (ord('q'), ord('Q')):
+            if key in (ord('q'), ord('Q'), 27):
                 self.developer_preview = False
             elif key in (ord('v'), ord('V')):
                 self._show_landmarks = not self._show_landmarks
-            elif key in (ord('m'), ord('M')):
-                self._show_tessellation = not self._show_tessellation
             elif key == ord('['):
-                self._debug_face_page = max(0, self._debug_face_page - 1)
+                self._debug_face_page -= 1
             elif key == ord(']'):
-                face_count = len(result['features'].get('faces', []))
-                page_count = max(1, (face_count + 1) // 2)
-                self._debug_face_page = (self._debug_face_page + 1) % page_count
-            elif key in (ord('c'), ord('C')):
-                # 개인 식별 없이, 현재 단일 얼굴이 이어진 3초만 임시 기준으로 사용한다.
-                # 이 보정값은 메모리에만 존재하고 최종 결과나 세션 파일에는 저장되지 않는다.
-                start_calibration = True
-        return start_calibration
+                self._debug_face_page += 1
+        return key in (ord('c'), ord('C'))
 
     def snapshot(self):
         with self.lock:
