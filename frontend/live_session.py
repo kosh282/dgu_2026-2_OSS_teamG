@@ -86,6 +86,7 @@ class LiveSession:
         self._calibration_request = threading.Event()
         self._calibration_blocked = False
         self._calibration_window_start = None
+        self.performance_monitor = None
 
     def start(self, title):
         """수업 제목을 확정하고 타이머·공통 세션·영상 분석을 같은 순간에 시작한다."""
@@ -166,6 +167,8 @@ class LiveSession:
             self.stt_thread.join()
         if self.checkpoint_thread is not None:
             self.checkpoint_thread.join()
+        if self.performance_monitor is not None:
+            self.performance_monitor.stop()
         self.service.stop_session(self.sid)
 
     def _checkpoint_loop(self):
@@ -192,6 +195,49 @@ class LiveSession:
         stt = runner.stats() if runner is not None else None
         age = max(0, self.service.elapsed_ms(self.sid) - latest['start_ms']) if latest else None
         return {'stt': stt, 'video_result_age_ms': age}
+
+    def performance_snapshot(self):
+        """로그용 허용 필드만 추출한다. 영상·전사·점수·식별자는 기록하지 않는다."""
+        snapshot = self.service.get_dashboard_snapshot(self.sid)
+        now = self.service.elapsed_ms(self.sid)
+        with self.lock:
+            latest, preview = self.latest, self.developer_preview
+        features = latest.get('features', {}) if latest else {}
+        sampling = features.get('sampling', {})
+        stats = self.diagnostics()['stt'] or {}
+        def event_age(events):
+            created = [e.get('created_ms') for e in events if isinstance(e.get('created_ms'), int)]
+            return max(0, now - max(created)) if created else None
+        return {
+            'session_elapsed_ms': now,
+            'enabled': {'video': self.video_enabled, 'model': self.model_enabled,
+                        'stt': self.audio_source is not None, 'preview': preview},
+            'components': {key: snapshot['status'].get(key) for key in ('vision', 'model', 'stt', 'assistant')},
+            'video': {'result_age_ms': max(0, now-latest['start_ms']) if latest else None,
+                      'face_hz': sampling.get('actual_face_hz'), 'pose_hz': sampling.get('actual_pose_hz'),
+                      'source_size': sampling.get('source_size'), 'analysis_size': sampling.get('analysis_size')},
+            'stt': {key: stats.get(key) for key in ('source', 'rtf', 'lag_ms_latest', 'lag_ms_p50',
+                'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities')},
+            'transcript': {'final_count': len(snapshot['transcripts']),
+                           'partial_count': len(snapshot['partial_transcripts']),
+                           'last_final_event_age_ms': event_age(snapshot['transcripts']),
+                           'last_partial_event_age_ms': event_age(snapshot['partial_transcripts'])},
+        }
+
+    def start_performance_monitor(self, directory):
+        from .performance_monitor import PerformanceMonitor
+        if not self.is_running():
+            raise RuntimeError('진행 중인 수업에서만 로그를 시작할 수 있습니다.')
+        if self.performance_monitor is not None and self.performance_monitor.is_running():
+            return self.performance_monitor.path
+        monitor = PerformanceMonitor(self, directory)
+        monitor.start()
+        self.performance_monitor = monitor
+        return monitor.path
+
+    def stop_performance_monitor(self):
+        if self.performance_monitor is not None:
+            self.performance_monitor.stop()
 
     def _supervise_vision(self):
         for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):

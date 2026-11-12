@@ -503,6 +503,23 @@ def live_page():
             if st.button('개발자 모드 끄기' if enabled else '개발자 모드 켜기', disabled=not live.video_enabled):
                 live.set_developer_preview(not enabled)
                 st.rerun()
+            st.markdown('**성능 진단 로그**')
+            st.caption('5초마다 CPU·메모리, 영상 처리 주기, 전사 처리 지연과 상태만 로컬에 기록합니다. 전사 내용, 영상·음성, 얼굴 특징, 점수는 저장하지 않습니다.')
+            monitor=getattr(live, 'performance_monitor', None)
+            if monitor is not None:
+                st.caption(f'로그 위치: {monitor.path}')
+                if monitor.error:
+                    st.warning(monitor.error)
+            if monitor is not None and monitor.is_running():
+                if st.button('성능 로그 수집 중지'):
+                    live.stop_performance_monitor()
+                    st.rerun()
+            elif st.button('성능 로그 수집 시작'):
+                try:
+                    live.start_performance_monitor(ROOT/'frontend'/'diagnostic_logs')
+                    st.rerun()
+                except (OSError, RuntimeError) as exc:
+                    st.error(f'성능 로그를 시작하지 못했습니다: {exc}')
 
 
 def review_page():
