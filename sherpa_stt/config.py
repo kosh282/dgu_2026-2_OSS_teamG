@@ -34,6 +34,11 @@ class SttConfig:
     max_gap_ms: int = 500
     # 마이크 입력 청크 길이
     chunk_ms: int = 100
+    # 자동 음량 조절: 작은 말소리를 목표 크기까지 키운다(줄이지 않음). 모델은 약 -40 dBFS보다
+    # 작은 말소리를 인식하지 못한다(실측). 값은 검증 전 실험값이다.
+    auto_gain: bool = True
+    auto_gain_target_dbfs: float = -20.0
+    auto_gain_max_db: float = 30.0
 
     def __post_init__(self):
         if not isinstance(self.model_dir, str) or not self.model_dir.strip():
@@ -52,6 +57,19 @@ class SttConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name}은 양의 유한한 실수여야 합니다")
+        if not isinstance(self.auto_gain, bool):
+            raise ValueError("auto_gain은 True/False여야 합니다")
+        for name, low, high in (("auto_gain_target_dbfs", -60.0, -1.0), ("auto_gain_max_db", 0.0, 60.0)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"{name}은 {low}~{high} 범위의 실수여야 합니다")
+
+    def make_auto_gain(self):
+        """설정에 맞는 `AutoGain`. 끈 경우 None."""
+        if not self.auto_gain:
+            return None
+        from .audio import AutoGain
+        return AutoGain(target_dbfs=self.auto_gain_target_dbfs, max_gain_db=self.auto_gain_max_db)
 
     def public_info(self):
         """세션 JSON `config`에 넣을 수 있는 공개 설정. 로컬 경로는 제외한다."""
@@ -64,4 +82,6 @@ class SttConfig:
                 "rule3_min_utterance_length": self.rule3_min_utterance_length,
             },
             "max_gap_ms": self.max_gap_ms, "chunk_ms": self.chunk_ms,
+            "auto_gain": {"enabled": self.auto_gain, "target_dbfs": self.auto_gain_target_dbfs,
+                          "max_gain_db": self.auto_gain_max_db},
         }

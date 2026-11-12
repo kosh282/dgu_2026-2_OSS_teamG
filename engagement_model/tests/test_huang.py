@@ -374,7 +374,7 @@ class HuangWebcamRunnerTests(unittest.TestCase):
                 overlay_smoother=LandmarkOverlaySmoother(), face=Mock(last_landmarks=[]),
                 pose=Mock(), show_overlay=True)
             overlay.assert_not_called()
-        self.assertEqual(panel.shape, (500, 1400, 3))
+        self.assertEqual(panel.shape, (860, 1400, 3))
 
     def test_cli_defaults_to_simple_gaussian_and_debug_is_explicit(self):
         from engagement_model.webcam_demo import main
@@ -384,6 +384,36 @@ class HuangWebcamRunnerTests(unittest.TestCase):
                 main()
             self.assertEqual(run.call_args.kwargs['primary'], 'gaussian')
             self.assertEqual(run.call_args.kwargs['debug'], debug)
+
+    def test_summary_fields_stay_fixed_and_debug_pages_preserve_lines(self):
+        from engagement_model.webcam_demo import render_panel, _debug_pages
+        from engagement_model.gaussian import GaussianRuntime
+        import cv2
+        import numpy as np
+        model = GaussianRuntime()
+        feature = feature_window(0)
+        model(feature)
+        face = Mock(last_landmarks=[])
+        pose = Mock(last_landmarks=[])
+        diagnostics = Mock(lines=['diagnostic-' + str(i) for i in range(90)])
+        pages = _debug_pages(feature, {'gaussian': model}, 'gaussian', diagnostics, face)
+        self.assertGreater(len(pages), 1)
+        self.assertIn('diagnostic-89', [line for page in pages for line in page])
+        with patch('engagement_model.webcam_demo.cv2.putText', wraps=cv2.putText) as draw:
+            first = render_panel(np.zeros((480,640,3), dtype=np.uint8), feature, {'gaussian':model},
+                overlay_smoother=None, face=face, pose=pose, show_overlay=False, debug=True,
+                diagnostics=diagnostics, debug_page=0)
+        positions = {call.args[1]: call.args[2] for call in draw.call_args_list}
+        self.assertEqual(positions['CURRENT DIRECTION'], (660, 65))
+        self.assertEqual(positions['10s AGGREGATE'], (1030, 65))
+        self.assertEqual(positions['RELATIVE HEAD PITCH / YAW'], (660, 165))
+        with patch('engagement_model.webcam_demo.cv2.putText', wraps=cv2.putText) as draw:
+            second = render_panel(np.zeros((480,640,3), dtype=np.uint8), feature, {'gaussian':model},
+                overlay_smoother=None, face=face, pose=pose, show_overlay=False, debug=True,
+                diagnostics=diagnostics, debug_page=1)
+        self.assertEqual(first.shape, second.shape)
+        self.assertIn('diagnostic-89', [line for page in pages for line in page])
+        self.assertEqual(next(call.args[2] for call in draw.call_args_list if call.args[1]=='CURRENT DIRECTION'), (660, 65))
 
     def test_gaussian_cli_passes_sigma_settings_without_opening_camera(self):
         from engagement_model.webcam_demo import main

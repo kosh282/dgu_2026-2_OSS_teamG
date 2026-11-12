@@ -494,6 +494,12 @@ def live_page():
             if dropped or device_errors:
                 st.warning(f'음성 입력 누락 가능: 버린 청크 {dropped}개 · 장치 불연속 {device_errors}회')
             st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
+            level,gain=stt_stats.get('input_level_dbfs'),stt_stats.get('gain_db')
+            if level is not None:
+                st.caption(f'말소리 입력 크기 {level:g} dBFS · 자동 음량 조절 +{gain:g} dB')
+                if level < -50:
+                    # 자동 조절 최대치(+30dB)로도 인식이 불안정해지는 범위(실측). 원본 크기를 키우는 것이 근본 해결이다.
+                    st.warning('말소리가 매우 작아 전사가 빠질 수 있습니다. 마이크를 가까이 하거나 Windows 입력·출력 볼륨을 높이세요.')
         if diagnostics['video_result_age_ms'] is not None:
             st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
         if getattr(live, 'reidentification_enabled', False):

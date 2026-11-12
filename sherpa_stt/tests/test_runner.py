@@ -23,7 +23,7 @@ class RunnerTests(unittest.TestCase):
                 stopped.set()
 
         class Transcriber:
-            def __init__(self, *args): pass
+            def __init__(self, *args, **kwargs): pass
             def report_status(self, *args): pass
             def accept_chunk(self, chunk): raise RuntimeError('transcription failed')
 

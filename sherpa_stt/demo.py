@@ -81,6 +81,7 @@ def main(argv=None):
     parser.add_argument("--duration", type=float, default=None, help="실시간 입력 시간(초). 생략하면 Ctrl+C까지")
     parser.add_argument("--save", help="종료 후 세션 JSON 저장 경로")
     parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--no-auto-gain", action="store_true", help="자동 음량 조절을 끄고 원본 크기로 인식(비교용)")
     args = parser.parse_args(argv)
 
     if args.list_devices:
@@ -96,7 +97,7 @@ def main(argv=None):
     device = args.device
     if args.source == "microphone" and device is not None:
         device = int(device)
-    config = SttConfig(model_dir=args.model_dir, num_threads=args.threads)
+    config = SttConfig(model_dir=args.model_dir, num_threads=args.threads, auto_gain=not args.no_auto_gain)
     # 모델 로드 시간이 세션 시간에 섞이지 않도록 세션 시작 전에 불러온다.
     engine = SherpaEngine(config)
     service = _PrintingService()
@@ -104,7 +105,8 @@ def main(argv=None):
         "config_version": "sherpa-stt-demo", "participation_model": None, "stt_model": config.public_info()})
     try:
         if args.wav:
-            transcriber = SherpaTranscriber(engine, service, sid, config.model_id, config.model_version, config.max_gap_ms)
+            transcriber = SherpaTranscriber(engine, service, sid, config.model_id, config.model_version, config.max_gap_ms,
+                                            auto_gain=config.make_auto_gain())
             transcriber.report_status("running", f"WAV 파일 전사: {args.wav}")
             _run_wav(service, sid, transcriber, args.wav, config.chunk_ms)
             transcriber.report_status("stopped", "WAV 파일 전사를 마쳤습니다.")
