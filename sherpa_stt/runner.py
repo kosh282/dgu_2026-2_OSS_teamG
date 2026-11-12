@@ -66,7 +66,11 @@ class LiveTranscription:
             latest_lag = self._last_lag_ms
         def pct(p):
             return lags[min(len(lags) - 1, int(len(lags) * p))] if lags else None
+        reader = getattr(self._transcriber, "level_info", None)
+        level = reader() if reader is not None else {"input_level_dbfs": None, "gain_db": None}
         return {
+            # 최근 말소리 크기(원본)와 자동 음량 조절 이득. 약 -40 dBFS보다 작으면 원본만으로는 인식이 어렵다.
+            **level,
             "source": self.source, "audio_seconds": round(audio_ms / 1000, 2),
             "rtf": round(process_s * 1000 / audio_ms, 3) if audio_ms else None,
             "lag_ms_p50": pct(0.5), "lag_ms_p95": pct(0.95), "lag_ms_max": lags[-1] if lags else None,
@@ -102,7 +106,8 @@ class LiveTranscription:
             self._status("unavailable", f"STT 모델을 불러오지 못했습니다: {error}", ["model_not_configured"])
             return False
         self._transcriber = SherpaTranscriber(engine, self._service, self._session_id, self._config.model_id,
-                                              self._config.model_version, self._config.max_gap_ms)
+                                              self._config.model_version, self._config.max_gap_ms,
+                                              auto_gain=self._config.make_auto_gain())
         try:
             self._capture = self._capture or self._make_capture()
             self._capture.start()

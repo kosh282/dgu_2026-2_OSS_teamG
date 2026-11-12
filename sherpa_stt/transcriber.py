@@ -27,8 +27,10 @@ class SherpaTranscriber:
     - 세션 종료(`stop_session`) 전에 `finish()`를 호출해야 마지막 발화가 확정된다.
     """
 
-    def __init__(self, engine, service, session_id, model_id, model_version, max_gap_ms=500):
+    def __init__(self, engine, service, session_id, model_id, model_version, max_gap_ms=500, auto_gain=None):
         self._engine = engine
+        # 작은 말소리를 인식기 입력 전에 키운다(`audio.AutoGain`). None이면 원본 그대로 넣는다.
+        self._auto_gain = auto_gain
         self._service = service
         self._session_id = session_id
         self._model_id = model_id
@@ -151,6 +153,8 @@ class SherpaTranscriber:
             end_ms = max(chunk.end_ms, start_ms, self._segment_start_ms)
             self._last_end_ms = end_ms
             if len(samples):
+                if self._auto_gain is not None:
+                    samples = self._auto_gain.process(samples)
                 duration = len(samples) * 1000 / chunk.sample_rate_hz
                 self._audio_map.append((self._fed_ms, duration, min(start_ms, end_ms), end_ms))
                 self._fed_ms += duration
@@ -160,6 +164,13 @@ class SherpaTranscriber:
             if self._engine.is_endpoint(self._stream):
                 events += self._finalize(end_ms)
             return events
+
+    def level_info(self):
+        """최근 말소리 크기(원본, dBFS)와 적용 이득(dB). 진단용이며 세션 JSON에 넣지 않는다."""
+        gain = self._auto_gain
+        if gain is None:
+            return {"input_level_dbfs": None, "gain_db": None}
+        return {"input_level_dbfs": gain.input_level_dbfs, "gain_db": round(gain.gain_db, 1)}
 
     def finish(self):
         """입력 종료를 알리고 남은 발화를 확정한다. 여러 번 호출해도 된다."""

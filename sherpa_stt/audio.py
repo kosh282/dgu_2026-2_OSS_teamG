@@ -61,6 +61,71 @@ class ChunkClock:
         return int(start), int(end)
 
 
+def _dbfs(rms):
+    return 20.0 * float(np.log10(max(rms, 1e-10)))
+
+
+class AutoGain:
+    """인식기 입력 전 말소리 크기를 일정하게 맞추는 자동 음량 조절.
+
+    sherpa 한국어 모델은 말소리 RMS가 약 -40 dBFS보다 작으면 인식 결과가 사라진다(실측).
+    마이크가 멀거나 장치 볼륨·영상 소리가 작을 때 이 범위로 떨어지므로, 말소리로 판단한
+    청크의 크기를 추적해 `target_dbfs`에 가깝게 키운다.
+
+    - 키우기만 하고 줄이지 않는다(0 ~ `max_gain_db`). 원래 큰 소리는 그대로 둔다.
+    - 배경 잡음 바닥을 따로 추적해 잡음보다 `speech_margin_db` 이상 큰 청크만 말소리로 본다.
+      무음 구간에서는 이득을 유지하므로 잡음을 따라 이득이 흔들리지 않는다.
+    - 이득 변화는 청크 안에서 선형으로 이어 붙여 딸깍 소리가 나지 않게 하고, ±1을 넘는 값은 자른다.
+    오디오는 메모리에서만 변환하며 저장하지 않는다. 값은 검증 전 실험값이다.
+    """
+
+    def __init__(self, target_dbfs=-20.0, max_gain_db=30.0, speech_margin_db=10.0,
+                 floor_dbfs=-80.0, max_step_up_db=3.0):
+        self.target_dbfs = float(target_dbfs)
+        self.max_gain_db = float(max_gain_db)
+        self.speech_margin_db = float(speech_margin_db)
+        self.floor_dbfs = float(floor_dbfs)
+        self.max_step_up_db = float(max_step_up_db)
+        self.noise_dbfs = None   # 배경 잡음 바닥 추정
+        self.speech_dbfs = None  # 최근 말소리 크기 추정(원본 기준)
+        self.gain_db = 0.0
+
+    def process(self, samples):
+        samples = np.asarray(samples, dtype=np.float32)
+        if not len(samples):
+            return samples
+        level = _dbfs(float(np.sqrt(np.mean(np.square(samples, dtype=np.float64)))))
+        # 잡음 바닥: 더 작은 값이 오면 바로 내리고, 평소에는 천천히(청크당 0.1dB) 올린다.
+        self.noise_dbfs = level if self.noise_dbfs is None else min(level, self.noise_dbfs + 0.1)
+        is_speech = level > self.floor_dbfs and level >= self.noise_dbfs + self.speech_margin_db
+        previous = self.gain_db
+        if is_speech:
+            if self.speech_dbfs is None:
+                self.speech_dbfs = level
+            else:
+                weight = 0.3 if level > self.speech_dbfs else 0.1  # 커질 때는 빨리 따라가 잘림을 줄인다
+                self.speech_dbfs += weight * (level - self.speech_dbfs)
+            desired = min(max(self.target_dbfs - self.speech_dbfs, 0.0), self.max_gain_db)
+            if previous == 0.0 and desired > 0.0 and self.speech_dbfs == level:
+                self.gain_db = desired  # 첫 말소리는 바로 키워 첫 단어를 놓치지 않는다
+            elif desired > previous:
+                self.gain_db = min(desired, previous + self.max_step_up_db)
+            else:
+                self.gain_db = desired  # 소리가 커지면 바로 이득을 낮춘다
+        # 이 청크의 최고값이 -1 dBFS를 넘지 않도록 이득을 제한한다(찌그러짐 방지).
+        headroom = -_dbfs(float(np.max(np.abs(samples)))) - 1.0
+        self.gain_db = max(0.0, min(self.gain_db, headroom))
+        start_gain = max(0.0, min(previous, headroom))
+        if start_gain == self.gain_db == 0.0:
+            return samples
+        ramp = np.linspace(10 ** (start_gain / 20), 10 ** (self.gain_db / 20), len(samples), dtype=np.float32)
+        return np.clip(samples * ramp, -1.0, 1.0)
+
+    @property
+    def input_level_dbfs(self):
+        return None if self.speech_dbfs is None else round(self.speech_dbfs, 1)
+
+
 def to_mono_float32(chunk):
     """sherpa-onnx 입력 형식(-1~1 범위 float32 mono)으로 변환한다."""
     samples = np.asarray(chunk.samples)
