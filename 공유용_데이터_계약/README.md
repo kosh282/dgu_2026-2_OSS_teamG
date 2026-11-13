@@ -196,3 +196,7 @@ ID·개인별 점수 표·보정 기준·원시 각도는 이벤트나 최종 JS
 - `0.1.0` (2026-10-29): 팀별 입출력과 공통 이벤트·시간·저장 기준 초안. 참여 모델 및 점수는 미정으로 둠.
 - `0.2.0` (팀 합의 전 구현 확장안): 전사 기반 `teaching_suggestion`과 실시간 제안의 선택적 `trigger_threshold` 추가.
 
+
+### 영상 특징 버전 변경
+
+메모리 입력 `FeatureWindow.feature_version=experimental-0.9`는 상체 측정을 제거한 얼굴 전용 특징입니다. `upper_bodies`, `upper_body_movement_candidate`와 sampling의 상체 주기·관측 나이 필드는 더 이상 생성하지 않습니다. 최상위 품질은 얼굴 관측으로 계산합니다. Legacy/Huang 실행은 제거했으며 Gaussian 저장 이벤트 구조와 기존 세션 JSON 읽기는 유지합니다.

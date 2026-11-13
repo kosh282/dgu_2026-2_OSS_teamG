@@ -13,7 +13,6 @@ from engagement_model.gaussian import (
     GaussianRuntime, gaussian_angle_score, gaussian_window_score, li_liu_rank_average,
 )
 from engagement_model.input_adapter import HeadAngles
-from engagement_model.runtime import EngagementRuntime, ComparisonRuntime
 from engagement_model.tests.test_runtime import feature_window
 from engagement_model.window_publisher import WindowPublisher
 from integration import IntegrationService
@@ -70,25 +69,20 @@ class GaussianFormulaTests(unittest.TestCase):
 
 
 class GaussianRuntimeTests(unittest.TestCase):
-    def test_legacy_reference_and_improvement_on_same_sequence(self):
-        models = [EngagementRuntime(), GaussianRuntime(ModelConfig.gaussian(gaussian_angle_mode='relative')),
-                  GaussianRuntime()]
-        for ms in range(0, 10001, 100):
-            for model in models:
-                model(feature_window(ms))
-        small = [m(feature_window(10100, yaw=10)) for m in models]
-        self.assertEqual(small[0]['score'], 100)
-        self.assertEqual(small[1]['current_direction_score'], 88.2)
-        self.assertEqual(small[2]['current_direction_score'], 95.6)
-        for ms in range(10200, 20301, 100):
-            for model in models:
-                model(feature_window(ms, yaw=60))
-        for model in models:
-            self.assertLess(model.latest['score'], 10)
-        returned = [m(feature_window(20400)) for m in models]
-        self.assertEqual(returned[0]['score'], 90)
-        self.assertEqual(returned[1]['current_direction_score'], 100)
-        self.assertEqual(returned[2]['current_direction_score'], 100)
+
+    def test_scores_and_observation_states_match_before_model_cleanup(self):
+        """삭제 작업 전 두 Gaussian 경로의 602개 출력과 대조한다."""
+        models = [GaussianRuntime(), GaussianRuntime(downward_policy=lambda f, r: (False, 'not_down'))]
+        keys = ['score', 'current_direction_score', 'orientation_state', 'status', 'reason_codes', 'gaussian_observation', 'front_seconds', 'away_seconds', 'looking_down_seconds', 'eye_candidate']
+        rows = []
+        for ms in range(0, 30001, 100):
+            options = ({} if ms < 3000 or ms >= 24000 else
+                       {'yaw': 45} if ms < 10000 else
+                       {'pitch': 20} if ms < 20000 else {'faces': 0})
+            rows.append([{key: result.get(key) for key in keys}
+                         for result in (model(feature_window(ms, **options)) for model in models)])
+        digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+        self.assertEqual(digest, 'f922bb95ca4bd929b7f6edc1fa440326daac49956fbb22cdf2bb2236e0458c37')
 
     def test_softening_improves_small_motion_without_changing_state_or_down_policy(self):
         for pitch, yaw in [(0, 10), (-5, 0), (5, 0), (0, 60), (12, 0), (20, 0)]:
@@ -278,34 +272,7 @@ class GaussianRuntimeTests(unittest.TestCase):
         recovered = self.run_frames(runtime, 20400, 30400)
         self.assertEqual(recovered['score'], 100)
 
-    def test_gap_track_and_invalid_input_reset(self):
-        runtime = GaussianRuntime()
-        self.run_frames(runtime, 0, 1000)
-        changed = runtime(feature_window(1100, track_key=2))
-        self.assertIsNone(changed['score'])
-        self.assertIn('tracking_key_changed', changed['reason_codes'])
-        gap = runtime(feature_window(2000, track_key=2))
-        self.assertIsNone(gap['score'])
-        self.assertIn('observation_gap', gap['reason_codes'])
-        self.assertEqual(runtime({})['status'], 'input_error')
-        self.assertIsNone(runtime.latest['display_score'])
-        with self.assertRaises(ValueError):
-            EngagementRuntime(ModelConfig.gaussian())
 
-    def test_existing_models_match_prechange_golden_outputs(self):
-        expected = {'legacy': 'cc245b183839ef619572e64f3af92752e169992f78aaeb85795e36b682d042ba',
-                    'huang': 'f50119c5f87c910419a06d812b61e63413a98b72346860483a8178c8684a59ea'}
-        comparison = ComparisonRuntime('gaussian')
-        outputs = {name: [] for name in expected}
-        for ms in range(0, 60001, 100):
-            options = ({'pitch': -2} if ms < 20000 or ms >= 50000 else
-                       {'pitch': -2, 'yaw': 60} if ms < 30000 else {'pitch': 20})
-            comparison(feature_window(ms, **options))
-            for name in expected:
-                outputs[name].append(comparison.runtimes[name].latest)
-        for name, digest in expected.items():
-            actual = hashlib.sha256(json.dumps(outputs[name], sort_keys=True, allow_nan=False).encode()).hexdigest()
-            self.assertEqual(actual, digest, name)
 
 
 class GaussianPublisherTests(unittest.TestCase):

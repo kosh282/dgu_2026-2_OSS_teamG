@@ -257,7 +257,7 @@ class AdapterTests(unittest.TestCase):
              patch.object(demo.cv2, 'VideoCapture', return_value=camera), \
              patch.object(demo.cv2, 'destroyAllWindows'), \
              patch.object(face_reidentification, 'FaceReidentifier', return_value=reid), \
-             patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])), patch.object(demo, 'PoseAnalyzer'), \
+             patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])), \
              patch.object(demo, 'PreviewCapture', return_value=capture), \
              patch.object(demo, 'VisionPipeline', return_value=pipeline), \
              patch.object(demo, 'DeveloperPreviewOutput', return_value=preview), \
@@ -306,7 +306,6 @@ class AdapterTests(unittest.TestCase):
                 windows = stack.enter_context(patch.object(demo, 'list_windows', return_value=[(42, demo.CAMERA_WINDOW)]))
                 win_capture = stack.enter_context(patch.object(demo, 'WindowCapture'))
                 stack.enter_context(patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])))
-                stack.enter_context(patch.object(demo, 'PoseAnalyzer'))
                 stack.enter_context(patch.object(demo, 'PreviewCapture', return_value=capture))
                 stack.enter_context(patch.object(demo, 'VisionPipeline', return_value=pipeline))
                 stack.enter_context(patch.object(demo, 'DeveloperPreviewOutput', return_value=preview))

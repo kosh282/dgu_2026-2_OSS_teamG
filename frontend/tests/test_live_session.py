@@ -152,7 +152,6 @@ class LiveSessionIsolationTests(unittest.TestCase):
         with patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
              patch('sherpa_stt.runner.LiveTranscription', side_effect=RuntimeError('STT failed')), \
              patch('frontend.live_session.FaceAnalyzer', FakeResource), \
-             patch('frontend.live_session.PoseAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
              patch('frontend.live_session.PreviewCapture', FakeResource), \
              patch('frontend.live_session.VisionPipeline', FakePipeline), \
@@ -206,7 +205,6 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 return None
 
         with patch('frontend.live_session.FaceAnalyzer', FakeResource), \
-             patch('frontend.live_session.PoseAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
              patch('frontend.live_session.PreviewCapture', FakeResource), \
              patch('frontend.live_session.WindowPublisher', BrokenPublisher), \
@@ -238,7 +236,6 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 return None
 
         with patch('frontend.live_session.FaceAnalyzer', FakeResource), \
-             patch('frontend.live_session.PoseAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
              patch('frontend.live_session.PreviewCapture', FakeResource), \
              patch('frontend.live_session.PositionTrackGaussianRuntime', side_effect=RuntimeError('model init')), \

@@ -15,7 +15,7 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --
 C/Space 보정 후 정면·좌우·아래 방향 안내를 따릅니다. 기준점 변화와 눈 사이 거리의 초별 통계는 `--yaw-log`를 지정할 때만 저장합니다. 회전 각도·점수의 실제 정확도는 별도 검증이 필요합니다.
 
 저장소 루트에서 실행합니다. 환경은 `video_recognition/requirements-integrated.txt`를 기준으로 합니다.
-독립 실행기는 기존 얼굴·상체 분석, `VisionPipeline`, 웹캠 어댑터와 렌더러를 import합니다.
+독립 실행기는 기존 얼굴 분석, `VisionPipeline`, 웹캠 어댑터와 렌더러를 import합니다.
 팀원 영상 데모·프런트를 수정하거나 별도 시선 추정기를 실행하지 않습니다.
 
 ```powershell

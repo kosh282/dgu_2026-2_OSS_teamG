@@ -54,7 +54,6 @@ class PretrainedGazeTests(unittest.TestCase):
         with patch('video_recognition.gaze_estimation.GazeEstimator', return_value=estimator), \
              patch('engagement_model.webcam_demo.cv2.VideoCapture', return_value=camera), \
              patch('engagement_model.webcam_demo.FaceAnalyzer') as face_factory, \
-             patch('engagement_model.webcam_demo.PoseAnalyzer'), \
              patch('engagement_model.webcam_demo.VisionPipeline', return_value=pipeline) as pipeline_factory, \
              patch('engagement_model.webcam_demo.cv2.namedWindow'), \
              patch('engagement_model.webcam_demo.cv2.resizeWindow'), \
@@ -63,7 +62,7 @@ class PretrainedGazeTests(unittest.TestCase):
              patch('engagement_model.webcam_demo.cv2.waitKey', return_value=ord('q')), \
              patch('engagement_model.webcam_demo.close_window'), \
              patch('engagement_model.webcam_demo.render_panel', return_value=IMAGE):
-            run(compare=False, gaze=True)
+            run(gaze=True)
         runtime = pipeline_factory.call_args.kwargs['model_consumer']
         self.assertIsInstance(runtime.downward_policy, GazeDownPolicy)
         self.assertIn('mobilegaze', runtime.model_version)
@@ -159,6 +158,7 @@ class PretrainedGazeTests(unittest.TestCase):
         for ms in range(0, 3000, 100):
             default(feature_window(ms))
             experimental(feature_window(ms))
-        self.assertIsNone(default(feature_window(3000, pitch=20))['current_direction_score'])
+        # 기본 Gaussian은 직전 유효 점수로 아래 보기 유예를 적용한다.
+        self.assertEqual(default(feature_window(3000, pitch=20))['current_direction_score'], 100)
         self.assertIsNotNone(experimental(feature_window(3000, pitch=20))['current_direction_score'])
         self.assertIsNone(experimental(feature_window(3100, faces=0))['current_direction_score'])

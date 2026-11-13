@@ -184,14 +184,11 @@ class MultiGaussianLiveTests(unittest.TestCase):
             close=Mock()
 
         self_test=self
-        pose=Mock()
-        pose.analyze.return_value=[]
         reid=Mock()
         reid.identify.side_effect=lambda image,ms,faces,**kwargs: {
             face['transient_track_key']:f'P{index}' for index,face in enumerate(faces)}
         with patch('frontend.live_session.WindowCapture',return_value=Window()), \
              patch('frontend.live_session.FaceAnalyzer',return_value=Face()), \
-             patch('frontend.live_session.PoseAnalyzer',return_value=pose), \
              patch('frontend.live_session.FaceReidentifier',return_value=reid), \
              patch.object(live,'_close_developer_windows'):
             live._run_vision()

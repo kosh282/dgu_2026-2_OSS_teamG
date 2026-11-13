@@ -7,7 +7,7 @@ import numpy as np
 
 from engagement_model.rotation_calibration import (
     RotationCalibration, RotationGaussianRuntime, euler_rotation, rotation_euler, calibration_frame)
-from engagement_model.runtime import EngagementRuntime
+from engagement_model.gaussian import GaussianRuntime
 from engagement_model.config import ModelConfig
 from engagement_model.tests.test_runtime import feature_window
 from engagement_model.tests.test_yaw_calibration import calibrated, observe, face
@@ -124,7 +124,7 @@ class RotationCalibrationTests(unittest.TestCase):
                 pair.append(result['current_direction_score'])
             self.assertEqual(pair[0], pair[1])
 
-    def test_real_pipeline_routes_matrix_input_without_changing_legacy_calibration(self):
+    def test_real_pipeline_routes_matrix_input_without_changing_euler_calibration(self):
         c = RotationCalibration(duration_ms=100, min_samples=2)
         model = RotationGaussianRuntime(c)
         service = IntegrationService()
@@ -238,12 +238,12 @@ class RotationCalibrationTests(unittest.TestCase):
         c.start()
         self.assertEqual(c.status, 'collecting')
 
-    def test_input_contract_and_legacy_huang_outputs_remain_unchanged(self):
+    def test_input_contract_and_gaussian_outputs_remain_unchanged(self):
         origin = dict(pitch=170, yaw=20, roll=0)
         c = ready(origin)
         matrix = RotationGaussianRuntime(c)
-        for config in (ModelConfig(), ModelConfig.huang()):
-            control, observed = EngagementRuntime(config), EngagementRuntime(config)
+        for config in (ModelConfig.gaussian(),):
+            control, observed = GaussianRuntime(config), GaussianRuntime(config)
             for timestamp in range(200, 4200, 100):
                 frame = feature(c, origin, timestamp)
                 frame['features']['faces'][0]['head_angles_relative_degrees'] = dict(pitch=0, yaw=10, roll=0)

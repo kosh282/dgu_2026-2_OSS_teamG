@@ -23,7 +23,7 @@ class MainIntegrationTests(unittest.TestCase):
         model.latest['angle_estimator']='mediapipe_face_transform'
         image=np.zeros((480,640,3),np.uint8)
         rendered=demo.render_panel(image,frame,{'gaussian':model},overlay_smoother=None,
-            face=SimpleNamespace(last_landmarks=[]),pose=SimpleNamespace(last_landmarks=[]),
+            face=SimpleNamespace(last_landmarks=[]),
             show_overlay=False,debug=True,debug_page=1,live=True)
         self.assertEqual(rendered.shape,(860,1400,3))
 

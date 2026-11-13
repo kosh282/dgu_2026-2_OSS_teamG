@@ -4,18 +4,18 @@ from copy import deepcopy
 import unittest
 
 from engagement_model.config import ModelConfig
-from engagement_model.input_adapter import HeadAngles, Observation, parse_feature_window
-from engagement_model.scoring import behavior_score, classify_orientation, orientation_severity
+from engagement_model.input_adapter import HeadAngles, parse_feature_window
+from engagement_model.scoring import classify_orientation
 
 
 def feature_window():
     """현재 VisionPipeline 형식에 맞는 최소 단일 얼굴 입력을 만듭니다."""
     return {
         "session_id": "c4b1f6c0-511a-46be-9a39-29e714654001",
-        "start_ms": 100, "end_ms": 100, "feature_version": "experimental-0.8",
+        "start_ms": 100, "end_ms": 100, "feature_version": "experimental-0.9",
         "quality": {"status": "partial", "reason_codes": ["insufficient_observation"]},
         "features": {
-            "head_calibration_status": "ready", "upper_bodies": [],
+            "head_calibration_status": "ready",
             "faces": [{"quality": {"status": "valid", "reason_codes": []},
                        "head_angles_relative_degrees": {"pitch": 0, "yaw": 0, "roll": 0},
                        "transient_track_key": 1}],
@@ -23,26 +23,7 @@ def feature_window():
     }
 
 
-def observation(pitch=0, yaw=0, roll=0):
-    """점수 함수 시험용으로 상대 각도를 지정한 관측을 만듭니다."""
-    return Observation("test", 100, "experimental-0.8", HeadAngles(pitch, yaw, roll))
-
-
 class ConfigTests(unittest.TestCase):
-    def test_pitch_softening_validation_does_not_restrict_other_models(self):
-        """완화를 쓰지 않는 모드에서 기존 정면 범위 설정을 허용한다."""
-        factories = (
-            ('legacy', ModelConfig),
-            ('huang', ModelConfig.huang),
-            ('gaussian_relative', lambda **kw: ModelConfig.gaussian(gaussian_angle_mode='relative', **kw)),
-            ('legacy_with_unused_softened_mode', lambda **kw: ModelConfig(gaussian_angle_mode='softened', **kw)),
-            ('huang_with_unused_softened_mode', lambda **kw: ModelConfig.huang(gaussian_angle_mode='softened', **kw)),
-        )
-        for name, factory in factories:
-            with self.subTest(mode=name):
-                config = factory(front_pitch_degrees=1)
-                self.assertEqual(config.front_pitch_degrees, 1)
-                self.assertEqual(config.gaussian_pitch_deadband_degrees, 2)
 
     def test_gaussian_softened_pitch_validation_rejects_invalid_settings(self):
         """실제 완화 모드의 경계·계수·유한값 검증을 유지한다."""
@@ -80,17 +61,16 @@ class ConfigTests(unittest.TestCase):
 
     def test_invalid_config(self):
         """분모가 0이 되거나 유한하지 않은 설정을 거부합니다."""
-        for kwargs in ({"away_yaw_degrees": 60}, {"full_away_seconds": 3},
-                       {"front_full_seconds": 0}, {"angle_penalty": float("nan")},
+        for kwargs in ({"away_yaw_degrees": 15}, {"gaussian_sigma_yaw_degrees": 0},
                        {"min_observable_ratio": 1.1}, {"window_seconds": True},
-                       {"front_bonus": 20}, {"output_interval_seconds": 11}):
+                       {"output_interval_seconds": 11}, {"scoring_method": "unsupported"}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ModelConfig(**kwargs)
 
 
 class AdapterTests(unittest.TestCase):
     def test_face_valid_with_missing_body_and_no_mutation(self):
-        """상체 결측은 얼굴 관측을 막지 않으며 원본 입력은 변하지 않습니다."""
+        """얼굴 전용 입력을 관측하고 원본은 변경하지 않습니다."""
         data = feature_window()
         original = deepcopy(data)
         result = parse_feature_window(data)
@@ -124,7 +104,7 @@ class AdapterTests(unittest.TestCase):
             result = parse_feature_window(data)
             self.assertFalse(result.observable)
             self.assertIn(reason, result.reason_codes)
-            self.assertIsNone(behavior_score(result))
+            self.assertIsNone(result.angles)
 
     def test_failed_calibration_and_low_quality(self):
         """정면 기준과 얼굴 품질이 부족하면 점수를 만들지 않습니다."""
@@ -137,7 +117,7 @@ class AdapterTests(unittest.TestCase):
             else:
                 data["quality"]["status"] = "not_observable"
             with self.subTest(field=field):
-                self.assertIsNone(behavior_score(parse_feature_window(data)))
+                self.assertFalse(parse_feature_window(data).observable)
 
     def test_invalid_angles_are_unobservable(self):
         """결측·잘못된 숫자는 참여도 0점으로 바꾸지 않습니다."""
@@ -158,62 +138,6 @@ class AdapterTests(unittest.TestCase):
                 parse_feature_window(data)
 
 
-class ScoringTests(unittest.TestCase):
-    def test_front_hold_increases_score(self):
-        """정면 유지 점수는 기본값에서 상한까지 증가합니다."""
-        self.assertEqual(behavior_score(observation()), 90)
-        self.assertEqual(behavior_score(observation(), front_seconds=5), 100)
-        self.assertEqual(behavior_score(observation(), front_seconds=100), 100)
-
-    def test_short_away_preserves_previous_score(self):
-        """유예 시간 이내에는 새 감점 없이 직전 점수를 유지합니다."""
-        self.assertEqual(behavior_score(observation(yaw=60), away_seconds=3,
-                                        previous_stable_score=95), 95)
-        self.assertIsNone(behavior_score(observation(yaw=60), away_seconds=2))
-
-    def test_severity_boundaries_and_symmetry(self):
-        """좌우 부호와 상관없이 이탈 강도가 커지며 상한을 넘지 않습니다."""
-        self.assertEqual(orientation_severity(HeadAngles(0, 30, 0)), 0)
-        self.assertEqual(orientation_severity(HeadAngles(0, -45, 0)), 0.5)
-        self.assertEqual(orientation_severity(HeadAngles(-30, 0, 0)), 0.5)
-        self.assertEqual(orientation_severity(HeadAngles(0, 180, 0)), 1)
-
-    def test_persistent_away_monotonic_and_bounded(self):
-        """지속 시간·이탈 강도가 늘면 점수가 증가하지 않습니다."""
-        short = behavior_score(observation(yaw=45), away_seconds=4)
-        long = behavior_score(observation(yaw=45), away_seconds=8)
-        severe = behavior_score(observation(yaw=60), away_seconds=8)
-        self.assertGreater(short, long)
-        self.assertGreater(long, severe)
-        self.assertEqual(behavior_score(observation(yaw=60), away_seconds=100), 0)
-        self.assertGreaterEqual(severe, 0)
-
-    def test_down_is_deferred_even_with_side_turn_or_long_duration(self):
-        """초기 아래 보기는 이전 안정 점수가 없으면 기준 점수를 만들지 않습니다."""
-        for yaw in (0, 80):
-            sample = observation(pitch=20, yaw=yaw)
-            self.assertEqual(classify_orientation(sample.angles), "looking_down")
-            self.assertIsNone(orientation_severity(sample.angles))
-            self.assertIsNone(behavior_score(sample, away_seconds=100,
-                                             previous_stable_score=90))
-
-    def test_ambiguous_and_missing(self):
-        """경계 구간과 관측 불가는 점수를 확정하지 않습니다."""
-        self.assertEqual(classify_orientation(observation(yaw=20).angles), "ambiguous")
-        self.assertIsNone(behavior_score(observation(yaw=20)))
-        self.assertIsNone(orientation_severity(None))
-
-    def test_bad_numeric_arguments(self):
-        """시간과 이전 점수에 잘못된 숫자가 들어오면 알립니다."""
-        for kwargs in ({"front_seconds": -1}, {"away_seconds": float("nan")},
-                       {"previous_stable_score": 101}, {"away_seconds": True}):
-            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                behavior_score(observation(), **kwargs)
-
-    def test_custom_weights(self):
-        """가중치를 설정에서 바꾸면 새 설정대로 계산됩니다."""
-        config = ModelConfig(front_base_score=80, front_bonus=5)
-        self.assertEqual(behavior_score(observation(), front_seconds=5, config=config), 85)
 
 
 if __name__ == "__main__":

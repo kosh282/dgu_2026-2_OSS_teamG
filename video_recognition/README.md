@@ -11,7 +11,6 @@ MobileGaze MobileOne S0 ONNX를 연결했습니다. 지점 보정 없이 카메�
 ```text
 선택한 창 → window_capture.py → integrated_analysis.py
                                   ├─ face_analysis.py: 얼굴 특징·품질
-                                  ├─ pose_analysis.py: 어깨 위치·품질
                                   ├─ head_calibration.py: 선택적 정면 보정
                                   ├─ model_consumer: 메모리 내 특징 전달
                                   └─ IntegrationService: 상태·세션 저장
@@ -20,7 +19,7 @@ webcam_test.py: Windows 웹캠 창 캡처 시험
 webcam_test_mac.py: macOS 웹캠 직접 입력 시험
 ```
 
-창 캡처는 Windows Graphics Capture를 사용합니다. 얼굴과 상체 결과는 독립적으로 생성하므로 두 배열의 같은 순서가 같은 사람이라는 뜻은 아닙니다. 분석 상태 이벤트와 선택적 중간 파일 외에 프레임별 개인 특징은 최종 세션 JSON에 넣지 않습니다.
+창 캡처는 Windows Graphics Capture를 사용합니다. 분석 상태 이벤트와 선택적 중간 파일 외에 프레임별 개인 특징은 최종 세션 JSON에 넣지 않습니다.
 
 ## 설치 및 모델
 
@@ -50,7 +49,7 @@ video_recognition/.venv/Scripts/python.exe -m video_recognition.integrated_analy
 video_recognition/.venv/Scripts/python.exe -m video_recognition.integrated_analysis --hwnd 12345 --session class-test.json
 ```
 
-분석을 시작하면 캡처된 화면과 MediaPipe 기준점을 보여주는 별도 미리보기 창이 열립니다. 초록 점은 얼굴, 주황 점과 선은 상체 기준점입니다. 창 이동이나 크기 변경 후에도 선택한 창을 계속 대상으로 합니다. 미리보기 창에 초점을 두고 `V`를 누르면 원본과 기준점 표시를 전환하며, `Q` 또는 창 닫기로 분석을 종료합니다. 터미널에서 `Ctrl+C`를 눌러도 종료됩니다.
+분석을 시작하면 캡처된 화면과 MediaPipe 기준점을 보여주는 별도 미리보기 창이 열립니다. 초록 점과 선은 얼굴 기준점입니다. 창 이동이나 크기 변경 후에도 선택한 창을 계속 대상으로 합니다. 미리보기 창에 초점을 두고 `V`를 누르면 원본과 기준점 표시를 전환하며, `Q` 또는 창 닫기로 분석을 종료합니다. 터미널에서 `Ctrl+C`를 눌러도 종료됩니다.
 
 터미널에는 약 2초마다 특징값이 표시됩니다. 이를 끄려면 `--quiet`를, 미리보기 창을 열지 않으려면 `--no-preview`를 추가하세요. 종료 시 세션이 저장되며, 저장 경로에 같은 이름의 파일이 있으면 **덮어쓰므로** 사용하지 않은 파일명을 지정하세요.
 
@@ -132,15 +131,15 @@ video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
 
 웹캠 영상 창을 열고 카메라를 바라보세요. 종료하려면 창을 선택한 뒤 `Q`를 누르거나 터미널에서 `Ctrl+C`를 누릅니다. 다른 카메라를 쓰려면 `--camera 1`, 10초 뒤 자동 종료하려면 `--duration 10`을 추가합니다. 기본으로 `video_recognition/demo_logs/` 아래에 실행별 JSONL 진단 로그가 생성됩니다. 위치를 바꾸려면 `--log-dir C:\\temp\\vision-logs`처럼 지정합니다. 로그에는 영상 원본을 넣지 않고 캡처 시각, 상대/원본 각도, 모델 판정과 점수 상태를 저장합니다.
 
-캡처 미리보기에는 개발자 모드와 같은 얼굴 윤곽·홍채 메시, 상체 선, 후처리 표시가 겹쳐집니다. `V` 키로 오버레이를 끄거나 켜고, `M` 키로 촘촘한 얼굴 삼각망을 전환합니다. `[`와 `]`로 얼굴 정보 페이지를 이동하고 `C`로 정면 기준 수집을 시작합니다. 표시된 점과 선은 모델의 추정 결과이며 정확한 인식을 보장하지 않습니다.
+캡처 미리보기에는 개발자 모드와 같은 얼굴 윤곽·홍채 메시와 후처리 표시가 겹쳐집니다. `V` 키로 오버레이를 끄거나 켜고, `M` 키로 촘촘한 얼굴 삼각망을 전환합니다. `[`와 `]`로 얼굴 정보 페이지를 이동하고 `C`로 정면 기준 수집을 시작합니다. 표시된 점과 선은 모델의 추정 결과이며 정확한 인식을 보장하지 않습니다.
 
-두 데모의 결과 창은 프런트엔드 개발자 모드와 `video_recognition/developer_view.py`의 같은 렌더러를 사용합니다. 얼굴·상체 검출 수와 품질, 분석 주기/해상도, 눈 개방도와 EAR, 원본·스무딩·상대 머리 각도, 각도 변화 후보, 깜빡임, 코 위치, 표정 형태 점수, 어깨 중심·가시성, 움직임 후보와 실험 점수를 표시합니다. 점수기는 보정된 단일 얼굴의 머리 각도와 자세 유지 시간을 사용하며, 실제 집중도나 이해도를 확정하는 모델이 아닙니다. 얼굴 순서는 프레임마다 바뀔 수 있습니다. 원본 영상과 원시 랜드마크는 저장하지 않지만, 각도·보정 상태·모델 판정 등은 별도 JSONL 진단 로그에 기록합니다. 로그는 최종 세션 JSON과 별개이며 필요가 끝나면 직접 삭제합니다.
+두 데모의 결과 창은 프런트엔드 개발자 모드와 `video_recognition/developer_view.py`의 같은 렌더러를 사용합니다. 얼굴 검출 수와 품질, 분석 주기/해상도, 눈 개방도와 EAR, 원본·스무딩·상대 머리 각도, 각도 변화 후보, 깜빡임, 코 위치, 표정 형태 점수, 머리 움직임 후보와 실험 점수를 표시합니다. 점수기는 보정된 단일 얼굴의 Gaussian 머리 방향 모델을 사용하며, 실제 집중도나 이해도를 확정하는 모델이 아닙니다. 얼굴 순서는 프레임마다 바뀔 수 있습니다. 원본 영상과 원시 랜드마크는 저장하지 않지만, 각도·보정 상태·모델 판정 등은 별도 JSONL 진단 로그에 기록합니다. 로그는 최종 세션 JSON과 별개이며 필요가 끝나면 직접 삭제합니다.
 
 ## 모델 입력 특징과 제한
 
-`FeatureWindow`의 `features`에는 얼굴 방향(머리 pitch/yaw/roll 각도), 눈 개방 비율, 코의 정규화 위치, 표정 형태를 나타내는 일부 MediaPipe blendshape 점수와 상체 어깨 중심 위치가 담깁니다. blendshape는 감정이나 참여도를 나타내는 점수가 아닙니다. 상체 분석에는 `models/pose_landmarker_lite.task`가 필요하며 [MediaPipe 공식 모델](https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task)을 사용합니다.
+`FeatureWindow`의 `features`에는 얼굴 방향(머리 pitch/yaw/roll 각도), 눈 개방 비율, 코의 정규화 위치와 일부 MediaPipe blendshape 점수가 담깁니다. blendshape는 감정이나 참여도 점수가 아닙니다. 상체 pose 분석과 `pose_landmarker_lite.task`는 제거했습니다. 얼굴 머리 자세 추정은 유지합니다.
 
-머리와 상체 이동 후보는 각각 해당 프레임에서 검출이 한 개이고 직전 프레임과 1초 이내일 때, 화면에서의 정규화 좌표 거리와 시간 간격으로 표시합니다. 이 방식은 동일인 추적이 아니며 카메라 이동·화면 배치 변경·검출 대상 교체에도 값이 변할 수 있습니다. 첫 프레임, 미검출, 다중 검출 또는 시간 간격이 너무 큰 경우는 `null`입니다. 얼굴 목록과 상체 목록은 서로 같은 사람 순서가 아닙니다. 다중 참가자의 개인별 이동에는 별도의 검출·연결 방식과 검증이 필요합니다.
+머리 이동 후보는 단일 얼굴의 정규화 위치 거리와 1초 이내 시간 간격으로 표시합니다. 동일인 추적을 보장하지 않으며 첫 프레임·미검출·다중 검출·긴 공백은 `null`입니다.
 
 특징은 `VisionPipeline`의 `model_consumer` 콜백이 지정되면 메모리로 전달됩니다. 실행 예제에는 실제 모델을 연결하지 않았으며, 세션 JSON에도 개인별 특징은 저장하지 않습니다. 선택적 중간 파일을 요청한 경우에만 별도로 저장합니다.
 
@@ -149,7 +148,6 @@ video_recognition/.venv/Scripts/python.exe -m video_recognition.webcam_test
 ```python
 from video_recognition.integrated_analysis import VisionPipeline, WindowCapture
 from video_recognition.face_analysis import FaceAnalyzer
-from video_recognition.pose_analysis import PoseAnalyzer
 
 def model_consumer(feature_window):
     # 모델 담당자가 품질 확인·시간 구간 집계·추론을 구현할 자리입니다.
@@ -157,7 +155,7 @@ def model_consumer(feature_window):
 
 # service, session_id, hwnd는 실행 중인 앱에서 전달합니다.
 pipeline = VisionPipeline(service, session_id, WindowCapture(hwnd), FaceAnalyzer(),
-                          model_consumer=model_consumer, pose_analyzer=PoseAnalyzer())
+                          model_consumer=model_consumer)
 try:
     # 실제 앱에서는 새 프레임이 없으면 FrameNotAvailable을 처리하며 반복 호출합니다.
     pipeline.process_one()
@@ -169,9 +167,9 @@ finally:
 
 ### 보정 없이 사용하는 기본 모델 입력
 
-기본 `FeatureWindow`는 개인 정면 보정을 요구하지 않습니다. `features.faces`에는 `head_angles_degrees` 원본 각도, `head_orientation_periodic` 각 축의 `sin`·`cos`, 눈 개방 비율, 표정 형태 점수, 얼굴별 `quality`가 포함됩니다. sin·cos는 ±180도 숫자 경계를 연속적으로 표현하기 위한 값이며, 개인별 정면 보정이나 각도 추정 정확성 보정이 아닙니다. `upper_bodies`에는 어깨 중심과 상체별 `quality`가 포함됩니다. 얼굴과 상체의 배열 순서가 같은 사람을 뜻하지 않습니다.
+기본 `FeatureWindow`는 개인 정면 보정을 요구하지 않습니다. `features.faces`에는 `head_angles_degrees` 원본 각도, `head_orientation_periodic` 각 축의 `sin`·`cos`, 눈 개방 비율, 표정 형태 점수, 얼굴별 `quality`가 포함됩니다. sin·cos는 ±180도 숫자 경계를 연속적으로 표현하기 위한 값이며, 개인별 정면 보정이나 각도 추정 정확성 보정이 아닙니다.
 
-필요한 얼굴 기준점이나 양쪽 어깨 기준점이 화면 밖이면 관련 측정은 `null`과 품질 사유로 전달합니다. 어깨 가시성이 0.5 미만인 경우도 위치를 만들지 않습니다. 화면 안에 있고 `quality`가 `valid`여도 실제 인식이 정확하거나 가림이 없다는 보장은 없습니다. 최상위 `quality`는 얼굴이나 상체가 일부 부족하면 `partial`, 둘 다 없으면 `not_observable`입니다. 모델이 이 품질 상태를 반영해야 하며, 관측 불가를 0으로 바꾸면 안 됩니다.
+필요한 얼굴 기준점이 화면 밖이면 관련 측정은 `null`과 품질 사유로 전달합니다. 최상위 `quality`는 얼굴 관측이 일부 부족하면 `partial`, 얼굴이 없으면 `not_observable`입니다. 상체를 측정하지 않는다는 이유로 품질을 낮추지 않습니다. `valid`가 인식 정확성을 보장하지는 않습니다.
 
 `model_consumer`에는 단일 얼굴용 규칙 기반 실험 모델이 연결되어 웹캠 데모와 개발자 미리보기에서 점수·보류 이유를 보여줍니다. 라이브 세션은 별도 집계기로 구간 이벤트를 발행하며 웹캠 데모는 발행하지 않습니다. 프레임 내 개인별 특징은 세션 JSON에 포함되지 않습니다. 영상 특징 자체는 정면 보정 없이도 전달되지만 현재 실험 점수에는 정면 보정이 필요합니다.
 
@@ -211,11 +209,11 @@ finally:
 
 ## 분석 주기와 모델 입력 크기
 
-기본값은 얼굴 분석 초당 10회, 상체 분석 초당 5회, 모델 입력 긴 변 최대 1920픽셀입니다. 회의 화면에서 여러 참가자가 작게 표시되는 상황을 고려해 입력 크기를 높였으며, 처리 부하와 작은 얼굴 검출률을 확인한 뒤 이 값을 조정할 수 있습니다. 창 캡처와 개발자 영상 프리뷰에는 원본 해상도를 유지하고, MediaPipe 두 분석기에 전달하는 사본만 종횡비를 보존해 축소합니다. 프레임을 큐에 쌓지 않고 새로 도착한 화면 중 분석 시점의 최신 프레임을 사용합니다. 실제 측정 주기와 원본/분석 해상도는 `features.sampling` 및 개발자 텍스트 창에서 확인할 수 있습니다. 상체 결과를 다음 측정 시점까지 재사용하며 오래된 값은 품질 사유에 반영합니다.
+기본값은 얼굴 분석 초당 10회, 모델 입력 긴 변 최대 1920픽셀입니다. 창 캡처와 개발자 영상 프리뷰에는 원본 해상도를 유지하고, 얼굴 분석에 필요한 경우에만 종횡비를 유지해 축소합니다. 최신 프레임을 사용하며 분석 시점이 아닌 프레임의 축소는 생략합니다. 상체 모델 추론은 실행하지 않습니다. 실제 주기와 원본/분석 해상도는 `features.sampling`에서 확인합니다.
 
 분석 주기에 해당하지 않는 캡처 프레임은 모델 입력용 축소를 생략합니다. 프런트 라이브 세션은 개발자 미리보기와 재식별을 모두 끄면 별도 프레임 복사본을 보관하지 않습니다. 재식별을 켜면 프리뷰 표시와 무관하게 동일 캡처 프레임을 ID 연결에 사용하기 위해 메모리에 잠시 보관합니다. Windows 캡처의 프레임 수신과 필요한 원본 버퍼 복사는 계속 수행합니다. 기존 분석 주기와 해상도는 바뀌지 않습니다.
 
-CLI에서는 `--face-hz`, `--pose-hz`, `--max-analysis-dimension`으로 조정할 수 있습니다. 예를 들어 `--face-hz 10 --pose-hz 5 --max-analysis-dimension 1920`이며, 최대 크기를 `0`으로 주면 축소하지 않습니다. 얼굴 분석을 낮추면 짧은 깜빡임을 놓칠 수 있으므로 현재 깜빡임 값은 보조 실험 신호로 해석해야 합니다.
+CLI에서는 `--face-hz`, `--max-analysis-dimension`으로 조정할 수 있습니다. 예를 들어 `--face-hz 10 --max-analysis-dimension 1920`이며, 최대 크기를 `0`으로 주면 축소하지 않습니다. 얼굴 분석을 낮추면 짧은 깜빡임을 놓칠 수 있으므로 현재 깜빡임 값은 보조 실험 신호로 해석해야 합니다.
 
 ## FaceMesh 저장소 기능과 기존 파이프라인 중복 정리
 
@@ -238,7 +236,7 @@ CLI에서는 `--face-hz`, `--pose-hz`, `--max-analysis-dimension`으로 조정�
 | 윤곽·홍채·삼각망 렌더링 | 개발자 모드의 FaceMesh 오버레이 | 윤곽/눈/눈썹/입술/홍채는 기본 표시, 촘촘한 삼각망은 `M` 키로 선택 |
 | 녹화·JSONL/CSV 내보내기·재생·타임라인 | 기존 세션 계약과 선택적 중간 JSONL | 저장 계약을 유지하고 임시 추적 키와 랜드마크는 최종 세션에 넣지 않음 |
 
-개발자 영상 창에서 `V`는 얼굴/상체 선 표시를 전환하고, `M`은 촘촘한 삼각망을 켜고 끕니다. 텍스트 창은 한 페이지에 두 얼굴의 전체 후처리 결과를 표시하며 `[`와 `]`로 검출된 얼굴 페이지를 넘깁니다. 각 얼굴에 임시 키·추적 방식·후처리 버전, 원본/보정/스무딩 각도, 각도 변화량과 간격, 좌우 EAR·눈 열림, 양쪽 눈 감김 상태, 좌우/전체 깜빡임 누계, 최근 창 개수·길이·분당 비율·이벤트 여부를 표시합니다.
+개발자 영상 창에서 `V`는 얼굴 선 표시를 전환하고, `M`은 촘촘한 삼각망을 켜고 끕니다. 텍스트 창은 한 페이지에 두 얼굴의 전체 후처리 결과를 표시하며 `[`와 `]`로 검출된 얼굴 페이지를 넘깁니다. 각 얼굴에 임시 키·추적 방식·후처리 버전, 원본/보정/스무딩 각도, 각도 변화량과 간격, 좌우 EAR·눈 열림, 양쪽 눈 감김 상태, 좌우/전체 깜빡임 누계, 최근 창 개수·길이·분당 비율·이벤트 여부를 표시합니다.
 
 연결선 정의는 MediaPipe Tasks의 `FaceLandmarksConnections`에서 읽고, 픽셀 선은 이 프로젝트의 OpenCV 프리뷰에서 그립니다. 478개 정규화 랜드마크를 다시 추론하지 않으며 FaceMesh 패키지도 추가 설치하지 않습니다. 표시용 랜드마크 스무딩은 분석 결과나 저장값을 바꾸지 않습니다. 촘촘한 삼각망은 얼굴이 많이 검출될수록 프리뷰 프레임률을 낮출 수 있습니다. API는 [MediaPipe FaceLandmarksConnections](https://ai.google.dev/edge/api/mediapipe/python/mp/tasks/vision/FaceLandmarksConnections), 참고 라이브러리는 [ATemova/face-mesh](https://github.com/ATemova/face-mesh#readme)에서 확인할 수 있습니다. 참고 알고리즘 저작권과 MIT 조건은 저장소의 `THIRD_PARTY_NOTICES.md`에 기록했습니다.
 

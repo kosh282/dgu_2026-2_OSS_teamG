@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from integration import IntegrationService
-from experimental_vision.vision import VisionPipeline
+from video_recognition.integrated_analysis import VisionPipeline
 
 
 class Image:
@@ -25,26 +25,15 @@ class Analyzer:
 
 
 class VisionTests(unittest.TestCase):
-    def test_shoulder_features_handles_missing_and_out_of_frame_points(self):
-        from types import SimpleNamespace
-        from video_recognition.pose_analysis import shoulder_features
-        points = [SimpleNamespace(x=0.2, y=0.3, visibility=0.9) for _ in range(13)]
-        self.assertEqual(shoulder_features(points)['shoulder_center'], {'x': 0.2, 'y': 0.3})
-        points[12] = SimpleNamespace(x=1.1, y=0.3, visibility=0.9)
-        self.assertIsNone(shoulder_features(points)['shoulder_center'])
-        points[12] = SimpleNamespace(x=0.2, y=0.3, visibility=float('nan'))
-        self.assertIsNone(shoulder_features(points)['shoulder_visibility'])
-        self.assertEqual(shoulder_features(points)['quality']['status'], 'not_observable')
 
     def test_frame_quality_distinguishes_missing_streams(self):
         from video_recognition.integrated_analysis import feature_quality
         face = {'eye_openness': 0.2, 'head_angles_degrees': {'pitch': 0},
                 'quality': {'status': 'valid'}}
-        body = {'shoulder_center': {'x': 0.5, 'y': 0.5}}
-        self.assertEqual(feature_quality([face], [body], True)['status'], 'valid')
-        self.assertEqual(feature_quality([face], [], True)['status'], 'partial')
-        self.assertEqual(feature_quality([], [body], True)['reason_codes'], ['face_not_found'])
-        self.assertEqual(feature_quality([], [], True)['status'], 'not_observable')
+        self.assertEqual(feature_quality([face])['status'], 'valid')
+        self.assertEqual(feature_quality([])['status'], 'not_observable')
+        face['eye_openness'] = None
+        self.assertEqual(feature_quality([face])['status'], 'partial')
 
     def test_periodic_angles_remain_continuous_at_wrap(self):
         from video_recognition.face_analysis import periodic_angles
@@ -82,13 +71,13 @@ class VisionTests(unittest.TestCase):
         self.assertIsNone(face['head_angles_relative_degrees'])
         self.assertEqual(face['head_angles_degrees'], angles)
         self.assertIsNotNone(face['head_orientation_periodic'])
-        self.assertEqual(received[0]['quality']['status'], 'partial')  # 상체 분석기 미연결
+        self.assertEqual(received[0]['quality']['status'], 'valid')  # 얼굴 관측만으로 품질 판정
         pipeline.close()
 
     def test_head_calibration_handles_angle_wrap_and_lost_face(self):
         from video_recognition.head_calibration import HeadCalibration
         calibration = HeadCalibration(duration_ms=3000, min_samples=4)
-        face = {'head_angles_degrees': {'pitch': 179.0, 'yaw': -27.0, 'roll': 1.0}}
+        face = {'quality': {'status': 'valid'}, 'head_angles_degrees': {'pitch': 179.0, 'yaw': -27.0, 'roll': 1.0}}
         self.assertEqual(calibration.update([face], 0), 'waiting')
         self.assertIsNone(face['head_angles_relative_degrees'])
         calibration.start()
@@ -108,7 +97,7 @@ class VisionTests(unittest.TestCase):
         from video_recognition.head_calibration import HeadCalibration
         calibration = HeadCalibration(duration_ms=3000, min_samples=4)
         calibration.start()
-        first = {'head_angles_degrees': {'pitch': 180.0, 'yaw': 0.0, 'roll': 0.0}}
+        first = {'quality': {'status': 'valid'}, 'head_angles_degrees': {'pitch': 180.0, 'yaw': 0.0, 'roll': 0.0}}
         calibration.update([first], 0)
         calibration.update([first, dict(first)], 500)
         self.assertEqual(calibration.samples, [])
@@ -122,7 +111,7 @@ class VisionTests(unittest.TestCase):
         from video_recognition.head_calibration import HeadCalibration
         calibration = HeadCalibration(duration_ms=3000, min_samples=4)
         calibration.start()
-        face = {'head_angles_degrees': {'pitch': 179.0, 'yaw': -27.0, 'roll': 4.0}}
+        face = {'quality': {'status': 'valid'}, 'head_angles_degrees': {'pitch': 179.0, 'yaw': -27.0, 'roll': 4.0}}
         for capture_ms in (0, 1000, 2000, 3000):
             calibration.update([face], capture_ms)
         for axis in ('pitch', 'yaw', 'roll'):
@@ -147,7 +136,13 @@ class VisionTests(unittest.TestCase):
             result = pipeline.process_one()
             self.assertEqual(len(result['features']['faces']), 2)
             self.assertEqual(received, [result])
-            self.assertEqual(json.loads(intermediate.read_text(encoding='utf-8')), result)
+            from video_recognition.integrated_analysis import _without_transient_tracking
+            stored = json.loads(intermediate.read_text(encoding='utf-8'))
+            self.assertEqual(stored, _without_transient_tracking(result))
+            self.assertNotIn('transient_track_key', json.dumps(stored))
+            self.assertNotIn('upper_bodies', result['features'])
+            self.assertNotIn('target_pose_hz', result['features']['sampling'])
+            self.assertEqual(result['feature_version'], 'experimental-0.9')
             self.assertEqual(service.get_dashboard_snapshot(sid)['status']['vision'], 'running')
             pipeline.close()
             service.stop_session(sid)
@@ -181,21 +176,6 @@ class VisionTests(unittest.TestCase):
         self.assertIsNone(pipeline._movement('head', one, 'head_position', 1500))
         pipeline.close()
 
-    def test_model_callback_receives_body_measurements(self):
-        class BodyAnalyzer:
-            def analyze(self, frame):
-                return [{'shoulder_center': {'x': 0.5, 'y': 0.4}, 'shoulder_visibility': 0.9}]
-            def close(self):
-                pass
-        service = IntegrationService()
-        sid = service.start_session('test')
-        received = []
-        pipeline = VisionPipeline(service, sid, Capture(), Analyzer(), received.append,
-                                  pose_analyzer=BodyAnalyzer())
-        pipeline.process_one()
-        self.assertEqual(received[0]['features']['upper_bodies'][0]['shoulder_center']['x'], 0.5)
-        self.assertIsNone(received[0]['features']['upper_body_movement_candidate'])
-        pipeline.close()
 
     def test_preview_uses_same_capture_as_analysis(self):
         import numpy as np
@@ -221,16 +201,12 @@ class VisionTests(unittest.TestCase):
 
     def test_landmark_overlay_preserves_original_and_skips_out_of_frame(self):
         import numpy as np
-        from video_recognition.webcam_test import draw_landmarks
+        from video_recognition.preview import draw_landmarks
         source = np.zeros((100, 100, 3), dtype=np.uint8)
         face = [(0.5, 0.5, 0.0), (1.5, 0.5, 0.0)]
-        pose = [(0.5, 0.5, 0.0)] * 25
-        pose[11] = (0.2, 0.3, 0.9)
-        pose[12] = (0.8, 0.3, 0.9)
-        result = draw_landmarks(source, [face], [pose])
+        result = draw_landmarks(source, [face])
         self.assertFalse(source.any())
         self.assertTrue(result[50, 50].any())
-        self.assertTrue(result[30, 20].any())
         self.assertFalse(result[:, 99].any())
 
     def test_class_window_preview_renders_and_exits_on_q(self):
@@ -256,9 +232,8 @@ class VisionTests(unittest.TestCase):
             with patch.object(sys, 'argv', arguments), \
                  patch.object(module, 'WindowCapture', Source), \
                  patch.object(module, 'FaceAnalyzer', Model), \
-                 patch.object(module, 'PoseAnalyzer', Model), \
                  patch('cv2.namedWindow'), patch('cv2.resizeWindow'), \
-                 patch('cv2.moveWindow'), patch('cv2.imshow') as display, \
+                 patch('ctypes.windll', __import__('types').SimpleNamespace(user32=__import__('types').SimpleNamespace(GetSystemMetrics=lambda _: 1000)), create=True), patch('cv2.moveWindow'), patch('cv2.imshow') as display, \
                  patch('cv2.waitKey', return_value=ord('q')), \
                  patch('cv2.destroyAllWindows'):
                 module.main()

@@ -7,8 +7,8 @@
 관측 불가와 판단 보류는 0점 대신 `null`과 사유로 표현합니다.
 
 - 독립 웹캠과 프런트의 기본 모델은 **Gaussian softened**입니다.
-- `EngagementRuntime()` 자체의 기본 모델은 Legacy로 유지합니다. 프런트는 `GaussianRuntime`을 명시적으로 생성합니다.
-- 독립 데모에서 모델을 비교할 수 있으며, 프런트는 Gaussian을 사용합니다. 재식별을 함께 켜면 다인 Gaussian 경로로 실행합니다.
+- 모델은 Gaussian만 제공합니다. `ModelConfig()`와 모든 웹캠 점수기도 Gaussian을 사용합니다.
+- 독립 데모는 Gaussian의 상대각/완화 및 보정 방식을 비교합니다. 프런트에서 재식별을 함께 켜면 다인 Gaussian 경로로 실행합니다.
 - 개별 계산기는 단일 얼굴 입력을 사용하며, 프런트는 재식별 ID 또는 임시 위치 트랙마다 계산기를 따로 둡니다.
 - 현재 Gaussian 점수와 최근 10초 집계 점수는 다른 값입니다.
 - 원본 영상·얼굴 이미지·영구 식별자를 이 모듈의 저장 항목으로 추가하지 않습니다.
@@ -44,7 +44,7 @@ ID 이탈·재식별 불확실 구간은 현재/최근 점수 모두 null입니�
 현재 관측자 재보정, 최대32명/마지막 확인 후120초 수명, 수업 종료 시 삭제를 적용합니다.
 이름·ID·임베딩·개인별 점수 이력은 저장하지 않습니다.
 
-그룹 provenance는 `multi-face-gaussian` / `multi-gaussian-0.1`입니다.
+그룹 provenance는 `multi-face-gaussian` / `multi-gaussian-0.3+face-transform-eye`입니다.
 `WindowPublisher`는 다인 런타임의 `aggregate_window()`를 사용합니다. 각 유효 관측의
 완화된 Pitch/Yaw로 Gaussian을 한 번 계산하고, 최근성 선형 커널의 시간 적분으로 가중합니다.
 분자는 모든 유효한 사람·구간의 `시간가중치 × Gaussian 점수` 합,
@@ -66,12 +66,12 @@ MobileGaze 시선 실험은 포함하지 않습니다. [프런트 실행 안내]
 ## 2. 전체 데이터 처리 흐름
 
 ```text
-video_recognition: 얼굴/상체 특징 → 스무딩 → 정면 보정 → FeatureWindow
+video_recognition: 얼굴 특징 → 스무딩 → 정면 보정 → FeatureWindow
   ↓ model_consumer 콜백
 input_adapter.py: 형식·단일 얼굴·보정·품질 검사, 상대각/Yaw 완화
   ↓
-runtime.py: 상태·관측 시간 관리, Legacy 또는 Huang 계산
-  또는 gaussian.py: 같은 상태 관리를 재사용해 Gaussian 계산
+runtime.py: 방향 상태·연속 관측 시간 관리
+  ↓ gaussian.py: Gaussian 점수 계산
   ↓ latest: 실행 메모리에 보관
 선택적으로 WindowPublisher 연결 → engagement_window → IntegrationService
 ```
@@ -85,41 +85,26 @@ runtime.py: 상태·관측 시간 관리, Legacy 또는 Huang 계산
 |---|---|
 | [config.py](config.py) | `ModelConfig`: 실험 설정과 값 검증 |
 | [input_adapter.py](input_adapter.py) | `HeadAngles`, `Observation`, `parse_feature_window()`, `soften_angle()` |
-| [scoring.py](scoring.py) | 공통 상태 분류, Legacy 규칙, Huang 순수 함수·구간 계산 |
-| [runtime.py](runtime.py) | `EngagementRuntime`, 세 모델을 같은 입력으로 실행하는 `ComparisonRuntime` |
+| [scoring.py](scoring.py) | Gaussian용 각도 검증·방향 상태 분류 |
+| [runtime.py](runtime.py) | `HeadOrientationState`: Gaussian용 방향·시간 공통 상태 |
 | [gaussian.py](gaussian.py) | `GaussianRuntime`, 방향 점수·시간 가중 집계 |
 | [window_publisher.py](window_publisher.py) | 구간 집계와 공통 계약 이벤트 발행 |
 | [webcam_demo.py](webcam_demo.py) | 기존 영상 기능을 재사용하는 독립 웹캠·메모리 진단 |
 | [tests/](tests/) | 입력·산정식·시간 상태·복귀·계약·실행기 모의 검사 |
 
-## 3. Legacy / Huang / Gaussian
+## 3. Gaussian 전용 모델
 
-| 항목 | Legacy | Huang 온라인 | Gaussian 기본 |
-|---|---|---|---|
-| 생성 | `EngagementRuntime()` | `EngagementRuntime(ModelConfig.huang())` | `GaussianRuntime()` |
-| 점수 | 상태·각도 강도·유지시간 규칙 | Pitch/Yaw 지표의 정규화 거리 결합 | 상대 Pitch/Yaw의 Gaussian 각도 공간 변형 |
-| 정면 | 90점에서 5초간 100점으로 증가 | 정확한 정지 0도는 온라인 중립 처리로 약 64.6점 | 중립 입력 100점, 방향 편차에 따라 연속 감소 |
-| ambiguous | 보류 | 유효 관측이면 계산 | 유효 관측이면 계산 |
-| away | 초기 3초는 이전 안정 점수, 이후 각도·시간 감점 | 별도 Legacy 유예 없음 | 현재 방향 점수에 유예 없음 |
-| 아래 보기 | 이전 안정 점수로 5초 유예 후 10초간 최대 20점 감점 | 보류 | 이전 안정 점수로 5초 유예 후 10초간 최대 20점 감점 |
-| 시간 구간 | 기본 10초 | 큰 구간 30초·작은 구간 3초 | 최근 10초 시간 가중 |
-
-각 모델이 점수화하는 구간과 점수 의미는 같지 않습니다.
-Legacy의 높은 표시값이 현재 관측의 유효한 새 점수인지, 계산 유예나 화면 캐시인지 구분해야 합니다.
-실제 얼굴·각도 입력의 좌우 비대칭은 모델의 수학적 대칭성과 별개의 검증 대상입니다.
-
-선택 예시:
+Legacy/Huang 계산식·설정·비교 실행기는 제거했습니다. `--huang-only`, `--model legacy`, `--model huang`은 사용할 수 없습니다. `--model gaussian`과 `--single-model`은 기존 실행 명령의 호환을 위해 유지합니다.
 
 ```python
 from engagement_model.config import ModelConfig
-from engagement_model.runtime import EngagementRuntime
 from engagement_model.gaussian import GaussianRuntime
 
-legacy = EngagementRuntime()
-huang = EngagementRuntime(ModelConfig.huang())
 gaussian = GaussianRuntime()  # softened, angle-time-0.4
 reference = GaussianRuntime(ModelConfig.gaussian(gaussian_angle_mode='relative'))
 ```
+
+상체 분석은 실행하지 않습니다. 어깨 좌표·상체 움직임과 상체 오버레이·분석 주기 옵션을 제거했습니다. 얼굴 머리 방향, 눈·표정 특징, 재식별 및 독립 데모의 나머지 진단·시선 옵션은 유지합니다.
 
 ## 4. 현재 Gaussian 산정식과 설정값
 
@@ -135,7 +120,7 @@ Y_eff = h(Y; 2, 0.75, 15)
 S_current = 100*exp(-0.5*((P_eff/15)^2+(Y_eff/20)^2))
 ```
 
-Yaw 완화는 Legacy와 같은 `soften_angle()`을 재사용합니다.
+Yaw 완화는 `soften_angle()`을 사용합니다.
 Pitch 완화와 sigma 15/20도는 프로젝트 실험 설정이며 논문의 최적값이 아닙니다.
 큰 각도의 기울기는 1을 유지합니다. Roll은 점수에 사용하지 않습니다.
 relative 비교 모드는 완화 전 P/Y를 그대로 사용합니다.
@@ -162,14 +147,11 @@ softened 0.4가 현재 기본이며, relative 모드도 동일한 아래 보기 
 | `yaw_full_scale_start_degrees` / `front_pitch_degrees` | 15° / 10° | Yaw/Pitch 완화 경계 |
 | `gaussian_down_transition_pitch_degrees` | 10° | Gaussian 하향 전이 |
 | `gaussian_down_confirm_seconds` | 0.3초 | 아래 방향 확인 |
-| `window_seconds` | Legacy/Gaussian 10초, Huang 30초 | 집계 구간 |
+| `window_seconds` | 10초 | 집계 구간 |
 | `output_interval_seconds` | 2초 | publisher 발행 간격 |
 | `max_observation_hold_seconds` | 0.3초 | 관측 유지 상한 |
 | `min_observable_ratio` / `min_scoreable_ratio` | 0.7 / 0.7 | 구간 품질 기준 |
-| `huang_small_seconds` / `huang_amplitude_degrees` / `huang_max_yaw_degrees` | 3초 / 5° / 90° | Huang 온라인 |
 
-Legacy의 각도·시간·점수 계수는 `config.py`와 [상세 수식](docs/model-formulas.md)을 참고합니다.
-`recovery_seconds=2`는 설정에 있으나 별도 2초 복귀 확인 로직으로 연결돼 있지 않습니다.
 
 ### 현재 점수와 JSON 이벤트
 
@@ -214,7 +196,7 @@ Gaussian은 이 상태 분류를 유지하며 별도 `downward_status`로 하향
 - 정면 복귀의 첫 유효 관측부터 Gaussian 현재 점수를 재개합니다.
 
 필기·교재·휴대전화·손동작을 구분하는 기능은 없습니다.
-프런트는 EAR 기반 장시간 양안 감김 후보를 머리 점수와 결합합니다. 깜빡임 횟수·표정·상체 이동은 점수나 필기 근거로 합산하지 않습니다.
+프런트는 EAR 기반 장시간 양안 감김 후보를 머리 점수와 결합합니다. 깜빡임 횟수·표정은 점수나 필기 근거로 합산하지 않습니다.
 
 ## 6. 실행 방법 및 테스트 명령어
 
@@ -224,7 +206,7 @@ Gaussian은 이 상태 분류를 유지하며 별도 `downward_status`로 하향
 추정합니다. 여러 화면 지점을 바라보는 보정은 없습니다. 카메라 기준 방향 후보이므로
 실제 모니터 주시·집중도·필기를 확정하지 않습니다. 단일 얼굴용이며 프런트와
 `video_recognition.webcam_test`/`webcam_test_mac`에는 연결하지 않았습니다.
-주 모델은 Gaussian 전용입니다. 비교 표시를 켜도 Legacy/Huang 정책은 바뀌지 않습니다.
+주 모델은 Gaussian 전용입니다.
 
 | 화면 표시 | 의미 |
 |---|---|
@@ -240,7 +222,7 @@ Gaussian에서 이 옵션을 켜면 머리만 숙인 경우에도 각도 점수�
 대기 상태는 `gaze_down_pending`입니다. 시선 불명확은 `gaze_unavailable`로 표시하며
 유효한 머리 각도가 있으면 각도 점수만 계산합니다. 얼굴 관측 불가는 기존 null 정책입니다.
 확인 전 관측은 계산하고 이미 계산한 구간을 소급해서 제외하지 않습니다.
-모든 임계값은 검증 전 실험값입니다. 기본 실행·Legacy·Huang의 보류 정책은 바뀌지 않습니다.
+모든 임계값은 검증 전 실험값입니다. `--gaze`를 사용하지 않으면 기본 Gaussian 하향 정책을 적용합니다.
 
 기존 얼굴 경계를 재사용하고 최대 약 3Hz로 시선만 추가 추론합니다.
 333ms 미만 동안 현재 얼굴 품질이 유효하면 직전 시선 결과를 사용하고,
@@ -273,9 +255,8 @@ video_recognition/.venv/Scripts/python.exe -m engagement_model.webcam_demo --gaz
 ```powershell
 # 기본 Gaussian 웹캠: 정면 준비 후 버튼 또는 C/Space로 수동 보정
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo
-# 상세 진단 / 선택 모델 단독 / 이전 Gaussian 입력 방식
+# 상세 진단 / 이전 Gaussian 입력 방식
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --debug
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --model huang --single-model
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --gaussian-angle-mode relative
 # 수동 보정 후 정면→왼쪽→정면→오른쪽→정면 자동 진단
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --single-model
@@ -295,15 +276,13 @@ collecting 동안 약 3초 정면 유지, D 상세 진단, V 오버레이, Q/Esc
 ```powershell
 # 카메라 없이 모델·시간 상태·계약·실행기 모의 검사
 video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s engagement_model/tests -v
-# 동일 합성 입력의 세 모델 비교: 실제 정확도 평가가 아님
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_huang --compare-all
 ```
 
 ## 7. 현재 구현 상태와 검증 중인 문제
 
 ### 코드로 확인한 구현
 
-구현: 세 모델 선택, 입력 검증, 상태·시간 관리, 하향 유예·감점, Gaussian 현재/집계 분리,
+구현: Gaussian 전용 실행, 입력 검증, 상태·시간 관리, 하향 유예·감점, Gaussian 현재/집계 분리,
 독립 웹캠 자동 복귀·기본 얼굴 시각화, 수동 보정과 자동 구간 안내, publisher의 계약 발행입니다.
 시간 역전·관측 공백·트랙 변경·잘못된 입력에 대한 처리와 회귀 테스트가 있습니다.
 현재 CLI 기본값은 `webcam_demo.py::main()`, 프런트 기본값은 `LiveSession._start_model()`에서 확인합니다.
@@ -323,15 +302,12 @@ A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기
 1. 영상 담당자와 원본 회전·보정·추정 품질을 확인하고 좌우 비대칭 원인을 구분합니다.
 2. 동일 입력·보류 구간·사람 주석 기준을 고정한 뒤 sigma와 정책을 평가합니다.
 3. 추가 시선·필기 특징은 비전 담당자가 제공한 근거와 품질을 확인한 뒤 연결합니다.
-4. 프런트 모델 선택·현재 점수 전달은 기존 집계 의미와 공통 계약을 먼저 협의합니다.
-5. 다중 얼굴별 보정·연결·집계는 별도 설계·동의·검증이 필요한 미완료 범위로 둡니다.
+4. 다인 얼굴별 보정·연결·집계의 실제 수업 화면 성능을 추가 검증합니다.
 
 위 항목은 개발 계획이며 구현 완료나 성능 달성으로 해석하지 않습니다.
 
 ## 9. 참고 논문 및 자료
 
-- Huang, Z.; Zhuo, R.; Gao, F. (2024), *How attentive is a student in class? A concentration evaluation method based on head Euler angle*.
-  [DOI](https://doi.org/10.1016/j.heliyon.2024.e37365) · [원문](https://pmc.ncbi.nlm.nih.gov/articles/PMC11417239/)
 - Li, B.; Liu, P. (2024), *Online Learning State Evaluation Method Based on Face Detection and Head Pose Estimation*, Sensors 24(5), 1365.
   [DOI](https://doi.org/10.3390/s24051365)
 

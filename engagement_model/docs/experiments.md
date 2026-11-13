@@ -4,7 +4,7 @@
 [웹캠 진단](webcam-diagnostics.md) · [정리 전 README 보관본](implementation-history.md)
 
 현재 실행 가능한 코드, 합성 입력 비교, 실제 웹캠 관찰, 과거 기록을 구분합니다.
-문서만 정리하는 이번 작업에서 전체 테스트나 실제 웹캠 측정을 새로 수행하지 않았습니다.
+실제 웹캠 측정과 합성 입력 검증은 별개입니다.
 과거 통과 개수는 현재 실행 결과로 다시 표기하지 않습니다.
 
 ## 1. 현재 실행 모드와 과거 버전
@@ -12,10 +12,8 @@
 | 구분 | 현재 코드에서의 의미 | 재현 시 주의 |
 |---|---|---|
 | Gaussian 0.1 | 보관 문서의 과거 개발 단계 | 별도 실행 옵션이 없으므로 현재 결과라고 표시하지 않음 |
-| Gaussian relative 0.2 | 완화 전 상대각을 점수에 사용 | 현재 하향 전이 보류와 현재/집계 분리를 유지하는 비교 모드 |
-| Gaussian softened 0.3 | 기본 모드, Pitch/Yaw 중립 완화 | sigma는 15/20도, 하향 정책과 시간 집계는 유지 |
-| Huang 온라인 0.2 | 현재 선택 가능한 Huang 온라인 변형 | 원식 전체 영상 재현이나 실제 집중도 확률이 아님 |
-| Legacy | 기본 `EngagementRuntime()` | 프런트·팀원 웹캠 기본, 상태·시간 규칙으로 점수화 |
+| Gaussian relative 0.4 | 완화 전 상대각을 점수에 사용 | 현재 하향 전이 보류와 현재/집계 분리를 유지하는 비교 모드 |
+| Gaussian softened 0.4 | 기본 모드, Pitch/Yaw 중립 완화 | sigma는 15/20도, 하향 정책과 시간 집계는 유지 |
 
 현재 relative 모드는 과거 모든 시점의 Gaussian을 그대로 재현하는 옵션이 아닙니다.
 모델 버전·설정 버전·publisher 확장 버전은 서로 다른 항목입니다.
@@ -30,26 +28,8 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --
 
 ## 2. 합성 입력 비교
 
-`tests/test_huang.py::comparison_report()`는 Legacy·Huang 및 선택적으로 Gaussian에 같은
-시점별 `FeatureWindow`를 전달합니다. 모델마다 시간 상태는 독립적으로 관리합니다.
-준비 구간 뒤 평가 구간의 유효 점수 평균과 보류 비율을 출력합니다.
+Legacy/Huang 비교 실행기는 제거했습니다. Gaussian의 대칭성·민감도·시간 적분과 보류 동작은 `tests/test_gaussian.py`에서 합성 입력으로 검증합니다. 완화 여부는 `gaussian_angle_mode`로 비교합니다.
 
-```powershell
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_huang --compare-all
-```
-
-이 명령은 현재 `ModelConfig.gaussian()`을 사용하므로 기본 결과는 softened 0.3입니다.
-보관본의 상대 Pitch -2도 점수 99.10 등 완화 전 결과를 그대로 기대하면 안 됩니다.
-현재 softened 모드에서는 ±2도 이내 입력이 중립으로 완화됩니다.
-
-현재 회귀 테스트에서 비교하는 대표 수치는 다음과 같습니다.
-
-| 합성 조건 | Legacy | relative Gaussian 현재 | softened Gaussian 현재 |
-|---|---:|---:|---:|
-| 정면 10초 뒤 Yaw +10도 첫 관측 | 100 | 88.2 | 95.6 |
-| 큰 방향 이탈 뒤 정면 복귀 첫 관측 | 90 | 100 | 100 |
-
-근거는 `tests/test_gaussian.py::test_legacy_reference_and_improvement_on_same_sequence()`입니다.
 큰 이탈의 softened 현재 점수 2.4(Yaw 60도)와 발행 집계 26.8(앞 5초 정면·뒤 5초 Yaw 60도)도
 같은 파일에 기대값으로 정의되어 있습니다. 현재 점수와 시간 집계의 수치를 혼동하지 마세요.
 이 값은 구현·계산의 회귀 기준이지 실제 영상 정확도나 사람 주석과의 일치율이 아닙니다.
@@ -67,7 +47,7 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_hua
 - C: B에 짧은 away 유예를 추가하고 그 구간도 집계에서 제외.
 
 B/C는 현재 런타임이나 CLI에 구현된 선택 옵션이 아닙니다.
-현재 Gaussian은 ambiguous의 유효 입력을 점수화하며 Legacy away 3초 유예를 사용하지 않습니다.
+현재 Gaussian은 ambiguous의 유효 입력을 점수화하며 away 방향 점수를 즉시 계산합니다.
 표시용 과거 점수를 현재 관측으로 간주하거나 집계에 삽입하지 않는다는 조건이 중요합니다.
 보류·유예로 부드러워 보이는 것과 실제 이탈을 놓치지 않는 것은 별도 평가 대상입니다.
 
@@ -94,10 +74,10 @@ B/C는 현재 런타임이나 CLI에 구현된 선택 옵션이 아닙니다.
 
 | 파일 | 코드로 확인한 검증 범위 |
 |---|---|
-| `tests/test_model.py` | 설정·어댑터·Legacy 점수 규칙 |
+| `tests/test_model.py` | 설정·단일 얼굴 어댑터 |
 | `tests/test_runtime.py` | 연속 관측·상태 시간·유예·하향·공백·초기화 |
-| `tests/test_huang.py` | 원식 손계산·온라인 변형·복귀·계약·웹캠 모의 검사 |
-| `tests/test_gaussian.py` | Gaussian 대칭·민감도·시간 적분·하향 전이·기존 모델 회귀·JSON 왕복 |
+| `tests/test_webcam_demo.py` | Gaussian CLI·표시·웹캠 자원 반환 모의 검사 |
+| `tests/test_gaussian.py` | Gaussian 대칭·민감도·시간 적분·하향 전이·JSON 왕복 |
 | `tests/test_webcam_recovery.py` | 합성 파이프라인 복귀·보정 유지·시각화·진단 스냅샷·입력 요청 |
 
 ```powershell

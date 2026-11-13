@@ -10,11 +10,14 @@ from integration import IntegrationService
 
 
 class FakeRuntime:
+    model_id = "gaussian-head-direction"
+    model_version = "angle-time-0.4"
     def __init__(self):
         self.config = ModelConfig(window_seconds=1, output_interval_seconds=0.5)
 
     def __call__(self, feature):
-        return {'angles': {} if feature['observable'] else None, 'score': feature['score']}
+        return {'angles': {} if feature['observable'] else None, 'score': feature['score'],
+                'gaussian_observation': (None, None, feature['score']) if feature['score'] is not None else None}
 
 
 class WindowPublisherTests(unittest.TestCase):
@@ -32,7 +35,7 @@ class WindowPublisherTests(unittest.TestCase):
             self.publisher({'start_ms': ms, 'observable': True, 'score': 80 if ms < 500 else 60})
         event = self.service.get_dashboard_snapshot(self.sid)['engagement_windows'][0]
         self.assertEqual((event['start_ms'], event['end_ms']), (0, 1000))
-        self.assertEqual(event['payload']['model_output']['value'], 70)
+        self.assertEqual(event['payload']['model_output']['value'], 65)
         self.assertIsNone(event['payload']['observation']['eligible_count'])
         self.assertEqual(event['quality']['status'], 'valid')
 
@@ -43,7 +46,7 @@ class WindowPublisherTests(unittest.TestCase):
         self.assertEqual(len(events), 2)
         self.assertIsNone(events[0]['payload']['model_output'])
         self.assertEqual(events[0]['quality']['status'], 'not_observable')
-        self.assertEqual(events[0]['payload']['model_extensions']['head-orientation-rules']['scoreable_duration_ms'], 300)
+        self.assertEqual(events[0]['payload']['model_extensions']['gaussian-head-direction']['scoreable_duration_ms'], 300)
         self.assertIsNone(events[1]['payload']['model_output'])
 
     def test_finish_partial_window_once(self):
@@ -54,7 +57,7 @@ class WindowPublisherTests(unittest.TestCase):
         events = self.service.get_dashboard_snapshot(self.sid)['engagement_windows']
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]['quality']['status'], 'partial')
-        self.assertTrue(events[0]['payload']['model_extensions']['head-orientation-rules']['partial_window'])
+        self.assertTrue(events[0]['payload']['model_extensions']['gaussian-head-direction']['partial_window'])
 
     def test_transcript_and_model_survive_shared_session_round_trip(self):
         for ms in range(0, 1001, 100):

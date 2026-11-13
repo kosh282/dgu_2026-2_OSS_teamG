@@ -27,7 +27,6 @@ import numpy as np
 
 from integration import IntegrationService
 from video_recognition.face_analysis import FaceAnalyzer
-from video_recognition.pose_analysis import PoseAnalyzer
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.head_calibration import HeadCalibration, AXES
 from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother, draw_landmarks
@@ -35,14 +34,13 @@ from video_recognition.developer_view import render_video_frame
 from video_recognition.webcam_test_mac import WebcamCapture
 
 from .config import ModelConfig
-from .runtime import EngagementRuntime, ComparisonRuntime
 from .gaussian import GaussianRuntime, gaussian_angle_score, gaussian_score_angles
 from .eye_fusion_runtime import EyeFusionGaussianRuntime
 from .input_adapter import HeadAngles
 from .rotation_calibration import RotationCalibration, RotationGaussianRuntime, rotation_euler
 
 
-WINDOW = 'Engagement comparison - C/Space calibrate | V overlay | Q quit'
+WINDOW = 'Gaussian engagement - C/Space calibrate | V overlay | Q quit'
 CALIBRATE_BUTTON = (16, 430, 290, 474)
 
 
@@ -72,11 +70,8 @@ class CalibrationControls:
 REASON_HELP = {
     'baseline_unavailable': 'Press C, face forward and hold still for 3 seconds.',
     'relative_angles_unavailable': 'Relative angles need a valid calibration.',
-    'huang_warmup': 'Waiting for a complete 3-second interval.',
     'gaussian_warmup': 'Waiting for elapsed observation time; Gaussian uses a 10-second time kernel.',
-    'huang_recovery_warmup': 'Front-facing resumed; collecting a fresh 3-second interval.',
     'downward_activity_uncertain': 'Writing/reading cannot be identified; downward activity is deferred.',
-    'huang_degenerate_pitch_range': 'Pitch normalization denominator is zero; affected intervals deferred.',
     'insufficient_scoreable_time': 'Too little scoreable time in the rolling window (minimum 70%).',
     'face_not_found': 'No face detected. Waiting for return; a completed calibration is retained.',
     'multiple_faces_unsupported': 'Only one face is supported.',
@@ -794,7 +789,7 @@ def render_tracking(frame, feature, landmarks, *, show_overlay=True):
     """현재 프레임의 검출만 표시하며 과거 얼굴 위치를 남기지 않는다."""
     faces = feature['features'].get('faces', [])
     current_landmarks = landmarks if faces else []
-    preview = (draw_landmarks(frame, current_landmarks, [])
+    preview = (draw_landmarks(frame, current_landmarks)
                if show_overlay else frame.copy())
     height, width = preview.shape[:2]
     if not faces:
@@ -838,11 +833,11 @@ def _debug_pages(feature, models, primary, diagnostics, face):
     return [wrapped[i:i+36] for i in range(0, len(wrapped), 36)] or [[]]
 
 
-def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_overlay,
+def render_panel(frame, feature, models, *, overlay_smoother, face, show_overlay,
                  primary='gaussian', debug=False, diagnostics=None, guided=None, debug_page=0,
                  live=False, calibration_range=None):
     """주요 정보의 위치는 고정하고 상세 정보는 페이지별로 표시한다."""
-    preview = (render_video_frame(frame, feature, face.last_landmarks, pose.last_landmarks,
+    preview = (render_video_frame(frame, feature, face.last_landmarks,
                                   overlay_smoother, show_overlay=show_overlay)
                if debug else render_tracking(frame, feature, face.last_landmarks,
                                               show_overlay=show_overlay))
@@ -928,7 +923,7 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, pose, show_o
 
 
 
-def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gaussian_config=None,
+def run(camera_index=0, duration=0.0, *, primary='gaussian', gaussian_config=None,
         debug=False, calibrate=False, yaw_diagnostic=False, diagnostic_move_seconds=2,
         diagnostic_hold_seconds=3, gaze=False, yaw_log=False,
         calibration_method='euler', compare_calibration=False,
@@ -936,8 +931,8 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
     """카메라·분석기·독립 세션을 소유하며 오류/종료 시 자원을 반환한다."""
     if not math.isfinite(duration) or duration < 0:
         raise ValueError('duration은 유한한 0 이상의 초여야 합니다.')
-    if primary not in {'legacy', 'huang', 'gaussian'}:
-        raise ValueError('primary는 legacy, huang 또는 gaussian이어야 합니다')
+    if primary != 'gaussian':
+        raise ValueError('Gaussian 모델만 지원합니다')
     if calibration_method not in ('matrix', 'euler'):
         raise ValueError('calibration_method는 matrix 또는 euler여야 합니다.')
     if compare_calibration and (calibration_method != 'matrix' or primary != 'gaussian'):
@@ -959,22 +954,13 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
     guided = GuidedYawDiagnostic(diagnostic_move_seconds, diagnostic_hold_seconds,
                                  report_sink=save_yaw_diagnostic if yaw_log else None,
                                  include_down=diagnostic_down, front_stability=front_stability) if yaw_diagnostic else None
-    if compare:
-        runtime = ComparisonRuntime(primary, include_gaussian=True, gaussian_config=gaussian_config)
-        runtime.runtimes['gaussian'] = EyeFusionGaussianRuntime(gaussian_config)
-    elif primary == 'gaussian':
-        runtime = EyeFusionGaussianRuntime(gaussian_config)
-    else:
-        runtime = EngagementRuntime(ModelConfig.huang() if primary == 'huang' else ModelConfig())
-    models = runtime.runtimes if compare else {primary: runtime}
+    runtime = EyeFusionGaussianRuntime(gaussian_config)
+    models = {'gaussian': runtime}
     rotation = RotationCalibration() if calibration_method == 'matrix' and primary == 'gaussian' else None
     reference = models.get('gaussian') if compare_calibration and rotation is not None else None
     if rotation is not None:
         upgraded = RotationGaussianRuntime(rotation, models['gaussian'].config)
-        if compare:
-            runtime.runtimes['gaussian'] = upgraded
-        else:
-            runtime = upgraded
+        runtime = upgraded
         models = {**models, 'gaussian': upgraded}
         if reference is not None:
             models['gaussian_axiswise'] = reference
@@ -1008,7 +994,7 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                 raise RuntimeError(f'웹캠 {camera_index}을 열 수 없습니다. 카메라 권한과 다른 앱의 사용 여부를 확인하세요.')
             print(f'Webcam {camera_index} opened; initializing MediaPipe.', flush=True)
             service = IntegrationService()
-            sid = service.start_session('Huang webcam test', config={
+            sid = service.start_session('Gaussian webcam test', config={
                 'config_version': runtime.config.config_version,
                 'participation_model': {'model_id': runtime.model_id, 'model_version': runtime.model_version},
                 'stt_model': None,
@@ -1019,12 +1005,9 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
             if gaze_estimator is not None:
                 from video_recognition.gaze_estimation import GazeFaceAnalyzer
                 face = GazeFaceAnalyzer(face, gaze_estimator)
-            pose = PoseAnalyzer(show_landmarks=True)
-            resources.callback(pose.close)
             capture = PreviewCapture(WebcamCapture(camera))
             pipeline = VisionPipeline(service, sid, capture, face,
-                                      model_consumer=consume if reference is not None else runtime,
-                                      pose_analyzer=pose)
+                                      model_consumer=consume if reference is not None else runtime)
             pipeline.head_calibration = DualWebcamCalibration(rotation) if rotation is not None else WebcamHeadCalibration()
             active_calibration = rotation if rotation is not None and primary == 'gaussian' else pipeline.head_calibration
             # 분석기/카메라 종료는 ExitStack이 담당한다. pipeline은 메모리 후처리만 소유한다.
@@ -1083,7 +1066,7 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                     if diagnostics is not None:
                         diagnostics.update(display_feature, display_models['gaussian'], baseline=display_calibration.baseline)
                     panel = render_panel(capture.last_frame, display_feature, display_models,
-                                         overlay_smoother=smoother, face=face, pose=pose,
+                                         overlay_smoother=smoother, face=face,
                                          show_overlay=show_overlay, primary=primary, debug=debug,
                                          diagnostics=diagnostics, guided=guided, debug_page=debug_page,
                                          calibration_range=getattr(pipeline.head_calibration, 'observed_range', None))
@@ -1122,8 +1105,7 @@ def run(camera_index=0, duration=0.0, compare=True, *, primary='gaussian', gauss
                   json.dumps(score_trace.summary()), flush=True)
             print('Calibration disagreements (same-frame numeric examples): ' +
                   json.dumps(score_trace.disagreements()), flush=True)
-        if compare:
-            print('Aggregate frame-based comparison (not accuracy): ' + json.dumps(runtime.summary()), flush=True)
+
 
 
 def close_window():
@@ -1135,12 +1117,11 @@ def close_window():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='참여도 모델 독립 웹캠 비교 (legacy/Huang/Gaussian, 저장 없음)')
+    parser = argparse.ArgumentParser(description='Gaussian 참여도 모델 독립 웹캠 데모 (저장 없음)')
     parser.add_argument('--camera', type=int, default=0)
     parser.add_argument('--duration', type=float, default=0, help='자동 종료 초, 기본 0은 수동 종료')
-    parser.add_argument('--huang-only', action='store_true', help='기존 모델 비교 없이 Huang만 표시')
-    parser.add_argument('--model', choices=('legacy', 'huang', 'gaussian'), default=None)
-    parser.add_argument('--debug', action='store_true', help='집계 점수·상대각·사유·모델 비교 표시')
+    parser.add_argument('--model', choices=('gaussian',), default='gaussian')
+    parser.add_argument('--debug', action='store_true', help='집계 점수·상대각·사유·Gaussian 보정 비교 표시')
     parser.add_argument('--gaze', action='store_true', help='Gaussian 전용: 지점 보정 없는 MobileGaze 시선 후보 및 하향 보류 실험')
     parser.add_argument('--calibrate', action='store_true', help='키 입력 없이 시작할 때 정면 보정')
     parser.add_argument('--yaw-diagnostic', action='store_true',
@@ -1148,7 +1129,7 @@ def main():
     parser.add_argument('--yaw-log', action='store_true', help='좌우 진단 요약과 초별 각도 통계를 로컬 파일에 저장')
     parser.add_argument('--diagnostic-move-seconds', type=float, default=2, help='각 구간 자세 이동·정착 시간 (기본 2초)')
     parser.add_argument('--diagnostic-hold-seconds', type=float, default=3, help='각 구간 유지 표본 시간 (기본 3초)')
-    parser.add_argument('--single-model', action='store_true', help='선택한 모델만 표시')
+    parser.add_argument('--single-model', action='store_true', help='호환 옵션: 현재 Gaussian만 표시합니다')
     parser.add_argument('--sigma-pitch', type=float, default=15, help='Gaussian sigma pitch (도, 실험 초기값)')
     parser.add_argument('--sigma-yaw', type=float, default=20, help='Gaussian sigma yaw (도, 실험 초기값)')
     parser.add_argument('--gaussian-angle-mode', choices=('relative', 'softened'), default='softened',
@@ -1159,11 +1140,8 @@ def main():
                         help='Gaussian 웹캠 보정: 기존 Euler 차감(기본) 또는 실험용 matrix')
     parser.add_argument('--compare-calibration', action='store_true', help='같은 영상의 이전 Euler Gaussian 현재 점수도 표시')
     args = parser.parse_args()
-    args.model = args.model or ('huang' if args.huang_only else 'gaussian')
     if not math.isfinite(args.duration) or args.duration < 0:
         parser.error('--duration은 유한한 0 이상의 값이어야 합니다.')
-    if args.huang_only and args.model != 'huang':
-        parser.error('--huang-only는 --model huang과 함께 사용하세요.')
     if args.yaw_diagnostic and (args.model != 'gaussian' or args.calibrate):
         parser.error('--yaw-diagnostic은 Gaussian에서 수동 보정합니다. --calibrate를 제외하세요.')
     if args.yaw_log and not args.yaw_diagnostic:
@@ -1175,7 +1153,7 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     try:
-        run(args.camera, args.duration, not (args.huang_only or args.single_model),
+        run(args.camera, args.duration,
             primary=args.model, gaussian_config=config, debug=args.debug, calibrate=args.calibrate,
             yaw_diagnostic=args.yaw_diagnostic, diagnostic_move_seconds=args.diagnostic_move_seconds,
             diagnostic_hold_seconds=args.diagnostic_hold_seconds, gaze=args.gaze, yaw_log=args.yaw_log,
