@@ -67,6 +67,32 @@ class AutoGainTests(unittest.TestCase):
         for chunk in out:
             self.assertLessEqual(float(np.max(np.abs(chunk))), 10 ** (-1 / 20) + 1e-4)
 
+    def test_quiet_speech_with_plosive_peaks_still_reaches_target(self):
+        """평균은 작고 순간 최고값만 큰 말소리(노트북 마이크 실측: RMS -34, 피크 0.3)도 목표까지 키운다."""
+        gain = AutoGain(target_dbfs=-20, max_gain_db=30)
+
+        def plosive_chunk():
+            chunk = tone(-40) + noise(-70)
+            chunk[400:404] += 0.3  # 0.25ms 순간 최고값: 청크 평균 약 -35 dBFS, 최고값 약 -10 dBFS
+            return chunk
+
+        out = self.run_signal(gain, [noise(-70)] * 5 + [plosive_chunk() for _ in range(20)])
+        # 예전 방식(최고값 -1 dBFS에 맞춰 청크 전체 이득 제한)은 약 +9dB에서 멈춘다.
+        self.assertGreater(gain.gain_db, 13)
+        self.assertGreater(dbfs(out[-1]), -24)
+        for chunk in out:
+            self.assertLessEqual(float(np.max(np.abs(chunk))), 10 ** (-1 / 20) + 1e-4)
+        self.assertGreater(gain.limited_blocks, 0)
+
+    def test_limiter_releases_after_peak(self):
+        """파열음 뒤에는 리미터가 풀려 말소리를 계속 키운다."""
+        gain = AutoGain(target_dbfs=-20, max_gain_db=30)
+        spike = tone(-40)
+        spike[0:4] += 0.3
+        self.run_signal(gain, [noise(-70)] * 5 + [tone(-40)] * 10 + [spike])
+        out = self.run_signal(gain, [tone(-40) for _ in range(15)])
+        self.assertAlmostEqual(dbfs(out[-1]), -20, delta=1.5)
+
     def test_noise_floor_rise_is_not_speech(self):
         """잡음이 서서히 커지면 말소리로 보지 않아 잡음을 계속 키우지 않는다."""
         gain = AutoGain()

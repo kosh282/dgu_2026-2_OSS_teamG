@@ -70,7 +70,8 @@ class SttConfig:
         if not self.auto_gain:
             return None
         from .audio import AutoGain
-        return AutoGain(target_dbfs=self.auto_gain_target_dbfs, max_gain_db=self.auto_gain_max_db)
+        return AutoGain(target_dbfs=self.auto_gain_target_dbfs, max_gain_db=self.auto_gain_max_db,
+                        sample_rate_hz=self.sample_rate_hz)
 
     def public_info(self):
         """세션 JSON `config`에 넣을 수 있는 공개 설정. 로컬 경로는 제외한다."""

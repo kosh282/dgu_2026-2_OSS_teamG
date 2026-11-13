@@ -75,12 +75,17 @@ class AutoGain:
     - 키우기만 하고 줄이지 않는다(0 ~ `max_gain_db`). 원래 큰 소리는 그대로 둔다.
     - 배경 잡음 바닥을 따로 추적해 잡음보다 `speech_margin_db` 이상 큰 청크만 말소리로 본다.
       무음 구간에서는 이득을 유지하므로 잡음을 따라 이득이 흔들리지 않는다.
-    - 이득 변화는 청크 안에서 선형으로 이어 붙여 딸깍 소리가 나지 않게 하고, ±1을 넘는 값은 자른다.
+    - 이득 변화는 청크 안에서 선형으로 이어 붙여 딸깍 소리가 나지 않게 한다.
+    - 찌그러짐은 짧은 구간 리미터로 막는다. 키운 소리가 -1 dBFS를 넘는 5ms 구간만 즉시 줄이고
+      약 50ms에 걸쳐 되돌린다. 예전처럼 청크의 최고값에 맞춰 청크 전체 이득을 깎으면, 평균은
+      작고 파열음만 큰 노트북 마이크 말소리(-34 dBFS)가 +10dB 안팎밖에 커지지 않았다(실측).
+    - 이번 청크가 이미 목표보다 6dB 이상 커질 만큼 크면 이득을 바로 낮춘다(조용한 첫머리 뒤 큰 소리).
     오디오는 메모리에서만 변환하며 저장하지 않는다. 값은 검증 전 실험값이다.
     """
 
     def __init__(self, target_dbfs=-20.0, max_gain_db=30.0, speech_margin_db=10.0,
-                 floor_dbfs=-80.0, max_step_up_db=3.0):
+                 floor_dbfs=-80.0, max_step_up_db=3.0, sample_rate_hz=16000,
+                 ceiling_dbfs=-1.0, block_ms=5.0, release_db_per_50ms=6.0):
         self.target_dbfs = float(target_dbfs)
         self.max_gain_db = float(max_gain_db)
         self.speech_margin_db = float(speech_margin_db)
@@ -89,6 +94,29 @@ class AutoGain:
         self.noise_dbfs = None   # 배경 잡음 바닥 추정
         self.speech_dbfs = None  # 최근 말소리 크기 추정(원본 기준)
         self.gain_db = 0.0
+        # 짧은 구간 리미터 상태(이전 청크에서 이어짐)
+        self._ceiling = 10 ** (float(ceiling_dbfs) / 20)
+        self._block = max(1, int(round(sample_rate_hz * block_ms / 1000)))
+        self._release = 10 ** (float(release_db_per_50ms) * block_ms / 50 / 20)
+        self._limiter_gain = 1.0
+        self.limited_blocks = 0  # 리미터가 줄인 5ms 구간 수(진단용)
+
+    def _limit_peaks(self, samples):
+        """-1 dBFS를 넘는 5ms 구간만 줄이고 천천히 되돌린다. 청크 경계를 넘어 상태를 잇는다."""
+        size = len(samples)
+        blocks = -(-size // self._block)
+        padded = np.zeros(blocks * self._block, dtype=np.float32)
+        padded[:size] = np.abs(samples)
+        peaks = padded.reshape(blocks, self._block).max(axis=1)
+        needed = np.minimum(1.0, self._ceiling / np.maximum(peaks, 1e-9))
+        gains = np.empty(blocks, dtype=np.float32)
+        current = self._limiter_gain
+        for index in range(blocks):
+            current = min(needed[index], min(1.0, current * self._release))
+            gains[index] = current
+        self._limiter_gain = current
+        self.limited_blocks += int(np.count_nonzero(gains < 0.999))
+        return samples * np.repeat(gains, self._block)[:size]
 
     def process(self, samples):
         samples = np.asarray(samples, dtype=np.float32)
@@ -112,14 +140,13 @@ class AutoGain:
                 self.gain_db = min(desired, previous + self.max_step_up_db)
             else:
                 self.gain_db = desired  # 소리가 커지면 바로 이득을 낮춘다
-        # 이 청크의 최고값이 -1 dBFS를 넘지 않도록 이득을 제한한다(찌그러짐 방지).
-        headroom = -_dbfs(float(np.max(np.abs(samples)))) - 1.0
-        self.gain_db = max(0.0, min(self.gain_db, headroom))
-        start_gain = max(0.0, min(previous, headroom))
-        if start_gain == self.gain_db == 0.0:
+            # 이번 청크가 키운 뒤 목표보다 6dB 넘게 커지면 평균 추적을 기다리지 않고 바로 낮춘다.
+            self.gain_db = max(0.0, min(self.gain_db, self.target_dbfs + 6.0 - level))
+        start_gain = max(0.0, min(previous, self.target_dbfs + 6.0 - level)) if is_speech else previous
+        if start_gain == self.gain_db == 0.0 and self._limiter_gain >= 1.0:
             return samples
         ramp = np.linspace(10 ** (start_gain / 20), 10 ** (self.gain_db / 20), len(samples), dtype=np.float32)
-        return np.clip(samples * ramp, -1.0, 1.0)
+        return np.clip(self._limit_peaks(samples * ramp), -1.0, 1.0)
 
     @property
     def input_level_dbfs(self):
