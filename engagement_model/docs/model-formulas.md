@@ -1,6 +1,6 @@
 # 모델 수식과 프로젝트 변형
 
-[현재 구현·실행 안내](../README.md) · [실험 해석](experiments.md) · [과거 실험·변경 기록](implementation-history.md)
+[현재 구현·실행 안내](../README.md) · [실험 해석](experiments.md)
 
 수식의 구현 근거는 `scoring.py`, `input_adapter.py`, `runtime.py`, `gaussian.py`입니다.
 점수는 방향·시간에 대한 실험 지표이며 실제 집중도 확률이 아닙니다. 현재 실행 모델은 Gaussian만 남기고 Legacy/Huang은 제거했습니다.
@@ -95,5 +95,4 @@ S_time=sum(S_angle(segment)*integral_segment(w(t)dt))
 
 설정 버전은 호출자가 재정의할 수 있으므로 실제 실행 provenance도 확인합니다.
 Gaussian 0.1은 현재 별도 실행 모드가 없습니다. relative 0.4는 같은 아래 보기 정책을 공유하는 비교 모드입니다.
-보관본의 과거 0.2 결과를 현재 relative 모드의 완전한 재현 결과라고 간주하지 않습니다.
-과거 버전 설명·실험 표는 [이력 원문](implementation-history.md)에 별도로 보존합니다.
+과거 0.2 결과를 현재 relative 모드의 완전한 재현 결과라고 간주하지 않습니다.
