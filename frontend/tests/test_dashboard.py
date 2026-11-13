@@ -156,6 +156,13 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(next(m for m in app.metric if m.label=='최근 실험 구간 점수').value,'측정 불가')
             self.assertTrue(any('수업 종료 · 진행 시간' in caption.value for caption in app.caption))
+            elements=list(app)
+            score_index=next(i for i, element in enumerate(elements) if element.type=='metric' and element.label=='최근 실험 구간 점수')
+            timeline_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and '공통 타임라인' in element.value)
+            note_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='교수자 메모')
+            transcript_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='실시간 전사 · 분석 상태')
+            self.assertLess(score_index, timeline_index)
+            self.assertLess(note_index, transcript_index)
             next(t for t in app.text_input if t.label=='메모 입력').set_value('라이브 메모')
             next(b for b in app.button if b.label=='메모 저장').click().run()
             self.assertFalse(app.exception)
@@ -166,7 +173,7 @@ class DashboardTests(unittest.TestCase):
             elements=list(app)
             stop_index=next(i for i, element in enumerate(elements) if element.type=='button' and element.label=='수업 종료')
             warning_index=next(i for i, element in enumerate(elements) if element.type=='warning' and '음성 입력 누락 가능' in element.value)
-            self.assertLess(stop_index, warning_index)
+            self.assertLess(warning_index, stop_index)
             app.session_state['live'].video_enabled=True
             app.session_state['live'].model_enabled=True
             app.run()

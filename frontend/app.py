@@ -1,6 +1,7 @@
 """Figma lecturer dashboard: preparation, live session and post-session review."""
 import hashlib
 import importlib.util
+import inspect
 import os
 import sys
 import tempfile
@@ -29,8 +30,34 @@ st.markdown('''<style>
 [data-testid="stBaseButton-primary"]{background:#1f2328;border-color:#1f2328;color:white}
 [data-testid="stMetric"]{background:white;border:1px solid #c9ced4;border-radius:8px;padding:12px}
 [data-testid="stMetricValue"]{font-size:22px} button{min-height:42px} .stCaption{color:#57606a}
+.st-key-calibration-card button{min-height:36px}
 @media(max-width:640px){.block-container{padding:64px 16px 16px}}
+/* 화면 제목을 사이드바 열기 버튼과 같은 줄에 배치한다. */
+body:has(.st-key-page-title) [data-testid="stHeader"]{background:transparent;pointer-events:none}
+body:has(.st-key-page-title) [data-testid="stHeader"] button,
+body:has(.st-key-page-title) [data-testid="stHeader"] a{pointer-events:auto}
+body:has(.st-key-page-title) [data-testid="stMain"]{container-type:inline-size}
+body:has(.st-key-page-title) [data-testid="stMain"] .block-container{padding-top:0}
+.st-key-page-title{position:relative;left:min(0px, calc((1440px - 100cqw) / 2));margin-left:48px;margin-right:140px}
+/* 사이드바가 열리면 본문의 왼쪽에 제목을 맞춘다. */
+body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;margin-left:0}
+@media(min-width:401px){
+  .st-key-page-title h1{min-height:3.75rem;display:flex;align-items:center;padding:0!important;margin:0;transform:translateY(-0.75rem)}
+}
+/* 파일 변경 안내가 표시될 때만 제목을 아래로 내려 안내와 겹치지 않게 한다. */
+body:has([data-testid="stStatusWidget"] label):has([data-testid="stStatusWidget"] button) [data-testid="stMain"] .block-container{padding-top:3.75rem}
+body:has([data-testid="stStatusWidget"] label):has([data-testid="stStatusWidget"] button) .st-key-page-title{left:0;margin-left:0;margin-right:0}
+body:has([data-testid="stStatusWidget"] label):has([data-testid="stStatusWidget"] button) .st-key-page-title h1{min-height:0;display:block;padding:0!important;transform:none}
+@media(max-width:400px){
+  body:has(.st-key-page-title) [data-testid="stMain"] .block-container{padding-top:64px}
+  .st-key-page-title{left:0;margin-left:0;margin-right:0}
+}
 </style>''', unsafe_allow_html=True)
+
+
+def page_title(title):
+    with st.container(key='page-title'):
+        st.title(title)
 
 
 def navigate(page):
@@ -234,7 +261,7 @@ def resources(service, sid, snapshot, readonly=False, *, offset=0, limit=None):
 
 
 def preparation():
-    st.title('세션 시작 준비')
+    page_title('세션 시작 준비')
     st.caption('분석을 시작하기 전에 입력과 동의를 확인합니다.')
     live = active()
     running = live is not None and live.is_running()
@@ -371,7 +398,7 @@ def preparation():
 
 
 def live_page():
-    st.title('라이브 세션')
+    page_title('라이브 세션')
     live=active()
     if not live or not live.has_started():
         st.info('세션 시작 준비에서 수업 창을 선택하고 수업을 시작하세요.')
@@ -383,7 +410,6 @@ def live_page():
         snapshot=live.service.get_dashboard_snapshot(live.sid)
         duration=snapshot['session']['duration_ms']
         status='진행 중' if live.is_running() else '수업 종료'
-        st.caption(f"{snapshot['session']['title']} · {status} · 진행 시간 {clock(duration)}")
         windows=snapshot['engagement_windows']
         latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
         model_status=snapshot['status'].get('model')
@@ -405,106 +431,103 @@ def live_page():
         stats=live.diagnostics()['stt']
         if stats and (stats['dropped_chunks'] or stats['input_overflows'] or stats['discontinuities']):
             st.warning('음성 입력 누락 가능성이 있습니다. 분석 상세 상태에서 확인하세요.')
-        state_labels={'running':'실행 중','ready':'준비됨','unavailable':'확인 필요','stopped':'꺼짐'}
-        names={'vision':'영상','model':'점수','stt':'전사','assistant':'조교'}
-        st.caption(' · '.join(f"{names.get(k,k)} {state_labels.get(v,v)}" for k,v in snapshot['status'].items()))
-        left,right=st.columns([1,1], gap='medium')
-        with left:
-            with st.container(border=True):
-                st.subheader('관찰 점수 · 수업 흐름')
-                st.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
-                st.caption('관측 가능한 얼굴 기준의 실험 점수 · 집중도나 이해도가 아닙니다.')
-                rows=live.participant_snapshot() if hasattr(live, 'participant_snapshot') else []
-                if value is None:
-                    reason_codes=(latest_window.get('quality',{}).get('reason_codes',[]) if latest_window else [])
-                    if model_status == 'unavailable':
-                        reason=snapshot.get('status_messages',{}).get('model') or '모델 또는 영상 입력을 확인하세요.'
-                    elif model_status == 'stopped' or not getattr(live, 'model_enabled', False):
-                        reason='실험 점수 모델이 꺼져 있습니다.'
-                    elif stale:
-                        reason='최근 점수 구간이 5초 이상 갱신되지 않았습니다.'
-                    elif any(row.get('calibration_status') == 'collecting' for row in rows):
-                        reason='정면 기준을 수집 중입니다. 관측된 얼굴이 정면을 유지해 주세요.'
-                    elif any('eye_observation_unavailable' in row.get('reason_codes', []) for row in rows):
-                        reason='눈 관측이 부족하거나 수집 중입니다. 얼굴 크기와 가림을 확인하세요.'
-                    elif 'insufficient_scoreable_time' in reason_codes:
-                        reason='최근 구간의 점수화 가능한 관측 시간이 부족합니다.'
-                    elif 'insufficient_observation' in reason_codes:
-                        reason='최근 구간의 얼굴 관측 시간이 부족합니다.'
-                    else:
-                        reason='얼굴 관측과 첫 점수 구간을 기다리는 중입니다.'
-                    st.caption('점수 상태: '+reason)
-                    age=live.diagnostics().get('video_result_age_ms')
-                    head_values=[row.get('head_score') for row in rows
-                                 if row.get('status') not in ('missing','unavailable','not_observable')
-                                 and isinstance(row.get('head_score'), (int,float))
-                                 and not isinstance(row.get('head_score'), bool)]
-                    if model_status == 'running' and age is not None and age <= 1000 and head_values:
-                        st.caption(f"참고: 머리 방향만의 임시 평균 {sum(head_values)/len(head_values):.1f}점 · 결합 점수 아님, 저장·제안에 사용하지 않음")
-                if live.video_enabled and getattr(live, 'model_enabled', False):
-                    calibration=live.calibration_state()
-                    state=calibration.get('status', 'starting')
+        show_calibration=live.video_enabled and getattr(live, 'model_enabled', False)
+        if show_calibration:
+            column_options={'wrap': False} if 'wrap' in inspect.signature(st.columns).parameters else {}
+            score_column,calibration_column=st.columns(2, **column_options)
+        else:
+            score_column=st.container()
+        metric_options={'height': 'stretch'} if show_calibration and 'height' in inspect.signature(st.metric).parameters else {}
+        score_column.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'), **metric_options)
+        if show_calibration:
+            calibration=live.calibration_state()
+            state=calibration.get('status', 'starting')
+            calibration_options={'height': 'stretch'} if 'height' in inspect.signature(st.container).parameters else {}
+            if 'gap' in inspect.signature(st.container).parameters:
+                calibration_options['gap']=None
+            with calibration_column:
+                with st.container(border=True, key='calibration-card', **calibration_options):
                     st.caption({'starting':'정면 기준 준비 중', 'waiting':'정면 기준 대기', 'recovering':'얼굴 재인식 중 · 점수 보류',
                                 'collecting':f"정면 기준 수집 중 · {calibration.get('progress', 0)*100:.0f}%", 'ready':'정면 기준 수집 완료'}.get(state, '정면 기준 확인 중'))
+                    if state != 'ready':
+                        st.caption('정면을 약 3초 유지해 주세요.')
                     if st.button('정면 기준 재보정', disabled=not live.is_running(), key='recalibrate-head'):
                         live.request_head_calibration()
                         st.rerun()
-                chart_spec=live_chart_spec()
-                chart_spec['height']=145
-                chart_range=st.selectbox('그래프 범위', ['최근 1분','최근 5분','최근 10분','전체 수업'], index=1, key='live-chart-range')
-                range_ms={'최근 1분':60000,'최근 5분':300000,'최근 10분':600000}.get(chart_range)
-                start_ms=max(0,duration-range_ms) if range_ms else 0
-                st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms), chart_spec,
-                                   use_container_width=True, key='live-chart')
-                if not windows:
-                    st.caption('첫 점수 구간 집계 대기 중입니다.' if model_status not in ('stopped','unavailable') else '실험 모델이 꺼져 있거나 사용할 수 없습니다.')
-            with st.container(border=True):
-                st.subheader('교수자 메모')
-                with st.form('live-note',clear_on_submit=True):
-                    text=st.text_input('메모 입력',placeholder='이 설명 다시 짚기',label_visibility='collapsed')
-                    if st.form_submit_button('메모 저장') and text.strip():
-                        add_note(live.service,live.sid,text.strip(),live.service.elapsed_ms(live.sid))
-                        if not live.is_running():
-                            files.save(live.service,live.sid)
-                        st.rerun()
-                if snapshot['notes']:
-                    event=snapshot['notes'][-1]
-                    st.caption(f"최근 메모 · {clock(event['start_ms'])} · {event['payload']['text']}")
-                if len(snapshot['notes']) > 1:
-                    with st.expander('이전 메모 보기'):
-                        for event in reversed(snapshot['notes'][:-1]):
-                            event_text(event)
-        with right:
-            with st.container(border=True):
-                st.subheader('실시간 전사')
-                with st.container(height=150, border=False):
-                    for event in snapshot['transcripts'][-3:]:
-                        event_text(event)
-                    for event in snapshot['partial_transcripts'][-1:]:
-                        st.caption('인식 중: '+event['payload']['text'])
-                    if not snapshot['transcripts'] and not snapshot['partial_transcripts']:
-                        st.caption('전사 모듈의 입력을 기다립니다.')
-                if len(snapshot['transcripts']) > 3:
-                    with st.expander('이전 전사 보기'):
-                        for event in snapshot['transcripts'][:-3]:
-                            event_text(event)
-            with st.container(border=True):
-                st.subheader('강의 조교 · 최신 제안')
-                assistant_message=snapshot.get('status_messages',{}).get('assistant')
-                if assistant_message:
-                    st.caption(assistant_message)
+        with st.container(border=True):
+            timeline_title=f"{snapshot['session']['title']} - 공통 타임라인"
+            session_caption=f"{status} · 진행 시간 {clock(duration)}"
+            if 'horizontal' in inspect.signature(st.container).parameters:
+                with st.container(horizontal=True, vertical_alignment='center', gap='small'):
+                    st.subheader(timeline_title, width='content')
+                    st.caption(session_caption, width='stretch', text_alignment='right')
+            else:
+                heading,details=st.columns([2,1])
+                heading.subheader(timeline_title)
+                details.markdown(f'<p style="text-align:right;color:#57606a;font-size:0.875rem">{session_caption}</p>',
+                                 unsafe_allow_html=True)
+            chart_spec=live_chart_spec()
+            chart_spec['height']=145
+            chart_range=st.selectbox('그래프 범위', ['최근 1분','최근 5분','최근 10분','전체 수업'], index=1, key='live-chart-range', label_visibility='collapsed')
+            range_ms={'최근 1분':60000,'최근 5분':300000,'최근 10분':600000}.get(chart_range)
+            start_ms=max(0,duration-range_ms) if range_ms else 0
+            st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms), chart_spec,
+                               use_container_width=True, key='live-chart')
+            if not windows:
+                st.caption('첫 점수 구간 집계 대기 중입니다.' if model_status not in ('stopped','unavailable') else '실험 모델이 꺼져 있거나 사용할 수 없습니다.')
+        with st.container(border=True):
+            st.subheader('강의 조교 · 자료 제안')
+            assistant_message=snapshot.get('status_messages',{}).get('assistant')
+            if assistant_message:
+                st.caption(assistant_message)
+            visible=[e for e in snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
+                     if e['event_id'] not in st.session_state.hidden_suggestions]
+            if visible:
                 with st.container(height=270, border=False):
                     resources(live.service,live.sid,snapshot,limit=1)
-                visible=[e for e in snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
-                         if e['event_id'] not in st.session_state.hidden_suggestions]
-                if len(visible) > 1:
-                    with st.expander(f'이전 제안 보기 · {len(visible)-1}개'):
-                        resources(live.service,live.sid,snapshot,offset=1)
+            else:
+                resources(live.service,live.sid,snapshot,limit=1)
+            if len(visible) > 1:
+                with st.expander(f'이전 제안 보기 · {len(visible)-1}개'):
+                    resources(live.service,live.sid,snapshot,offset=1)
+        with st.container(border=True):
+            st.subheader('교수자 메모')
+            with st.form('live-note',clear_on_submit=True):
+                text=st.text_input('메모 입력',placeholder='이 설명 다시 짚기',label_visibility='collapsed')
+                if st.form_submit_button('메모 저장') and text.strip():
+                    add_note(live.service,live.sid,text.strip(),live.service.elapsed_ms(live.sid))
+                    if not live.is_running():
+                        files.save(live.service,live.sid)
+                    st.rerun()
+            if snapshot['notes']:
+                event=snapshot['notes'][-1]
+                st.caption(f"최근 메모 · {clock(event['start_ms'])} · {event['payload']['text']}")
+            if len(snapshot['notes']) > 1:
+                with st.expander('이전 메모 보기'):
+                    for event in reversed(snapshot['notes'][:-1]):
+                        event_text(event)
+        with st.container(border=True):
+            st.subheader('실시간 전사 · 분석 상태')
+            state_labels={'running':'실행 중','ready':'준비됨','unavailable':'확인 필요','stopped':'꺼짐'}
+            names={'vision':'영상','model':'점수','stt':'전사','assistant':'조교'}
+            st.caption(' · '.join(f"{names.get(k,k)} {state_labels.get(v,v)}" for k,v in snapshot['status'].items()))
+            with st.container(height=150, border=False):
+                for event in snapshot['transcripts'][-3:]:
+                    event_text(event)
+                for event in snapshot['partial_transcripts'][-1:]:
+                    st.caption('인식 중: '+event['payload']['text'])
+                if not snapshot['transcripts'] and not snapshot['partial_transcripts']:
+                    st.caption('전사 모듈의 입력을 기다립니다.')
+            if len(snapshot['transcripts']) > 3:
+                with st.expander('이전 전사 보기'):
+                    for event in snapshot['transcripts'][:-3]:
+                        event_text(event)
         if not live.is_running():
             persist_live()
             if st.button('수업 결과 보기',type='primary'):
                 st.session_state.review=live.service,live.sid
                 navigate('사후 검토')
+    panel()
     if live.is_running():
         if st.button('수업 종료',type='primary'):
             try:
@@ -520,17 +543,45 @@ def live_page():
                 navigate('사후 검토')
             except Exception as exc:
                 st.error(f'수업 종료·저장 실패: {exc}')
-    panel()
-
     @st.fragment(run_every=1 if live.is_running() else None)
     def diagnostics_panel():
         snapshot=live.service.get_dashboard_snapshot(live.sid)
         windows=snapshot['engagement_windows']
         latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
         model_status=snapshot['status'].get('model')
-        value=score(latest_window) if latest_window and model_status != 'unavailable' else None
+        duration=snapshot['session']['duration_ms']
+        stale=bool(live.is_running() and latest_window and duration-latest_window['end_ms'] > 5000)
+        value=score(latest_window) if latest_window and model_status != 'unavailable' and not stale and not (live.is_running() and model_status == 'stopped') else None
         result,_,_=live.snapshot()
         diagnostics=live.diagnostics()
+        st.caption('관측 가능한 얼굴 기준의 실험 점수 · 집중도나 이해도가 아닙니다.')
+        rows=live.participant_snapshot() if hasattr(live, 'participant_snapshot') else []
+        if value is None:
+            reason_codes=(latest_window.get('quality',{}).get('reason_codes',[]) if latest_window else [])
+            if model_status == 'unavailable':
+                reason=snapshot.get('status_messages',{}).get('model') or '모델 또는 영상 입력을 확인하세요.'
+            elif model_status == 'stopped' or not getattr(live, 'model_enabled', False):
+                reason='실험 점수 모델이 꺼져 있습니다.'
+            elif stale:
+                reason='최근 점수 구간이 5초 이상 갱신되지 않았습니다.'
+            elif any(row.get('calibration_status') == 'collecting' for row in rows):
+                reason='정면 기준을 수집 중입니다. 관측된 얼굴이 정면을 유지해 주세요.'
+            elif any('eye_observation_unavailable' in row.get('reason_codes', []) for row in rows):
+                reason='눈 관측이 부족하거나 수집 중입니다. 얼굴 크기와 가림을 확인하세요.'
+            elif 'insufficient_scoreable_time' in reason_codes:
+                reason='최근 구간의 점수화 가능한 관측 시간이 부족합니다.'
+            elif 'insufficient_observation' in reason_codes:
+                reason='최근 구간의 얼굴 관측 시간이 부족합니다.'
+            else:
+                reason='얼굴 관측과 첫 점수 구간을 기다리는 중입니다.'
+            st.caption('점수 상태: '+reason)
+            age=diagnostics.get('video_result_age_ms')
+            head_values=[row.get('head_score') for row in rows
+                         if row.get('status') not in ('missing','unavailable','not_observable')
+                         and isinstance(row.get('head_score'), (int,float))
+                         and not isinstance(row.get('head_score'), bool)]
+            if model_status == 'running' and age is not None and age <= 1000 and head_values:
+                st.caption(f"참고: 머리 방향만의 임시 평균 {sum(head_values)/len(head_values):.1f}점 · 결합 점수 아님, 저장·제안에 사용하지 않음")
         stt_stats=diagnostics['stt']
         if stt_stats:
             dropped=stt_stats['dropped_chunks']
@@ -562,7 +613,6 @@ def live_page():
             st.caption('상단 점수는 유효 관측된 ' + ('사람' if reid else '위치 트랙') + '·시간의 가중 집계이며, 전체 수강생 평균이나 참여율이 아닙니다.')
             if getattr(live, 'reidentification_error', None):
                 st.warning(live.reidentification_error)
-            rows=live.participant_snapshot() if hasattr(live, 'participant_snapshot') else []
             if rows:
                 states={'scored':'관측 중','deferred':'점수 보류','calibrating':'정면 기준 수집 중',
                         'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
@@ -611,7 +661,7 @@ def live_page():
 
 
 def review_page():
-    st.title('사후 검토')
+    page_title('사후 검토')
     review=st.session_state.review
     if not review:
         st.info('왼쪽의 지난 수업을 선택하거나 공통 계약 세션 JSON을 열어주세요.')
