@@ -3,19 +3,17 @@ import threading
 import time
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
 import cv2
 from integration import IntegrationService
 from engagement_model.config import ModelConfig
-from engagement_model.multi_face import MultiFaceGaussianRuntime
-from engagement_model.position_tracks import PositionTrackGaussianRuntime
 from engagement_model.window_publisher import WindowPublisher
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
 from video_recognition.face_reidentification import FaceReidentifier
 from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother
-from engagement_model.webcam_demo import PoseInputDiagnostics, render_panel
+from engagement_model.webcam_demo import PoseInputDiagnostics
+from video_recognition.group_developer_view import make_group_runtime, render_group_panel
 
 
 # 별도 웹캠을 열지 않고, 실제 분석기에 전달한 프레임을 그대로 보여 주는 창 이름이다.
@@ -423,11 +421,7 @@ class LiveSession:
                 {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.2+face-transform-eye'})
 
     def _make_model(self):
-        model = (MultiFaceGaussianRuntime(eye_fusion=True) if self.reidentification_enabled
-                 else PositionTrackGaussianRuntime(eye_fusion=True))
-        model.model_version = self._model_identity()['model_version']
-        model.latest['model_version'] = model.model_version
-        return model
+        return make_group_runtime(self.reidentification_enabled)
 
     def _consume_frame(self, feature):
         """같은 분석 프레임에서 ID를 갱신한 뒤 점수화한다. ID는 특징에 넣지 않는다."""
@@ -630,43 +624,13 @@ class LiveSession:
             runtime = (self.model_runtime if self.model_enabled and not self._model_failed
                        and not self._calibration_blocked else None)
             page = self._debug_face_page
-        # 모델이 비활성/오류이거나 다인 모드일 때 가짜 단일 얼굴 점수를 만들지 않는다.
-        latest = dict(runtime.latest) if runtime is not None else {
-            'score': None, 'current_direction_score': None,
-            'orientation_state': 'not_observable', 'status': 'unavailable',
-            'reason_codes': ['model_unavailable'],
-        }
-        config = runtime.config if runtime is not None else ModelConfig.gaussian()
-        sampler = getattr(runtime, 'sampling_diagnostics', None)
-        model = SimpleNamespace(latest=latest, config=config,
-            display_group=self.model_enabled,
-            eye_fusion=getattr(runtime, 'eye_fusion', False),
-            sampling_diagnostics=sampler if callable(sampler) else lambda: {
-                'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
-        quality = self._pose_input_diagnostics.observe(face.last_landmarks, image)
-        lines = ['LANDMARK STABILITY (diagnostic only)']
-        for key, value in quality.items():
-            lines.append(f'{key}: {value:.4f}' if value is not None else f'{key}: unavailable')
-        for index, item in enumerate(result.get('features', {}).get('faces', []), 1):
-            lines.append(f'FACE {index}:')
-            for label, field in [('raw', 'head_angles_degrees'),
-                                 ('smoothed', 'head_angles_smoothed_degrees'),
-                                 ('relative', 'head_angles_relative_degrees')]:
-                lines.append(f'{label} P/Y/R: {item.get(field) or "unavailable"}')
-        if self.reidentification_enabled:
-            lines.append('MULTI-FACE: aggregate score; angles are per detected face')
-        diagnostics = SimpleNamespace(lines=lines)
         frame = (self.reidentifier.render(image.copy(), result['features'].get('faces', []),
                  boxes=face.last_face_boxes) if self.reidentifier is not None else image)
         # 전체 파이프라인의 단일 얼굴 보정 상태 대신 실제 다인 런타임의 보정 상태를 표시한다.
         calibration = self.calibration_state() if self.model_enabled else {}
-        display_result = {**result, 'features': {**result.get('features', {}),
-                          'head_calibration_status': calibration.get('status', 'waiting'),
-                          'head_calibration_diagnostics': calibration}}
-        panel = render_panel(frame, display_result, {'gaussian': model},
-            overlay_smoother=self._landmark_overlay_smoother, face=face,
-            show_overlay=show_landmarks, primary='gaussian', debug=True,
-            diagnostics=diagnostics, debug_page=page, live=True)
+        panel = render_group_panel(frame, result, face, runtime, self._pose_input_diagnostics,
+            self._landmark_overlay_smoother, show_overlay=show_landmarks, page=page,
+            calibration=calibration, model_enabled=self.model_enabled)
         cv2.imshow(DEBUG_INFO_WINDOW, panel)
         key = cv2.waitKey(1) & 0xFF
         with self.lock:

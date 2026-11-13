@@ -54,6 +54,7 @@ class MultiFaceGaussianRuntime:
                 person['runtime'].reset()
                 person['row'].update(calibration_status='collecting', status='calibrating',
                                      current_direction_score=None, score=None,
+                                     head_score=None, eye_score=None, relative_angles=None,
                                      reason_codes=['baseline_unavailable'])
         self.latest = self._empty('baseline_unavailable')
 
@@ -80,7 +81,8 @@ class MultiFaceGaussianRuntime:
                 person['runtime'].reset()
                 person['present'] = False
                 person['row'].update(status='unavailable', score=None,
-                                     current_direction_score=None, reason_codes=['invalid_feature_window'])
+                                     current_direction_score=None, head_score=None, eye_score=None,
+                                     relative_angles=None, reason_codes=['invalid_feature_window'])
             self.latest = self._empty('invalid_feature_window')
             self.latest['status'] = 'input_error'
             return self.latest
@@ -140,6 +142,8 @@ class MultiFaceGaussianRuntime:
                                  calibration_status=calibration.status,
                                  current_direction_score=fused_current if self.eye_fusion else result.get('current_direction_score'),
                                  score=fused_recent if self.eye_fusion else result['score'],
+                                 head_score=result.get('score'), eye_score=eye,
+                                 relative_angles=result.get('angles'),
                                  reason_codes=list(result['reason_codes']) + (['eye_observation_unavailable']
                                      if self.eye_fusion and eye is None else []))
             outputs.append(result)
@@ -148,6 +152,7 @@ class MultiFaceGaussianRuntime:
                 person['present'] = False
                 person['runtime'].reset()
                 person['row'].update(status='missing', score=None, current_direction_score=None,
+                                     head_score=None, eye_score=None, relative_angles=None,
                                      reason_codes=['identity_not_observed'])
         if self.eye_fusion:
             # 같은 얼굴에서 현재 머리 점수와 최근 10초 눈 점수가 모두 있는 경우만 집계한다.

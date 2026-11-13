@@ -38,6 +38,66 @@ class GaussianDemoCompatibilityTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec('cv2'), '영상 의존성이 설치된 환경에서 실행기 검증')
 class GaussianWebcamRunnerTests(unittest.TestCase):
+    def test_webcam_multi_scores_and_publishes_two_faces(self):
+        from engagement_model.tests.test_position_tracks import sample
+        from integration import IntegrationService
+        from video_recognition.webcam_test import DemoMultiModel
+        service = IntegrationService()
+        sid = service.start_session('multi webcam')
+        with patch.object(service, 'elapsed_ms', return_value=0):
+            demo = DemoMultiModel(service, sid, Mock(), Mock())
+        for t in range(0, 24001, 100):
+            feature = sample(t)
+            feature['session_id'] = sid
+            with patch.object(service, 'elapsed_ms', return_value=t):
+                demo(feature)
+        self.assertEqual(len(demo.runtime.participants()), 2)
+        self.assertEqual(demo.runtime.latest['scoreable_count'], 2)
+        self.assertTrue(all(row['head_score'] is not None and row['eye_score'] is not None
+                            for row in demo.runtime.participants()))
+        events = service.get_events_in_range(sid, 0, 24000)
+        self.assertTrue(any(e['event_type'] == 'engagement_window' and e['payload']['model_output']
+                            for e in events))
+        with patch.object(service, 'elapsed_ms', return_value=24000):
+            demo.recalibrate()
+        self.assertTrue(all(row['head_score'] is None and row['eye_score'] is None
+                            for row in demo.runtime.participants()))
+
+    def test_webcam_reidentification_is_used_by_model(self):
+        from engagement_model.tests.test_position_tracks import sample
+        from integration import IntegrationService
+        from video_recognition.webcam_test import DemoMultiModel
+        service = IntegrationService()
+        sid = service.start_session('reid webcam')
+        reidentifier = Mock()
+        reidentifier.identify.return_value = {1: 'id-a', 2: 'id-b'}
+        capture, face = Mock(last_frame=object()), Mock(last_face_boxes=[])
+        with patch.object(service, 'elapsed_ms', return_value=0):
+            demo = DemoMultiModel(service, sid, capture, face, reidentifier)
+            feature = sample(0)
+            feature['session_id'] = sid
+            demo(feature)
+        self.assertIs(reidentifier.identify.call_args.args[0], capture.last_frame)
+        self.assertEqual(len(demo.runtime.participants()), 2)
+
+    def test_window_webcam_uses_shared_frontend_panel(self):
+        import numpy as np
+        from engagement_model.position_tracks import PositionTrackGaussianRuntime
+        from video_recognition.webcam_test import FrontendStylePreview
+        preview = FrontendStylePreview()
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
+        feature = feature_window(0)
+        model(feature)
+        face = Mock(last_landmarks=[])
+        with patch('video_recognition.webcam_test.cv2.namedWindow'), \
+             patch('video_recognition.webcam_test.cv2.resizeWindow'), \
+             patch('video_recognition.webcam_test.cv2.imshow') as show, \
+             patch('video_recognition.webcam_test.cv2.waitKey', return_value=ord(']')):
+            controls = preview.render(np.zeros((480, 640, 3), dtype=np.uint8), feature, face, model)
+        self.assertEqual(show.call_args.args[1].shape, (860, 1400, 3))
+        self.assertEqual(preview.face_page, 1)
+        self.assertFalse(controls['quit'])
+
     def test_normal_screen_hides_debug_data_and_debug_shows_both_scores(self):
         from engagement_model.webcam_demo import panel_lines, render_panel
         from video_recognition.preview import LandmarkOverlaySmoother

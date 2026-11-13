@@ -49,7 +49,9 @@ macOS에서는 웹캠 프레임을 직접 분석하는 별도 데모를 사용�
 video_recognition/.venv/bin/python -m video_recognition.webcam_test_mac
 ```
 
-두 데모는 브라우저 대신 OpenCV 창에 영상·각도·실험 점수를 표시합니다. 창을 선택하고 `C`로 정면 보정을 시작하고 `Q`로 종료합니다. 원본 영상은 저장하지 않으며, 진단 로그는 `video_recognition/demo_logs/`에 생성됩니다. Mac 데모는 Windows 수업 창 캡처를 대신하지 않습니다.
+Windows 데모는 프런트 개발자 모드와 같은 패널과 다인 Gaussian·눈 감김 점수 경로를 사용합니다. 기본은 임시 위치 추적이며 `--reidentify`로 세션 내 얼굴 재식별을 선택할 수 있습니다. 보정은 자동으로 시작하며, `C`는 재보정, `V`는 오버레이, `[`·`]`는 진단 페이지 전환, `Q`는 종료입니다. 원본 영상과 개인별 특징은 저장하지 않으며 집계 진단 로그는 `video_recognition/demo_logs/`에 생성됩니다. Mac 데모는 별도 출력과 웹캠 직접 입력을 사용하며 Windows 수업 창 캡처를 대신하지 않습니다.
+
+프런트와 Windows 웹캠 데모는 `video_recognition/group_developer_view.py`의 모델 생성·개발자 패널을 공유합니다. 진단 페이지에서 관측 중인 임시 트랙별 총점, 머리·눈 점수와 보정 각도·보류 사유를 확인할 수 있습니다. 개인별 값은 화면의 임시 진단 정보이며 세션 결과에 저장하지 않습니다.
 
 자세한 사용법은 [프런트 안내](frontend/README.md), [음성 전사 안내](sherpa_stt/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md), [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 

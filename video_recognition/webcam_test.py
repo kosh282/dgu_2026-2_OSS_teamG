@@ -1,18 +1,22 @@
 """웹캠 창을 수업 창처럼 캡처해 MediaPipe 결과를 눈으로 확인한다."""
 import argparse
+import ctypes
+from ctypes import wintypes
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import time
 
 import cv2
 from integration import IntegrationService
 from .face_analysis import FaceAnalyzer
-from .integrated_analysis import VisionPipeline, WindowCapture, list_windows
+from .integrated_analysis import VisionPipeline, WindowCapture
 from .preview import PreviewCapture, LandmarkOverlaySmoother
 from .developer_view import render_feature_panel, render_video_frame
-from engagement_model.gaussian import GaussianRuntime
+from engagement_model.window_publisher import WindowPublisher
+from .group_developer_view import make_group_runtime, render_group_panel
 from .window_capture import FrameNotAvailable
 
 CAMERA_WINDOW = 'Webcam source - keep visible'
@@ -34,7 +38,7 @@ def open_demo_log(log_dir, session_id, model_runtime):
         'model_id': model_runtime.model_id,
         'model_version': model_runtime.model_version,
         'config': asdict(model_runtime.config),
-        'score_display_hold_seconds': model_runtime.display_score_hold_seconds,
+        'score_display_hold_seconds': getattr(model_runtime, 'display_score_hold_seconds', None),
         'note': '영상 프레임은 저장하지 않으며, 이 파일은 데모 진단용 특징/판정 기록입니다.',
     }, ensure_ascii=False, allow_nan=False) + '\n')
     handle.flush()
@@ -157,6 +161,104 @@ class DeveloperPreviewOutput:
         self.overlay_smoother.reset()
 
 
+class FrontendStylePreview(DeveloperPreviewOutput):
+    """프런트 개발자 모드와 같은 모델 패널로 웹캠 분석을 표시한다."""
+
+    WINDOW = 'Webcam developer preview - multi-face Gaussian'
+
+    def __init__(self):
+        super().__init__()
+        # webcam_demo는 Mac 데모를 통해 이 모듈을 참조하므로 실행 시점에 불러온다.
+        from engagement_model.webcam_demo import PoseInputDiagnostics
+        self._diagnostics = PoseInputDiagnostics()
+
+    def render(self, frame, result, face_analyzer, model):
+        if frame is None:
+            return {'key': -1, 'quit': False, 'calibrate': False,
+                    'show_landmarks': self.show_landmarks}
+        if not self.windows_ready:
+            cv2.namedWindow(self.WINDOW, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self.WINDOW, 1050, 645)
+            self.windows_ready = True
+        panel = render_group_panel(frame, result, face_analyzer, model, self._diagnostics,
+            self.overlay_smoother, show_overlay=self.show_landmarks, page=self.face_page)
+        cv2.imshow(self.WINDOW, panel)
+        return self.handle_key(cv2.waitKey(1) & 0xFF, result)
+
+    def handle_key(self, key, result=None):
+        # 통합 패널의 페이지는 얼굴 수가 아닌 진단 페이지 기준이다.
+        if key == ord('['):
+            self.face_page -= 1
+        elif key == ord(']'):
+            self.face_page += 1
+        else:
+            return super().handle_key(key, result)
+        return {'key': key, 'quit': False, 'calibrate': False,
+                'show_landmarks': self.show_landmarks}
+
+    def close(self):
+        if self.windows_ready:
+            try:
+                cv2.destroyWindow(self.WINDOW)
+            except cv2.error:
+                pass
+        self.windows_ready = False
+        self.overlay_smoother.reset()
+        self._diagnostics.reset()
+
+
+class DemoMultiModel:
+    """프런트와 같은 다인 런타임 및 구간 발행기를 웹캠 프레임에 연결한다."""
+
+    def __init__(self, service, sid, capture, face, reidentifier=None):
+        self.service, self.sid, self.capture, self.face = service, sid, capture, face
+        self.reidentifier = reidentifier
+        self.runtime = make_group_runtime(reidentifier is not None)
+        self.publisher = WindowPublisher(service, sid, self.runtime,
+                                         start_ms=service.elapsed_ms(sid))
+
+    def __call__(self, feature):
+        if self.reidentifier is not None:
+            identities = self.reidentifier.identify(
+                self.capture.last_frame, feature['start_ms'], feature['features']['faces'],
+                boxes=self.face.last_face_boxes)
+            self.runtime.update_identities(identities)
+        return self.publisher(feature)
+
+    def recalibrate(self):
+        now = self.service.elapsed_ms(self.sid)
+        self.publisher.finish(now)
+        self.runtime.recalibrate()
+        self.publisher = WindowPublisher(self.service, self.sid, self.runtime, start_ms=now)
+
+
+def write_group_frame_log(handle, result, model_result):
+    """다인 진단 로그에는 개인별 얼굴 특징·추적 ID를 저장하지 않는다."""
+    handle.write(json.dumps({
+        'record_type': 'frame', 'capture_ms': result.get('start_ms'),
+        'frame_quality': result.get('quality'),
+        'face_count': len(result.get('features', {}).get('faces', [])),
+        'model': {key: model_result.get(key) for key in
+                  ('status', 'score', 'current_direction_score', 'detected_count',
+                   'observable_count', 'scoreable_count', 'reason_codes')},
+    }, ensure_ascii=False, allow_nan=False) + '\n')
+    handle.flush()
+
+
+def log_group_transition(model, previous_signature):
+    """개별 ID를 기록하지 않고 다인 보정·집계 상태 변화만 표시한다."""
+    active = [row for row in model.participants() if row.get('status') != 'missing']
+    ready = sum(row.get('calibration_status') == 'ready' for row in active)
+    latest = model.latest
+    signature = (len(active), ready, latest.get('status'),
+                 tuple(latest.get('reason_codes') or ()))
+    if signature != previous_signature:
+        print(f"[vision-demo] tracked={len(active)} calibrated={ready} "
+              f"scored={latest.get('scoreable_count', 0)} status={latest.get('status')} "
+              f"reasons={','.join(latest.get('reason_codes') or ()) or 'none'}", flush=True)
+    return signature
+
+
 def log_debug_transition(features, model_result, previous_signature):
     """터미널에는 보정/모델 상태가 바뀔 때만 진단 한 줄을 남긴다."""
     calibration = features.get("head_calibration_diagnostics", {})
@@ -227,8 +329,8 @@ def main():
             reidentifier.close()
         raise SystemExit('웹캠을 열 수 없습니다. 연결과 카메라 접근 권한을 확인하세요.')
 
-    analyzer = pipeline = service = sid = log_handle = None
-    developer_output = DeveloperPreviewOutput()
+    analyzer = pipeline = service = sid = log_handle = demo_model = None
+    developer_output = FrontendStylePreview()
     try:
         ok, image = camera.read()
         if not ok:
@@ -238,12 +340,20 @@ def main():
         cv2.moveWindow(CAMERA_WINDOW, 20, 40)
         cv2.imshow(CAMERA_WINDOW, image)
         cv2.waitKey(100)
-        matching = [handle for handle, title in list_windows() if title == CAMERA_WINDOW]
-        if not matching:
+        # 수업 창 목록은 자신의 프로세스를 제외하므로 데모 창은 제목으로 직접 찾는다.
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        camera_window = user32.FindWindowW(None, CAMERA_WINDOW)
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        owner = wintypes.DWORD()
+        if (not camera_window or not user32.GetWindowThreadProcessId(camera_window, ctypes.byref(owner))
+                or owner.value != os.getpid()):
             raise RuntimeError('웹캠 창을 찾지 못했습니다.')
 
         service = IntegrationService()
-        model_runtime = GaussianRuntime()
+        model_runtime = make_group_runtime(reidentifier is not None)
         sid = service.start_session(
             'Webcam engagement demo',
             config={
@@ -255,15 +365,17 @@ def main():
                 'stt_model': None,
             },
         )
+        analyzer = FaceAnalyzer(show_landmarks=True)
+        preview_capture = PreviewCapture(WindowCapture(camera_window))
+        demo_model = DemoMultiModel(service, sid, preview_capture, analyzer, reidentifier)
+        model_runtime = demo_model.runtime
         log_handle, log_path = open_demo_log(args.log_dir, sid, model_runtime)
         print(f'테스트 로그: {log_path.resolve()}')
-        analyzer = FaceAnalyzer(show_landmarks=True)
-        preview_capture = PreviewCapture(WindowCapture(matching[-1]))
         pipeline = VisionPipeline(
             service, sid, preview_capture, analyzer,
-            model_consumer=model_runtime,
+            model_consumer=demo_model,
         )
-        print('C: 정면 보정 시작 (3초), V: 기준점 표시 전환, Q 또는 Ctrl+C: 종료')
+        print('다인 보정은 자동 시작합니다. 정면을 유지하세요. C: 재보정, V: 오버레이, Q: 종료')
         started = time.monotonic()
         last_debug_signature = None
         while not args.duration or time.monotonic() - started < args.duration:
@@ -274,32 +386,32 @@ def main():
             # Pump OpenCV events before window capture so the visible source frame is current.
             source_controls = developer_output.poll_key()
             if source_controls["calibrate"]:
-                pipeline.head_calibration.start()
+                demo_model.recalibrate()
             if source_controls["quit"]:
                 break
             analyzer.show_landmarks = developer_output.show_landmarks
             try:
                 result = pipeline.process_one()
             except FrameNotAvailable:
+                demo_model.publisher.advance(service.elapsed_ms(sid))
                 continue
             if result is None:
+                demo_model.publisher.advance(service.elapsed_ms(sid))
                 continue
-            last_debug_signature = log_debug_transition(
-                result['features'], model_runtime.latest, last_debug_signature,
-            )
-            write_frame_log(log_handle, result, model_runtime.latest)
+            last_debug_signature = log_group_transition(model_runtime, last_debug_signature)
+            write_group_frame_log(log_handle, result, model_runtime.latest)
             display_frame = preview_capture.last_frame
             if reidentifier is not None:
-                display_frame = reidentifier.annotate(
-                    display_frame, result['start_ms'], result['features']['faces'],
+                display_frame = reidentifier.render(
+                    display_frame, result['features']['faces'],
                     boxes=getattr(analyzer, 'last_face_boxes', []),
                 )
             controls = developer_output.render(
                 display_frame, result, analyzer,
-                model_runtime.latest,
+                model_runtime,
             )
             if controls['calibrate']:
-                pipeline.head_calibration.start()
+                demo_model.recalibrate()
             if controls['quit']:
                 break
     except KeyboardInterrupt:
@@ -311,7 +423,9 @@ def main():
             pipeline.close()
         elif analyzer is not None:
             analyzer.close()
-        if service is not None:
+        if demo_model is not None:
+            demo_model.publisher.finish(service.elapsed_ms(sid))
+        if service is not None and sid is not None:
             service.stop_session(sid)
         if log_handle is not None:
             log_handle.write(json.dumps({
