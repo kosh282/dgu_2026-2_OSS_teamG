@@ -96,7 +96,7 @@ def live_chart_spec():
     y = {'field': 'value', 'type': 'quantitative', 'scale': {'domain': [-20, 105]},
          'axis': {'title': None, 'values': [0, 50, 100], 'gridColor': '#e6e9ed'}}
     return {
-        'height': 265, 'background': 'white',
+        'height': 175, 'background': 'white',
         'layer': [
             {'transform': [{'filter': "datum.kind === 'bound'"}],
              'mark': {'type': 'point', 'opacity': 0}, 'encoding': {'x': x}},
