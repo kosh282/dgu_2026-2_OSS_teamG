@@ -90,8 +90,8 @@ S_time=sum(S_angle(segment)*integral_segment(w(t)dt))
 
 | 선택 | 모델 버전 | 설정 버전 | publisher 확장 |
 |---|---|---|---|
-| Gaussian relative | angle-time-0.4 | gaussian-angle-time-0.4-relative | angle-time-window-4 |
-| Gaussian softened | angle-time-0.4 | gaussian-angle-time-0.4 | angle-time-window-4 |
+| Gaussian relative | angle-time-0.4 | gaussian-angle-time-0.5-relative | angle-time-window-4 |
+| Gaussian softened | angle-time-0.4 | gaussian-angle-time-0.5 | angle-time-window-4 |
 
 설정 버전은 호출자가 재정의할 수 있으므로 실제 실행 provenance도 확인합니다.
 Gaussian 0.1은 현재 별도 실행 모드가 없습니다. relative 0.4는 같은 아래 보기 정책을 공유하는 비교 모드입니다.

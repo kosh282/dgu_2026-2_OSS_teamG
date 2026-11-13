@@ -32,6 +32,10 @@ class FrameEfficiencyTests(unittest.TestCase):
         self.assertEqual((first['start_ms'], second['start_ms']), (0, 100))
         self.assertEqual(second['features']['sampling']['source_size'], {'width': 120, 'height': 80})
         self.assertEqual(second['features']['sampling']['analysis_size'], {'width': 60, 'height': 40})
+        clock[0] = 450
+        third = pipeline.process_one()
+        self.assertEqual(third['features']['sampling']['last_face_interval_ms'], 350)
+        self.assertEqual(third['features']['sampling']['face_gap_over_300ms'], 1)
 
     def test_preview_can_be_toggled_without_changing_source_frame(self):
         image = np.ones((2, 2, 3), dtype=np.uint8)

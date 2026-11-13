@@ -56,7 +56,7 @@ class ConfigTests(unittest.TestCase):
     def test_configurable_window(self):
         """집계와 출력 간격을 바꾸고 기본 설정은 그대로 유지할 수 있습니다."""
         self.assertEqual(ModelConfig().window_seconds, 10)
-        self.assertEqual(ModelConfig().output_interval_seconds, 2)
+        self.assertEqual(ModelConfig().output_interval_seconds, 1)
         self.assertEqual(ModelConfig(window_seconds=20, output_interval_seconds=4).window_seconds, 20)
 
     def test_invalid_config(self):

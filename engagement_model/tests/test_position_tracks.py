@@ -34,16 +34,18 @@ class PositionTrackTests(unittest.TestCase):
         self.assertTrue(all(r['calibration_status']=='ready' for r in model.participants()))
         self.assertEqual(result['current_direction_score'],100)
 
-    def test_loss_and_reappearance_reset_previous_baselines(self):
+    def test_loss_and_reappearance_keep_other_baseline(self):
         model=self.ready()
         model(sample(3400, (0.25,)))
-        self.assertTrue(all(r['calibration_status']=='collecting' for r in model.participants()))
+        self.assertEqual(model.participants()[0]['calibration_status'], 'ready')
         model(sample(3500))
-        self.assertTrue(all(r['calibration_status']=='collecting' for r in model.participants()))
-        self.assertTrue(all(r['current_direction_score'] is None for r in model.participants()))
+        rows={r['id']:r for r in model.participants()}
+        self.assertEqual(rows['T1']['calibration_status'], 'ready')
+        self.assertEqual(rows['T2']['calibration_status'], 'collecting')
+        self.assertIsNone(rows['T2']['current_direction_score'])
 
     def test_large_move_overlap_and_gap_reset(self):
-        for data in (sample(3400,(0.25,0.55)), sample(3400,(0.49,0.51)),sample(4400)):
+        for data in (sample(3400,(0.49,0.51)),sample(4400)):
             model=self.ready(); result=model(data)
             self.assertIsNone(result['current_direction_score'])
             self.assertTrue(all(r['calibration_status']=='collecting' for r in model.participants()))
@@ -65,7 +67,7 @@ class PositionTrackTests(unittest.TestCase):
         live=LiveSession(1)
         self.assertIsInstance(live._make_model(), PositionTrackGaussianRuntime)
 
-    def test_association_change_clears_previous_group_window(self):
+    def test_single_loss_keeps_other_group_history(self):
         service = IntegrationService()
         sid = service.start_session('test')
         model = PositionTrackGaussianRuntime()
@@ -80,7 +82,7 @@ class PositionTrackTests(unittest.TestCase):
         value['session_id'] = sid
         with patch.object(service, 'elapsed_ms', return_value=11100):
             publisher(value)
-        self.assertEqual(len(publisher._segments), 0)
+        self.assertTrue(publisher._segments)
 
     def test_frontend_receives_and_publishes_multiple_tracks_without_reid(self):
         live = LiveSession(1)

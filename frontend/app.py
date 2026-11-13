@@ -11,7 +11,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, overlap, score, suggestion_phase,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, overlap, score, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
@@ -186,10 +186,11 @@ def assistant_options(key, disabled=False):
     return {'provider': provider, 'api_key': api_key, 'model': model}, bool(api_key.strip() and model.strip())
 
 
-def resources(service, sid, snapshot, readonly=False):
+def resources(service, sid, snapshot, readonly=False, *, offset=0, limit=None):
     suggestions = [e for e in snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
                    if readonly or e['event_id'] not in st.session_state.hidden_suggestions]
     suggestions.sort(key=lambda e: (e['start_ms'], e['event_id']), reverse=True)
+    suggestions = suggestions[offset:offset + limit if limit is not None else None]
     if not suggestions:
         st.caption('선택한 구간에 연결된 제안이 없습니다.' if readonly else '설정한 실험 점수 이하의 최근 구간과 확정 전사가 있으면 제안을 생성합니다.')
     for event in suggestions:
@@ -383,42 +384,11 @@ def live_page():
         duration=snapshot['session']['duration_ms']
         status='진행 중' if live.is_running() else '수업 종료'
         st.caption(f"{snapshot['session']['title']} · {status} · 진행 시간 {clock(duration)}")
-        a,b=st.columns(2)
-        with a:
-            with st.container(border=True):
-                st.subheader('강의 조교 · 자료 제안')
-                assistant_message=snapshot.get('status_messages',{}).get('assistant')
-                if st.session_state.assistant_error:
-                    st.warning(st.session_state.assistant_error)
-                elif assistant_message:
-                    st.caption(assistant_message)
-                resources(live.service,live.sid,snapshot)
         windows=snapshot['engagement_windows']
         latest_window=max(windows, key=lambda e: (e['end_ms'], e['created_ms'] or 0)) if windows else None
         model_status=snapshot['status'].get('model')
-        value=score(latest_window) if latest_window and model_status != 'unavailable' else None
-        b.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
-        if live.video_enabled and getattr(live, 'model_enabled', False):
-            calibration=live.calibration_state()
-            state=calibration.get('status', 'starting')
-            reason=calibration.get('last_reason_code')
-            reasons={'no_face_detected':'얼굴이 감지되지 않았습니다.', 'multiple_faces_detected':'얼굴이 여러 개 감지되어 단일 얼굴 보정을 할 수 없습니다.',
-                     'face_quality_not_observable':'얼굴을 충분히 관찰할 수 없습니다.', 'head_angles_unavailable':'머리 각도를 계산할 수 없습니다.',
-                     'head_pose_unstable':'머리 움직임이 커서 다시 수집합니다.', 'calibration_frame_gap':'영상 입력이 끊겨 다시 수집합니다.',
-                     'calibration_timestamp_not_increasing':'영상 시각이 정상적으로 진행되지 않았습니다.',
-                     'calibration_gap_expired':'관측 공백이 길어 정면 기준을 다시 수집합니다.',
-                     'calibration_track_changed':'대상 연결이 바뀌어 정면 기준을 다시 수집합니다.',
-                     'calibration_track_unavailable':'얼굴 추적이 불안정해 보정을 기다립니다.'}
-            b.caption({'starting':'정면 기준: 영상 분석 준비 중', 'waiting':'정면 기준: 재보정이 필요합니다', 'recovering':'얼굴을 다시 찾는 중 · 점수 일시 보류',
-                       'collecting':f"정면 기준 수집 중 · {calibration.get('progress', 0)*100:.0f}%", 'ready':'정면 기준 수집 완료'}.get(state, '정면 기준: 상태 확인 중'))
-            if reason:
-                b.caption(reasons.get(reason, f'보정 상태: {reason}'))
-            b.caption(('각 ID의 정면 기준을 따로 수집합니다. 관측 중인 모두가 정면을 약 3초 유지해 주세요.'
-                       if getattr(live, 'reidentification_enabled', False) else
-                       '각 얼굴이 정면을 보고 약 3초간 유지해 주세요. 위치 트랙은 신원 확인이 아닙니다.') + ' 자동 기준은 실제 정면인지 확인하지 못합니다.')
-            if b.button('정면 기준 재보정', disabled=not live.is_running(), key='recalibrate-head'):
-                live.request_head_calibration()
-                st.rerun()
+        stale=bool(live.is_running() and latest_window and duration-latest_window['end_ms'] > 5000)
+        value=score(latest_window) if latest_window and model_status != 'unavailable' and not stale and not (live.is_running() and model_status == 'stopped') else None
         _,error,_=live.snapshot()
         if error:
             st.error(f'영상 분석 오류: {error}')
@@ -428,45 +398,113 @@ def live_page():
         checkpoint_error=live.checkpoint_status()
         if checkpoint_error:
             st.warning(f'수업 복구용 저장 실패: {checkpoint_error}')
-        with st.container(border=True):
-            st.subheader('공통 타임라인')
-            st.caption('계약에 저장된 engagement_window 구간과 메모를 표시합니다.')
-            st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration), live_chart_spec(),
-                               use_container_width=True, key='live-chart')
-            if not windows:
-                state=snapshot['status'].get('model')
-                st.caption('실험 모델을 사용하지 않거나 실행할 수 없습니다.' if state in ('stopped','unavailable') else '첫 구간을 집계하는 중입니다. 기본 설정에서는 수업 시작 후 10초가 필요합니다.')
-        with st.container(border=True):
-            st.subheader('실시간 전사 · 분석 상태')
-            state_labels={'running':'실행 중','ready':'준비됨','unavailable':'오류 또는 사용 불가','stopped':'꺼짐 또는 종료'}
-            names={'vision':'영상','model':'실험 점수','stt':'음성 전사','assistant':'강의 조교'}
-            st.caption(' · '.join(f"{names.get(key,key)}: {state_labels.get(value,value)}" for key,value in snapshot['status'].items()))
-            for component, state in snapshot['status'].items():
-                if state == 'unavailable' and snapshot.get('status_messages', {}).get(component):
-                    st.caption(f"{names.get(component,component)}: {snapshot['status_messages'][component]}")
-            for event in snapshot['transcripts'][-8:]:
-                event_text(event)
-            for event in snapshot['partial_transcripts']:
-                st.caption('인식 중: '+event['payload']['text'])
-            if not snapshot['transcripts'] and not snapshot['partial_transcripts']:
-                st.caption('전사 모듈의 입력을 기다립니다.')
-        with st.container(border=True):
-            st.subheader('교수자 메모')
-            with st.form('live-note',clear_on_submit=True):
-                text=st.text_input('메모 입력',placeholder='이 설명 다시 짚기')
-                if st.form_submit_button('메모 저장') and text.strip():
-                    add_note(live.service,live.sid,text.strip(),live.service.elapsed_ms(live.sid))
-                    if not live.is_running():
-                        files.save(live.service,live.sid)
-                    st.rerun()
-            for event in reversed(snapshot['notes'][-5:]):
-                event_text(event)
+        if getattr(live, 'reidentification_error', None):
+            st.warning(live.reidentification_error)
+        if st.session_state.assistant_error:
+            st.warning(st.session_state.assistant_error)
+        stats=live.diagnostics()['stt']
+        if stats and (stats['dropped_chunks'] or stats['input_overflows'] or stats['discontinuities']):
+            st.warning('음성 입력 누락 가능성이 있습니다. 분석 상세 상태에서 확인하세요.')
+        state_labels={'running':'실행 중','ready':'준비됨','unavailable':'확인 필요','stopped':'꺼짐'}
+        names={'vision':'영상','model':'점수','stt':'전사','assistant':'조교'}
+        st.caption(' · '.join(f"{names.get(k,k)} {state_labels.get(v,v)}" for k,v in snapshot['status'].items()))
+        left,right=st.columns([1,1], gap='medium')
+        with left:
+            with st.container(border=True):
+                st.subheader('관찰 점수 · 수업 흐름')
+                st.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+                st.caption('관측 가능한 얼굴 기준의 실험 점수 · 집중도나 이해도가 아닙니다.')
+                rows=live.participant_snapshot() if hasattr(live, 'participant_snapshot') else []
+                if value is None:
+                    reason_codes=(latest_window.get('quality',{}).get('reason_codes',[]) if latest_window else [])
+                    if model_status == 'unavailable':
+                        reason=snapshot.get('status_messages',{}).get('model') or '모델 또는 영상 입력을 확인하세요.'
+                    elif model_status == 'stopped' or not getattr(live, 'model_enabled', False):
+                        reason='실험 점수 모델이 꺼져 있습니다.'
+                    elif stale:
+                        reason='최근 점수 구간이 5초 이상 갱신되지 않았습니다.'
+                    elif any(row.get('calibration_status') == 'collecting' for row in rows):
+                        reason='정면 기준을 수집 중입니다. 관측된 얼굴이 정면을 유지해 주세요.'
+                    elif any('eye_observation_unavailable' in row.get('reason_codes', []) for row in rows):
+                        reason='눈 관측이 부족하거나 수집 중입니다. 얼굴 크기와 가림을 확인하세요.'
+                    elif 'insufficient_scoreable_time' in reason_codes:
+                        reason='최근 구간의 점수화 가능한 관측 시간이 부족합니다.'
+                    elif 'insufficient_observation' in reason_codes:
+                        reason='최근 구간의 얼굴 관측 시간이 부족합니다.'
+                    else:
+                        reason='얼굴 관측과 첫 점수 구간을 기다리는 중입니다.'
+                    st.caption('점수 상태: '+reason)
+                    age=live.diagnostics().get('video_result_age_ms')
+                    head_values=[row.get('head_score') for row in rows
+                                 if row.get('status') not in ('missing','unavailable','not_observable')
+                                 and isinstance(row.get('head_score'), (int,float))
+                                 and not isinstance(row.get('head_score'), bool)]
+                    if model_status == 'running' and age is not None and age <= 1000 and head_values:
+                        st.caption(f"참고: 머리 방향만의 임시 평균 {sum(head_values)/len(head_values):.1f}점 · 결합 점수 아님, 저장·제안에 사용하지 않음")
+                if live.video_enabled and getattr(live, 'model_enabled', False):
+                    calibration=live.calibration_state()
+                    state=calibration.get('status', 'starting')
+                    st.caption({'starting':'정면 기준 준비 중', 'waiting':'정면 기준 대기', 'recovering':'얼굴 재인식 중 · 점수 보류',
+                                'collecting':f"정면 기준 수집 중 · {calibration.get('progress', 0)*100:.0f}%", 'ready':'정면 기준 수집 완료'}.get(state, '정면 기준 확인 중'))
+                    if st.button('정면 기준 재보정', disabled=not live.is_running(), key='recalibrate-head'):
+                        live.request_head_calibration()
+                        st.rerun()
+                chart_spec=live_chart_spec()
+                chart_spec['height']=145
+                chart_range=st.selectbox('그래프 범위', ['최근 1분','최근 5분','최근 10분','전체 수업'], index=1, key='live-chart-range')
+                range_ms={'최근 1분':60000,'최근 5분':300000,'최근 10분':600000}.get(chart_range)
+                start_ms=max(0,duration-range_ms) if range_ms else 0
+                st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms), chart_spec,
+                                   use_container_width=True, key='live-chart')
+                if not windows:
+                    st.caption('첫 점수 구간 집계 대기 중입니다.' if model_status not in ('stopped','unavailable') else '실험 모델이 꺼져 있거나 사용할 수 없습니다.')
+            with st.container(border=True):
+                st.subheader('교수자 메모')
+                with st.form('live-note',clear_on_submit=True):
+                    text=st.text_input('메모 입력',placeholder='이 설명 다시 짚기',label_visibility='collapsed')
+                    if st.form_submit_button('메모 저장') and text.strip():
+                        add_note(live.service,live.sid,text.strip(),live.service.elapsed_ms(live.sid))
+                        if not live.is_running():
+                            files.save(live.service,live.sid)
+                        st.rerun()
+                if snapshot['notes']:
+                    event=snapshot['notes'][-1]
+                    st.caption(f"최근 메모 · {clock(event['start_ms'])} · {event['payload']['text']}")
+                if len(snapshot['notes']) > 1:
+                    with st.expander('이전 메모 보기'):
+                        for event in reversed(snapshot['notes'][:-1]):
+                            event_text(event)
+        with right:
+            with st.container(border=True):
+                st.subheader('실시간 전사')
+                with st.container(height=150, border=False):
+                    for event in snapshot['transcripts'][-3:]:
+                        event_text(event)
+                    for event in snapshot['partial_transcripts'][-1:]:
+                        st.caption('인식 중: '+event['payload']['text'])
+                    if not snapshot['transcripts'] and not snapshot['partial_transcripts']:
+                        st.caption('전사 모듈의 입력을 기다립니다.')
+                if len(snapshot['transcripts']) > 3:
+                    with st.expander('이전 전사 보기'):
+                        for event in snapshot['transcripts'][:-3]:
+                            event_text(event)
+            with st.container(border=True):
+                st.subheader('강의 조교 · 최신 제안')
+                assistant_message=snapshot.get('status_messages',{}).get('assistant')
+                if assistant_message:
+                    st.caption(assistant_message)
+                with st.container(height=270, border=False):
+                    resources(live.service,live.sid,snapshot,limit=1)
+                visible=[e for e in snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
+                         if e['event_id'] not in st.session_state.hidden_suggestions]
+                if len(visible) > 1:
+                    with st.expander(f'이전 제안 보기 · {len(visible)-1}개'):
+                        resources(live.service,live.sid,snapshot,offset=1)
         if not live.is_running():
             persist_live()
             if st.button('수업 결과 보기',type='primary'):
                 st.session_state.review=live.service,live.sid
                 navigate('사후 검토')
-    panel()
     if live.is_running():
         if st.button('수업 종료',type='primary'):
             try:
@@ -482,6 +520,7 @@ def live_page():
                 navigate('사후 검토')
             except Exception as exc:
                 st.error(f'수업 종료·저장 실패: {exc}')
+    panel()
 
     @st.fragment(run_every=1 if live.is_running() else None)
     def diagnostics_panel():
@@ -510,6 +549,10 @@ def live_page():
                     st.info('말소리가 작은 편이라 인식 오류가 늘 수 있습니다. Windows 마이크 입력 볼륨을 높이거나 마이크에 가까이 말해 주세요.')
         if diagnostics['video_result_age_ms'] is not None:
             st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
+        if result:
+            sampling=result.get('features',{}).get('sampling',{})
+            if sampling.get('last_face_interval_ms') is not None:
+                st.caption(f"영상 분석 간격 최근 {sampling['last_face_interval_ms']}ms · 300ms 초과 누적 {sampling.get('face_gap_over_300ms',0)}회")
         if live.model_enabled:
             reid = getattr(live, 'reidentification_enabled', False)
             st.subheader('세션 내 ID별 Gaussian 점수' if reid else '단기 위치 트랙별 Gaussian 점수')
@@ -517,15 +560,16 @@ def live_page():
             if not reid:
                 st.caption('위치 트랙은 사람을 식별하지 않으며, 얼굴이 끊기거나 배치가 바뀌면 보정을 다시 시작할 수 있습니다.')
             st.caption('상단 점수는 유효 관측된 ' + ('사람' if reid else '위치 트랙') + '·시간의 가중 집계이며, 전체 수강생 평균이나 참여율이 아닙니다.')
-            if live.reidentification_error:
+            if getattr(live, 'reidentification_error', None):
                 st.warning(live.reidentification_error)
-            rows=live.participant_snapshot()
+            rows=live.participant_snapshot() if hasattr(live, 'participant_snapshot') else []
             if rows:
                 states={'scored':'관측 중','deferred':'점수 보류','calibrating':'정면 기준 수집 중',
                         'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
                 st.dataframe([{('임시 ID' if reid else '임시 위치 트랙'):row['id'], '상태':states.get(row['status'],row['status']),
                     '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
                     '현재 결합 점수':row['current_direction_score'], '최근 결합 점수':row['score'],
+                    '눈 관측률':row.get('eye_coverage'),
                     '보류 사유':', '.join(row.get('reason_codes', []))}
                     for row in rows],hide_index=True,use_container_width=True)
             else:
@@ -539,7 +583,8 @@ def live_page():
             elif value is None:
                 st.caption('점수 보류 사유: '+', '.join(latest_window['quality']['reason_codes']))
                 st.caption('정면 기준과 관측 상태를 확인하세요. 기준 수집 후 새 점수 구간 집계가 필요합니다.')
-    diagnostics_panel()
+    with st.expander('분석 상세 상태'):
+        diagnostics_panel()
     if live.is_running():
         with st.expander('개발자 도구'):
             enabled=live.developer_preview_enabled()
@@ -584,13 +629,16 @@ def review_page():
     has_overlap=any(b['start_ms'] < a['end_ms'] for a,b in zip(ordered_windows,ordered_windows[1:]))
     measured=[(score(e),max(1,e['end_ms']-e['start_ms'])) for e in windows if score(e) is not None] if not has_overlap else []
     average=sum(s*w for s,w in measured)/sum(w for _,w in measured) if measured else None
-    ratios=[(e['payload'].get('observation',{}).get('observable_ratio'),max(1,e['end_ms']-e['start_ms'])) for e in windows] if not has_overlap else []
-    ratios=[(r,w) for r,w in ratios if r is not None]
+    valid_scores=[score(e) for e in windows if score(e) is not None]
     columns=st.columns(4)
-    for column,label,value in zip(columns,['수업 전체 참여 점수','분석 가능률','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '측정 불가',f'{sum(r*w for r,w in ratios)/sum(w for _,w in ratios):.0%}' if ratios else '측정 불가',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
+    for column,label,value in zip(columns,['수업 전체 실험 점수','점수 있는 구간','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else ('중첩으로 미산출' if has_overlap else '점수 없음'),f'{len(valid_scores)} / {len(windows)}개',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
         column.metric(label,value)
     if has_overlap:
-        st.caption('이동 구간은 서로 겹치므로 전체 평균과 전체 분석 가능률을 계산하지 않습니다.')
+        st.caption('구간이 서로 겹쳐 전체 평균은 계산하지 않습니다. 구간 수는 수업 시간의 분석 가능률이 아닙니다.')
+    if valid_scores:
+        st.caption(f'유효 구간 점수 범위 {min(valid_scores):.1f}~{max(valid_scores):.1f}점 · 실험 점수는 집중도나 이해도를 뜻하지 않습니다.')
+    else:
+        st.caption('유효한 구간 점수가 없습니다. 타임라인에서 관측 불가 구간을 확인하세요.')
     range_key=f'range-{sid}'
     chart_key=f'review-chart-{sid}'
     def select_chart_range():
@@ -599,6 +647,8 @@ def review_page():
         if boxes and 'x' in boxes[0]:
             bounds=sorted(int(float(x)*1000) for x in boxes[0]['x'])
             st.session_state[range_key]=tuple(max(0,min(duration,x)) for x in bounds)
+    def select_score_window(start, end):
+        st.session_state[range_key]=(max(0, min(duration, start)), max(0, min(duration, end)))
     with st.container(border=True):
         st.subheader('공통 타임라인')
         st.caption('아래에서 구간을 선택하면 전사·메모·자료·피드백이 함께 좁혀집니다.')
@@ -617,24 +667,45 @@ def review_page():
             st.subheader('전사 · 선택 구간')
             query=st.text_input('전사 검색',key=f'search-{sid}')
             transcripts=[e for e in snapshot['transcripts'] if visible(e) and query.casefold() in e['payload']['text'].casefold()]
-            st.caption(f'{len(transcripts)}개 문장 · 펼쳐서 수정할 수 있습니다.')
+            st.caption(f'{len(transcripts)}개 문장 · 전사 종료 시점까지 확정된 최근 점수와 연결합니다.')
+            st.caption('점수는 해당 문장만의 결과가 아닌 이전 분석 구간의 참고값입니다. 점수와 전사의 관계는 인과관계를 뜻하지 않습니다.')
             for event in transcripts:
                 payload=event['payload']
-                with st.expander(f"{clock(event['start_ms'])} · {payload['text']}"):
-                    linked=related_suggestions(event, all_suggestions)
-                    for suggestion in linked:
-                        st.caption(f"{suggestion_phase(suggestion)} · {clock(suggestion['start_ms'])} · {suggestion['payload']['title']}")
-                    with st.form('edit-'+event['event_id']):
-                        text=st.text_area('전사 수정',payload['text'])
-                        if st.form_submit_button('수정 저장'):
-                            try:
-                                updated=dict(payload,text=text,revision=payload['revision']+1,is_edited=True,replaces_event_id=event['event_id'])
-                                change=service.make_event(sid,'transcript_edited',updated,event['start_ms'],event['end_ms'],'ui')
-                                service.receive_event(change)
-                                files.save(service,sid)
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f'전사를 수정하지 못했습니다: {exc}')
+                linked_score=transcript_score_link(event, windows)
+                with st.container(border=True):
+                    transcript_col,score_col=st.columns([3,1], gap='medium')
+                    with transcript_col:
+                        st.caption(f"전사 · {clock(event['start_ms'])}–{clock(event['end_ms'])}")
+                        st.write(payload['text'])
+                        with st.expander('전사 수정 · 연결된 제안'):
+                            for suggestion in related_suggestions(event, all_suggestions):
+                                st.caption(f"{suggestion_phase(suggestion)} · {clock(suggestion['start_ms'])} · {suggestion['payload']['title']}")
+                            with st.form('edit-'+event['event_id']):
+                                text=st.text_area('전사 수정',payload['text'])
+                                if st.form_submit_button('수정 저장'):
+                                    try:
+                                        updated=dict(payload,text=text,revision=payload['revision']+1,is_edited=True,replaces_event_id=event['event_id'])
+                                        change=service.make_event(sid,'transcript_edited',updated,event['start_ms'],event['end_ms'],'ui')
+                                        service.receive_event(change)
+                                        files.save(service,sid)
+                                        st.rerun()
+                                    except Exception as exc:
+                                        st.error(f'전사를 수정하지 못했습니다: {exc}')
+                    with score_col:
+                        st.caption('실험 점수')
+                        score_value=linked_score['value']
+                        st.write(f'{score_value:.1f}점' if score_value is not None else linked_score['reason'])
+                        window=linked_score['window']
+                        if window:
+                            st.caption(f"{clock(window['start_ms'])}–{clock(window['end_ms'])}")
+                            if linked_score['delta'] is not None:
+                                st.caption(f"직전 구간 대비 {linked_score['delta']:+.1f}점")
+                            elif score_value is None:
+                                reasons=window.get('quality',{}).get('reason_codes',[])
+                                if reasons:
+                                    st.caption('사유: '+', '.join(reasons))
+                            st.button('구간 보기', key='score-window-'+event['event_id'],
+                                      on_click=select_score_window, args=(window['start_ms'], window['end_ms']))
             if not transcripts:
                 st.caption('이 구간 또는 검색어에 해당하는 확정 전사가 없습니다.')
     with right:

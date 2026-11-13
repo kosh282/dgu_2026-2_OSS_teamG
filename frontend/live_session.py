@@ -219,6 +219,8 @@ class LiveSession:
             'components': {key: snapshot['status'].get(key) for key in ('vision', 'model', 'stt', 'assistant')},
             'video': {'result_age_ms': max(0, now-latest['start_ms']) if latest else None,
                       'face_hz': sampling.get('actual_face_hz'),
+                      'last_face_interval_ms': sampling.get('last_face_interval_ms'),
+                      'face_gap_over_300ms': sampling.get('face_gap_over_300ms'),
                       'source_size': sampling.get('source_size'), 'analysis_size': sampling.get('analysis_size')},
             'stt': {key: stats.get(key) for key in ('source', 'rtf', 'lag_ms_latest', 'lag_ms_p50',
                 'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities')},
@@ -418,7 +420,7 @@ class LiveSession:
     def _model_identity(self):
         return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.3+face-transform-eye'}
                 if self.reidentification_enabled else
-                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.2+face-transform-eye'})
+                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.3+face-transform-eye'})
 
     def _make_model(self):
         return make_group_runtime(self.reidentification_enabled)

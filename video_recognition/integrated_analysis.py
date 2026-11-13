@@ -125,6 +125,8 @@ class VisionPipeline:
         self.last_face_analysis_ms = None
         self.latest_faces = []
         self.face_sample_times = deque(maxlen=10)
+        self.face_gap_over_300ms = 0
+        self.last_face_interval_ms = None
         self.previous_positions = {}
         self.head_calibration = HeadCalibration()
         self.intermediate_path = Path(intermediate_path) if intermediate_path is not None else None
@@ -209,6 +211,10 @@ class VisionPipeline:
             )
 
             faces = self.analyzer.analyze(frame)
+            if self.last_face_analysis_ms is not None:
+                self.last_face_interval_ms = capture_ms - self.last_face_analysis_ms
+                if self.last_face_interval_ms > 300:
+                    self.face_gap_over_300ms += 1
             self.last_face_analysis_ms = capture_ms
             self.face_sample_times.append(capture_ms)
             faces = self.face_postprocessor.process(
@@ -231,6 +237,8 @@ class VisionPipeline:
                     'sampling': {
                         'target_face_hz': self.face_analysis_hz,
                         'actual_face_hz': self._sample_rate(self.face_sample_times),
+                        'last_face_interval_ms': self.last_face_interval_ms,
+                        'face_gap_over_300ms': self.face_gap_over_300ms,
                         'source_size': {'width': source_width, 'height': source_height},
                         'analysis_size': {'width': width, 'height': height},
                     },

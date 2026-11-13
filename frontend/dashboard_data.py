@@ -21,6 +21,26 @@ def score(event):
     return value if 0 <= value <= 100 and event['quality']['status'] != 'not_observable' else None
 
 
+def transcript_score_link(transcript, windows, *, max_age_ms=5000):
+    """전사 종료 시점까지 확정된 최신 구간만 연결한다. 결측을 건너뛰지 않는다."""
+    end = transcript['end_ms']
+    completed = sorted((e for e in windows if e['end_ms'] <= end),
+                       key=lambda e: (e['end_ms'], e['start_ms'], e.get('created_ms') or 0))
+    if not completed:
+        return {'window': None, 'value': None, 'delta': None, 'reason': '점수 구간 대기'}
+    latest = completed[-1]
+    if end - latest['end_ms'] > max_age_ms:
+        return {'window': None, 'value': None, 'delta': None, 'reason': '최근 점수 구간 없음'}
+    value = score(latest)
+    if value is None:
+        return {'window': latest, 'value': None, 'delta': None, 'reason': '점수 보류'}
+    previous = completed[-2] if len(completed) > 1 else None
+    previous_value = score(previous) if previous else None
+    delta = (value - previous_value if previous_value is not None
+             and 0 < latest['end_ms'] - previous['end_ms'] <= max_age_ms else None)
+    return {'window': latest, 'value': value, 'delta': delta, 'reason': None}
+
+
 def overlap(event, start, end):
     a, b = event['start_ms'], event['end_ms']
     return start <= a <= end if a == b else a < end and b > start
@@ -61,11 +81,13 @@ def unobservable_intervals(windows):
     return merged
 
 
-def live_chart_data(windows, notes, duration):
+def live_chart_data(windows, notes, duration, *, start_ms=0):
     """실시간 차트의 시간 경계, 점수, 관측 불가 구간과 메모를 만든다."""
-    rows = [{'kind': 'bound', 'time': 0.0},
+    start_ms = max(0, min(start_ms, duration))
+    rows = [{'kind': 'bound', 'time': start_ms / 1000},
             {'kind': 'bound', 'time': max(duration / 1000, 1)}]
-    ordered = sorted(windows, key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))
+    ordered = sorted((e for e in windows if start_ms <= e['end_ms'] <= duration),
+                     key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))
     previous_end = None
     sequence = 0
     for event in ordered:
@@ -79,10 +101,13 @@ def live_chart_data(windows, notes, duration):
         sequence += 1
         previous_end = max(previous_end or 0, event['end_ms'])
     for start, end in unobservable_intervals(windows):
-        rows.append({'kind': 'unobservable', 'time': start / 1000, 'end': end / 1000})
+        if end >= start_ms and start <= duration:
+            rows.append({'kind': 'unobservable', 'time': max(start, start_ms) / 1000,
+                         'end': min(end, duration) / 1000})
     for event in notes:
-        rows.append({'kind': 'note', 'time': event['start_ms'] / 1000, 'value': -12,
-                     'time_label': clock(event['start_ms']), 'text': event['payload']['text']})
+        if start_ms <= event['start_ms'] <= duration:
+            rows.append({'kind': 'note', 'time': event['start_ms'] / 1000, 'value': -12,
+                         'time_label': clock(event['start_ms']), 'text': event['payload']['text']})
     return pd.DataFrame(rows, columns=['kind', 'time', 'end', 'value', 'sequence', 'time_label', 'text'])
 
 

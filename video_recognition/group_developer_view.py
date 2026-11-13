@@ -13,7 +13,7 @@ def make_group_runtime(reidentification_enabled=False):
         version = 'multi-gaussian-0.3+face-transform-eye'
     else:
         model = PositionTrackGaussianRuntime(eye_fusion=True)
-        version = 'position-gaussian-0.2+face-transform-eye'
+        version = 'position-gaussian-0.3+face-transform-eye'
     model.model_version = version
     model.latest['model_version'] = version
     return model

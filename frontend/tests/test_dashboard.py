@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, overlap, score, suggestion_phase,
+from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, overlap, score, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -33,6 +33,21 @@ class DashboardTests(unittest.TestCase):
         event = {'payload': {'model_output': {'kind': 'continuous', 'value': 73.5}}, 'quality': {'status': 'valid'}}
         self.assertEqual(score(event), 73.5)
 
+    def test_transcript_uses_completed_score_without_crossing_missing_or_future_windows(self):
+        def window(end, value):
+            return {'start_ms': max(0, end - 10000), 'end_ms': end,
+                    'payload': {'model_output': {'value': value} if value is not None else None},
+                    'quality': {'status': 'valid' if value is not None else 'not_observable'}}
+        windows = [window(10000, 80), window(12000, 70), window(14000, None), window(16000, 60)]
+        link = transcript_score_link({'end_ms': 13000}, windows)
+        self.assertEqual((link['value'], link['delta']), (70, -10))
+        link = transcript_score_link({'end_ms': 15000}, windows)
+        self.assertIsNone(link['value'])
+        self.assertEqual(link['reason'], '점수 보류')
+        self.assertIsNone(transcript_score_link({'end_ms': 16000}, windows)['delta'])
+        self.assertEqual(transcript_score_link({'end_ms': 22000}, windows)['reason'], '최근 점수 구간 없음')
+        self.assertEqual(transcript_score_link({'end_ms': 9000}, windows)['reason'], '점수 구간 대기')
+
     def test_chart_does_not_join_missing_interval(self):
         def event(start, end, eid):
             return dict(event_id=eid, start_ms=start, end_ms=end, payload={'model_output': {'value': 80}}, quality={'status': 'valid'})
@@ -55,6 +70,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(data[data['kind'] == 'bound']['time'].tolist(), [0, 7200])
         self.assertEqual(data[data['kind'] == 'note']['text'].tolist(), ['확인할 내용'])
         self.assertEqual(len(chart(windows, notes, 7200000).layout.shapes), 1)
+
+    def test_live_chart_clips_range_without_changing_records(self):
+        windows = [dict(event_id='a', start_ms=0, end_ms=10000,
+                        payload={'model_output': None}, quality={'status': 'not_observable'}),
+                   dict(event_id='b', start_ms=5000, end_ms=15000,
+                        payload={'model_output': {'value': 80}}, quality={'status': 'valid'})]
+        data = live_chart_data(windows, [], 20000, start_ms=8000)
+        self.assertEqual(data[data['kind'] == 'bound']['time'].tolist(), [8, 20])
+        missing = data[data['kind'] == 'unobservable'].iloc[0]
+        self.assertEqual((missing['time'], missing['end']), (8, 10))
+        self.assertEqual(windows[0]['start_ms'], 0)
 
     def test_overlap_includes_crossing_transcript(self):
         self.assertTrue(overlap({'start_ms':100,'end_ms':500},200,300))
@@ -156,7 +182,7 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(app.exception)
         next(b for b in app.button if b.label=='공통 계약 예제로 확인').click().run()
         self.assertFalse(app.exception)
-        self.assertEqual(app.metric[0].value,'측정 불가')
+        self.assertEqual(app.metric[0].value,'점수 없음')
         app.text_input[0].set_value('없는문장검색어').run()
         self.assertFalse(app.exception)
 

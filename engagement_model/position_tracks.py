@@ -48,16 +48,21 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
                 if math.dist(a, b) < self.minimum_separation:
                     valid = False
         old = self._positions
-        changed = (not valid or set(old) != set(positions) or
-                   (self._position_time is not None and (timestamp is None or
-                    not 0 < timestamp-self._position_time <= self.association_gap_ms)))
-        if not changed:
-            changed = any(math.dist(old[key], value) > self.maximum_center_shift
-                          for key, value in positions.items())
-        association_reset = changed and self._position_time is not None
-        if changed:
-            # 인원 변화·누락·큰 이동은 이전 트랙별 기준을 모두 폐기한다.
+        gap = (self._position_time is not None and (timestamp is None or
+               not 0 < timestamp-self._position_time <= self.association_gap_ms))
+        removed, added = set(old) - set(positions), set(positions) - set(old)
+        # 동시 이탈·신규 등장이나 겹침은 교체 여부가 모호하므로 전원 재수집한다.
+        ambiguous = not valid or gap or bool(removed and added)
+        association_reset = ambiguous and self._position_time is not None
+        if ambiguous:
             self._people.clear()
+        else:
+            # 사라진 얼굴은 즉시 기준을 폐기하고, 안전하게 유지된 얼굴만 보존한다.
+            for key in removed:
+                self._people.pop(f'T{key}', None)
+            for key in set(old) & set(positions):
+                if math.dist(old[key], positions[key]) > self.maximum_center_shift:
+                    self._people.pop(f'T{key}', None)
         self._positions = positions if valid else {}
         self._position_time = timestamp if valid else None
         self.update_identities({key: f'T{key}' for key in positions} if valid else {})
