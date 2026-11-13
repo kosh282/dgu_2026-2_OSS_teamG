@@ -74,11 +74,11 @@ class MultiGaussianUITests(unittest.TestCase):
         self.assertFalse(app.exception)
         table = next(item.value for item in app.dataframe if '임시 ID' in item.value.columns)
         self.assertEqual(table['임시 ID'].tolist(), ['S001', 'S002'])
-        self.assertEqual(table.loc[0, '현재 방향 점수'], 87.5)
-        self.assertEqual(table.loc[0, '최근 10초 점수'], 82.0)
+        self.assertEqual(table.loc[0, '현재 결합 점수'], 87.5)
+        self.assertEqual(table.loc[0, '최근 결합 점수'], 82.0)
         self.assertEqual(table.loc[1, '상태'], '관측 불가')
-        self.assertTrue(pd.isna(table.loc[1, '현재 방향 점수']))
-        self.assertTrue(pd.isna(table.loc[1, '최근 10초 점수']))
+        self.assertTrue(pd.isna(table.loc[1, '현재 결합 점수']))
+        self.assertTrue(pd.isna(table.loc[1, '최근 결합 점수']))
 
     def test_reidentification_error_is_visible_while_session_continues(self):
         app = self.app(live=True)

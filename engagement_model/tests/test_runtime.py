@@ -2,7 +2,7 @@
 
 import unittest
 
-from engagement_model.runtime import EngagementRuntime
+from engagement_model.gaussian import GaussianRuntime
 
 
 SESSION_ID = "c4b1f6c0-511a-46be-9a39-29e714654001"
@@ -20,7 +20,7 @@ def feature_window(timestamp_ms, *, pitch=0.0, yaw=0.0, faces=1, track_key=1):
         "session_id": SESSION_ID,
         "start_ms": timestamp_ms,
         "end_ms": timestamp_ms,
-        "feature_version": "experimental-0.8",
+        "feature_version": "experimental-0.9",
         "quality": {
             "status": "valid" if faces else "not_observable",
             "reason_codes": [] if faces else ["face_not_found"],
@@ -34,7 +34,7 @@ def feature_window(timestamp_ms, *, pitch=0.0, yaw=0.0, faces=1, track_key=1):
 
 class RuntimeTests(unittest.TestCase):
     def test_front_score_increases_with_continuous_observations(self):
-        runtime = EngagementRuntime()
+        runtime = GaussianRuntime()
         result = None
         for timestamp in range(1000, 6100, 100):
             result = runtime(feature_window(timestamp))
@@ -42,50 +42,39 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["score"], 100.0)
         self.assertEqual(result["front_seconds"], 5.0)
 
-    def test_away_score_uses_grace_period_then_decreases(self):
-        runtime = EngagementRuntime()
-        for timestamp in range(1000, 5100, 100):
-            front = runtime(feature_window(timestamp))
-        self.assertEqual(front["score"], 98.0)
-
-        first_away = runtime(feature_window(5200, yaw=45.0))
-        self.assertEqual(first_away["orientation_state"], "away")
-        self.assertEqual(first_away["score"], 98.0)
-        for timestamp in range(5300, 8400, 100):
-            away = runtime(feature_window(timestamp, yaw=45.0))
-        self.assertLess(away["score"], first_away["score"])
 
     def test_multiple_faces_are_deferred_and_do_not_get_a_score(self):
-        result = EngagementRuntime()(feature_window(1000, faces=2))
+        result = GaussianRuntime()(feature_window(1000, faces=2))
         self.assertIsNone(result["score"])
         self.assertIn("multiple_faces_unsupported", result["reason_codes"])
 
     def test_missing_face_is_not_converted_to_zero(self):
-        result = EngagementRuntime()(feature_window(1000, faces=0))
+        result = GaussianRuntime()(feature_window(1000, faces=0))
         self.assertIsNone(result["score"])
         self.assertIn("face_not_found", result["reason_codes"])
 
     def test_long_observation_gap_resets_score_history(self):
-        runtime = EngagementRuntime()
+        runtime = GaussianRuntime()
         for timestamp in range(1000, 5100, 100):
             runtime(feature_window(timestamp))
         missing = runtime(feature_window(6000, faces=0))
         self.assertIsNone(missing["score"])
         resumed = runtime(feature_window(6100))
-        self.assertEqual(resumed["score"], 90.0)
+        self.assertIsNone(resumed["score"])
+        self.assertEqual(resumed["current_direction_score"], 100)
         self.assertEqual(resumed["front_seconds"], 0.0)
 
     def test_tracking_key_change_starts_new_timing_state(self):
-        runtime = EngagementRuntime()
+        runtime = GaussianRuntime()
         first = runtime(feature_window(1000))
         switched = runtime(feature_window(1100, track_key=2))
-        self.assertEqual(first["score"], 90.0)
-        self.assertEqual(switched["score"], 90.0)
+        self.assertIsNone(first["score"])
+        self.assertIsNone(switched["score"])
         self.assertEqual(switched["front_seconds"], 0.0)
         self.assertIn("tracking_key_changed", switched["reason_codes"])
 
     def test_downward_look_holds_then_gradually_reduces_score(self):
-        runtime = EngagementRuntime()
+        runtime = GaussianRuntime()
         for timestamp in range(1000, 6100, 100):
             result = runtime(feature_window(timestamp))
         self.assertEqual(result["score"], 100.0)
@@ -104,10 +93,11 @@ class RuntimeTests(unittest.TestCase):
 
         for timestamp in range(16200, 21201, 100):
             result = runtime(feature_window(timestamp, pitch=20.0))
-        self.assertEqual(result["score"], 80.0)  # 10초 감쇠 후 20점 하락 상한
+        self.assertEqual(result["current_direction_score"], 80.0)  # 현재 점수의 감쇠 상한
+        self.assertGreater(result["score"], 80)  # 이동 평균에는 이전 점수가 남는다
 
     def test_down_state_uses_hysteresis_near_threshold(self):
-        runtime = EngagementRuntime()
+        runtime = GaussianRuntime()
         runtime(feature_window(1000))
         down = runtime(feature_window(1100, pitch=16.0))
         self.assertEqual(down["orientation_state"], "looking_down")

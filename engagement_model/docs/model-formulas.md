@@ -3,7 +3,7 @@
 [현재 구현·실행 안내](../README.md) · [실험 해석](experiments.md) · [과거 실험·변경 기록](implementation-history.md)
 
 수식의 구현 근거는 `scoring.py`, `input_adapter.py`, `runtime.py`, `gaussian.py`입니다.
-점수는 방향·시간에 대한 실험 지표이며 실제 집중도 확률이 아닙니다.
+점수는 방향·시간에 대한 실험 지표이며 실제 집중도 확률이 아닙니다. 현재 실행 모델은 Gaussian만 남기고 Legacy/Huang은 제거했습니다.
 
 ## 공통 입력과 각도 완화
 
@@ -16,80 +16,13 @@ h(a; d,k,b) = 0                                              if |a| <= d
              sign(a) * [k*(min(|a|,b)-d) + max(0,|a|-b)]      otherwise
 ```
 
-- 상태 분류·Legacy Yaw: `d=2°, k=0.75, b=15°`.
+- 상태 분류 Yaw: `d=2°, k=0.75, b=15°`.
 - Gaussian softened 점수 Pitch: `d=2°, k=0.75, b=10°`.
 - Gaussian softened 점수 Yaw: 상태 분류와 같은 설정.
 - 큰 각도에서는 기울기가 1이며 완화 구간에서 생긴 오프셋만 남습니다.
 - 홀함수이므로 동일 Pitch에서 ±동일 Yaw의 점수는 같습니다.
-- Pitch 완화는 프로젝트가 추가한 실험 정책이며 기존 Legacy Pitch 처리나 논문 원식이 아닙니다.
+- Pitch 완화는 프로젝트가 추가한 실험 정책이며 논문 원식이 아닙니다.
 - 아래 보기 판정·전이 보류에는 완화 전 Pitch를 사용합니다.
-
-## Legacy
-
-`classify_orientation()`의 상태 순서는 상위 README를 참고합니다.
-`behavior_score()`의 기본 설정 대입식은 다음과 같습니다.
-
-```text
-clip(x) = max(0, min(1, x))
-S_front = 90 + 10 * clip(front_seconds / 5)
-A_yaw = clip((abs(model_yaw) - 30) / 30)
-A_up  = clip((-pitch - 20) / 20)
-A = max(A_yaw, A_up)
-D = clip((away_seconds - 3) / 7)
-S_away = max(0, min(100, 70 - 30*A - 40*D))
-```
-
-`away_seconds <= 3`이면 새 감점 대신 이전 안정 점수를 반환합니다.
-이전 점수가 없으면 null입니다. ambiguous·관측 불가 역시 null입니다.
-아래 보기 시작 점수가 있으면 5초 유예 뒤 10초 동안 최대 20점을 감점합니다.
-
-```text
-S_down = clip100(down_start_score - 20*clip((looking_down_seconds-5)/10))
-```
-
-이 점수 유지·감점 규칙은 프로젝트의 실험 규칙입니다.
-화면용 `display_score` 유지와 계산식의 `previous_stable_score`는 별개입니다.
-현재 점수가 null일 때의 화면 캐시는 최대 2초이며 집계 입력으로 사용하지 않습니다.
-
-## Huang 온라인 모델
-
-출처: Huang, Zhuo, Gao (2024),
-*How attentive is a student in class? A concentration evaluation method based on head Euler angle*.
-[DOI](https://doi.org/10.1016/j.heliyon.2024.e37365) ·
-[Method 원문](https://pmc.ncbi.nlm.nih.gov/articles/PMC11417239/)
-
-원문의 큰 구간 Pitch 시퀀스는 `SP_i`, 전체 시퀀스는 `S`, 작은 구간 평균은 `p_ij`입니다.
-원문 Pitch는 위쪽 양수입니다. `scoring.py`의 순수 함수가 다음 식을 구현합니다.
-
-```text
-(1) q_i = median(SP_i) if |Δ(SP_i)| >= θ else median(S)
-(2) a_ij = |(p_ij-q_i)/(max(SP_i)-q_i)| if p_ij >= q_i
-           |(p_ij-q_i)/(min(SP_i)-q_i)| otherwise
-(3) P_ij = 1/(1+exp(-a_ij*(p_ij-q_i)))
-(4) β = |yaw|-cs if x >= W/2 else |yaw|+cs
-(5) cs = atan(|x-W/2|/y)
-(6) Y = 1-β/O
-(7) C = 1-sqrt((Y-1)^2+(P-1)^2)/sqrt(2)
-```
-
-식 (5)의 각도 단위는 식 전체에서 일치시킵니다. 구현은 도로 변환합니다.
-`Δ`는 구현에서 max-min 진폭으로 해석하며, 백분율은 0~1 비율로 표현합니다.
-
-`huang_head_up()`, `huang_front_facing()`, `huang_concentration()`이 대응합니다.
-온라인 `huang_window_score()`는 다음 변형을 포함하며 논문 전체의 재현이 아닙니다.
-
-- 프로젝트의 아래쪽 양수 Pitch를 반전하고 Yaw 압축 전 상대각을 사용합니다.
-- 미래의 전체 중앙값은 사용할 수 없어 낮은 진폭 구간의 기준을 보정 정면 0도로 둡니다.
-- 교실 공간좌표가 없어 `Y_local=clip(1-abs(relative_yaw)/90)`로 대체합니다.
-- θ=5도, 큰 구간 30초, 작은 구간 3초를 기본으로 사용합니다. 시간 선택은 논문 범위에 기초한 프로젝트 설정입니다.
-- 유효 관측 시간으로 작은 구간 P/Y를 가중하고 마지막에 `100*C`를 계산합니다.
-- 미완료 작은 구간·아래 보기·결측은 제외하고 관측/점수화 시간 비율 70%를 요구합니다.
-- 순수 함수는 분모 0에서 null입니다. 온라인에서만 `p=q`인 퇴화 구간을 P=0.5로 처리합니다.
-- 이 예외는 프로젝트 중립 정책이며 논문에 명시된 예외식이 아닙니다.
-
-정지 정면에서 P=0.5, Y=1이면 약 64.6점입니다. 정면을 100점으로 보정한 모델이 아닙니다.
-아래 보기 후 정면 복귀 시 실시간 이력을 새로 시작하고 기본3초를 수집합니다.
-publisher는 전체 근거 구간을 별도로 유지하므로 같은 시점에 이벤트 점수가 보류될 수 있습니다.
 
 ## Gaussian 각도 공간 모델
 
@@ -127,7 +60,7 @@ S_angle=100*exp(-0.5*((P_eff/sigma_pitch)^2+(Y_eff/sigma_yaw)^2))
 sigma 기본15/20도와 전처리 계수는 검증 전 프로젝트 실험값입니다.
 이 각도 sigma를 최적값으로 선택했다는 실험 근거는 현재 코드만으로 확인할 수 없습니다.
 설정·CLI의 기본값과 후보 비교 기능이 있다는 사실을 통계적 최적화 결과로 해석하지 않습니다.
-ambiguous도 유효 각도면 점수화하고 away에 Legacy3초 유예를 적용하지 않습니다.
+ambiguous도 유효 각도면 점수화하고 away도 즉시 방향 점수를 계산합니다.
 하향 전이와 미검출은 현재 점수를 null로 둡니다. 아래 보기는 직전 유효 점수가 있으면 5초 유지 후 10초간 최대 20점을 선형 감점합니다.
 
 ### 최근10초의 시간 가중
@@ -157,8 +90,6 @@ S_time=sum(S_angle(segment)*integral_segment(w(t)dt))
 
 | 선택 | 모델 버전 | 설정 버전 | publisher 확장 |
 |---|---|---|---|
-| Legacy | experimental-0.5 | experimental-0.4 | window-1 |
-| Huang | huang-online-0.2 | huang-online-0.2 | window-1 |
 | Gaussian relative | angle-time-0.4 | gaussian-angle-time-0.4-relative | angle-time-window-4 |
 | Gaussian softened | angle-time-0.4 | gaussian-angle-time-0.4 | angle-time-window-4 |
 

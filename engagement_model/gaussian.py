@@ -6,7 +6,7 @@ import math
 from .config import ModelConfig
 from .scoring import _number, _validate_angles
 from .input_adapter import HeadAngles, soften_angle
-from .runtime import EngagementRuntime
+from .runtime import HeadOrientationState
 from .eye_candidate import EyeCandidate
 
 
@@ -44,7 +44,7 @@ def gaussian_window_score(segments, start, end, config):
     """시간 변형: 선형 최근성 커널의 구간 적분. 표본 개수에 의존하지 않는다.
 
     w(t)=(t-(end-window_ms))/window_ms. 각 구간은 최대 관측 유지 시간 이내만 제공한다.
-    반환값/구간 계약은 Huang 집계기와 동일하며 원시 각도는 저장 결과에 넣지 않는다.
+    원시 각도는 저장 결과에 넣지 않고 점수와 관측·점수화 시간을 반환한다.
     """
     from .input_adapter import HeadAngles
 
@@ -86,7 +86,7 @@ def gaussian_window_score(segments, start, end, config):
                 reason_codes=reasons)
 
 
-class GaussianRuntime(EngagementRuntime):
+class GaussianRuntime(HeadOrientationState):
     """기존 어댑터/자세/시간 상태를 재사용하며 Gaussian 점수만 별도로 계산한다."""
 
     def __init__(self, config=None, *, downward_policy=None, **kwargs):

@@ -10,11 +10,9 @@ import cv2
 from integration import IntegrationService
 from .face_analysis import FaceAnalyzer
 from .integrated_analysis import VisionPipeline, WindowCapture, list_windows
-from .pose_analysis import PoseAnalyzer
 from .preview import PreviewCapture, LandmarkOverlaySmoother
 from .developer_view import render_feature_panel, render_video_frame
-from engagement_model.runtime import EngagementRuntime, MODEL_ID, MODEL_VERSION
-from engagement_model.config import ModelConfig
+from engagement_model.gaussian import GaussianRuntime
 from .window_capture import FrameNotAvailable
 
 CAMERA_WINDOW = 'Webcam source - keep visible'
@@ -33,8 +31,8 @@ def open_demo_log(log_dir, session_id, model_runtime):
         'record_type': 'run_metadata',
         'created_at_utc': datetime.now(timezone.utc).isoformat(),
         'session_id': session_id,
-        'model_id': MODEL_ID,
-        'model_version': MODEL_VERSION,
+        'model_id': model_runtime.model_id,
+        'model_version': model_runtime.model_version,
         'config': asdict(model_runtime.config),
         'score_display_hold_seconds': model_runtime.display_score_hold_seconds,
         'note': '영상 프레임은 저장하지 않으며, 이 파일은 데모 진단용 특징/판정 기록입니다.',
@@ -88,7 +86,7 @@ class DeveloperPreviewOutput:
         self.windows_ready = False
         self.result_panel_shape = None
 
-    def render(self, frame, result, face_analyzer, pose_analyzer, model_result):
+    def render(self, frame, result, face_analyzer, model_result):
         """웹캠 데모에서 사용하던 캡처 프리뷰와 텍스트 결과를 함께 그린다."""
         if frame is None:
             return {"key": -1, "quit": False, "calibrate": False,
@@ -107,7 +105,7 @@ class DeveloperPreviewOutput:
             self.windows_ready = True
 
         preview = render_video_frame(
-            frame, result, face_analyzer.last_landmarks, pose_analyzer.last_landmarks,
+            frame, result, face_analyzer.last_landmarks,
             self.overlay_smoother, show_overlay=self.show_landmarks,
             show_tessellation=self.show_tessellation,
         )
@@ -245,14 +243,14 @@ def main():
             raise RuntimeError('웹캠 창을 찾지 못했습니다.')
 
         service = IntegrationService()
-        model_runtime = EngagementRuntime(config=ModelConfig())
+        model_runtime = GaussianRuntime()
         sid = service.start_session(
             'Webcam engagement demo',
             config={
                 'config_version': model_runtime.config.config_version,
                 'participation_model': {
-                    'model_id': MODEL_ID,
-                    'model_version': MODEL_VERSION,
+                    'model_id': model_runtime.model_id,
+                    'model_version': model_runtime.model_version,
                 },
                 'stt_model': None,
             },
@@ -261,10 +259,9 @@ def main():
         print(f'테스트 로그: {log_path.resolve()}')
         analyzer = FaceAnalyzer(show_landmarks=True)
         preview_capture = PreviewCapture(WindowCapture(matching[-1]))
-        pose_analyzer = PoseAnalyzer(show_landmarks=True)
         pipeline = VisionPipeline(
             service, sid, preview_capture, analyzer,
-            model_consumer=model_runtime, pose_analyzer=pose_analyzer,
+            model_consumer=model_runtime,
         )
         print('C: 정면 보정 시작 (3초), V: 기준점 표시 전환, Q 또는 Ctrl+C: 종료')
         started = time.monotonic()
@@ -281,7 +278,6 @@ def main():
             if source_controls["quit"]:
                 break
             analyzer.show_landmarks = developer_output.show_landmarks
-            pose_analyzer.show_landmarks = developer_output.show_landmarks
             try:
                 result = pipeline.process_one()
             except FrameNotAvailable:
@@ -299,7 +295,7 @@ def main():
                     boxes=getattr(analyzer, 'last_face_boxes', []),
                 )
             controls = developer_output.render(
-                display_frame, result, analyzer, pose_analyzer,
+                display_frame, result, analyzer,
                 model_runtime.latest,
             )
             if controls['calibrate']:

@@ -8,12 +8,10 @@ import math
 from .face_analysis import DEFAULT_MODEL, FaceAnalyzer
 from .face_postprocessing import FacePostProcessor, POSTPROCESSING_VERSION
 from .head_calibration import HeadCalibration
-from .pose_analysis import PoseAnalyzer
 from .window_capture import FrameNotAvailable, WindowCapture
 
-FEATURE_VERSION = 'experimental-0.8'
+FEATURE_VERSION = 'experimental-0.9'
 DEFAULT_FACE_ANALYSIS_HZ = 10.0
-DEFAULT_POSE_ANALYSIS_HZ = 5.0
 DEFAULT_MAX_ANALYSIS_DIMENSION = 1920
 
 
@@ -29,31 +27,18 @@ def _without_transient_tracking(value):
     return value
 
 
-def feature_quality(faces, bodies, pose_enabled, pose_observation_age_ms=None,
-                    max_pose_age_ms=500):
-    """프레임별 결측을 요약한다. valid는 측정 정확도가 검증됐다는 뜻이 아니다."""
-    face_incomplete = any(
+def feature_quality(faces):
+    """얼굴 관측 품질을 요약한다. 상체 미측정은 결측 사유가 아니다."""
+    if not faces:
+        return {'status': 'not_observable', 'reason_codes': ['face_not_found']}
+    incomplete = any(
         face.get('eye_openness') is None
         or face.get('head_angles_degrees') is None
         or face.get('quality', {}).get('status', 'valid') != 'valid'
         for face in faces
     )
-    body_incomplete = not pose_enabled or not bodies or any(
-        body.get('shoulder_center') is None for body in bodies
-    )
-    reasons = []
-    if not faces:
-        reasons.append('face_not_found')
-    if face_incomplete or body_incomplete:
-        reasons.append('insufficient_observation')
-    if (pose_enabled and pose_observation_age_ms is not None
-            and pose_observation_age_ms > max_pose_age_ms):
-        reasons.append('stale_pose_observation')
-    if not faces and not bodies:
-        status = 'not_observable'
-    else:
-        status = 'partial' if reasons else 'valid'
-    return {'status': status, 'reason_codes': reasons}
+    return {'status': 'partial' if incomplete else 'valid',
+            'reason_codes': ['insufficient_observation'] if incomplete else []}
 
 
 def list_windows():
@@ -122,32 +107,24 @@ class VisionPipeline:
     """호출자가 수업 세션과 창/분석기의 생명주기를 관리한다."""
     def __init__(
         self, service, session_id, capture, analyzer,
-        model_consumer=None, intermediate_path=None, pose_analyzer=None,
+        model_consumer=None, intermediate_path=None,
         face_postprocessor=None,
         face_analysis_hz=DEFAULT_FACE_ANALYSIS_HZ,
-        pose_analysis_hz=DEFAULT_POSE_ANALYSIS_HZ,
         max_analysis_dimension=DEFAULT_MAX_ANALYSIS_DIMENSION,
     ):
         self.service, self.session_id = service, session_id
         self.capture, self.analyzer = capture, analyzer
         self.model_consumer = model_consumer
-        self.pose_analyzer = pose_analyzer
         # 후처리기는 주입 가능하게 두어 모델 확정 시 구현체 교체가 쉽도록 한다.
         self.face_postprocessor = face_postprocessor or FacePostProcessor()
-        if face_analysis_hz <= 0 or pose_analysis_hz <= 0:
+        if face_analysis_hz <= 0:
             raise ValueError('분석 주기는 0보다 커야 합니다.')
         self.face_analysis_hz = float(face_analysis_hz)
-        self.pose_analysis_hz = float(pose_analysis_hz)
         self.max_analysis_dimension = max_analysis_dimension
         self.face_interval_ms = round(1000 / self.face_analysis_hz)
-        self.pose_interval_ms = round(1000 / self.pose_analysis_hz)
         self.last_face_analysis_ms = None
-        self.last_pose_analysis_ms = None
         self.latest_faces = []
-        self.latest_bodies = []
-        self.latest_pose_movement = None
         self.face_sample_times = deque(maxlen=10)
-        self.pose_sample_times = deque(maxlen=10)
         self.previous_positions = {}
         self.head_calibration = HeadCalibration()
         self.intermediate_path = Path(intermediate_path) if intermediate_path is not None else None
@@ -240,55 +217,25 @@ class VisionPipeline:
             calibration_status = self.head_calibration.update(faces, capture_ms)
             calibration_diagnostics = self.head_calibration.diagnostics(capture_ms)
 
-            # Run pose less often and reuse its latest observation between pose samples.
-            pose_due = self.pose_analyzer is not None and (
-                self.last_pose_analysis_ms is None
-                or capture_ms - self.last_pose_analysis_ms >= self.pose_interval_ms
-            )
-            if pose_due:
-                bodies = self.pose_analyzer.analyze(frame)
-                self.last_pose_analysis_ms = capture_ms
-                self.pose_sample_times.append(capture_ms)
-                self.latest_bodies = bodies
-                self.latest_pose_movement = self._movement(
-                    'body', bodies, 'shoulder_center', capture_ms)
-            else:
-                bodies = self.latest_bodies
-
             head_movement = self._movement('head', faces, 'head_position', capture_ms)
-            # Pose motion is new only on pose samples; do not repeat the same candidate at face rate.
-            body_movement = self.latest_pose_movement if pose_due else None
-            pose_age_ms = (
-                capture_ms - self.last_pose_analysis_ms
-                if self.last_pose_analysis_ms is not None else None
-            )
-            max_pose_age_ms = max(self.pose_interval_ms * 2, 500)
             feature_window = {
                 'session_id': self.session_id,
                 'start_ms': capture_ms,
                 'end_ms': capture_ms,
                 'features': {
                     'faces': faces,
-                    'upper_bodies': bodies,
                     'head_movement_candidate': head_movement,
-                    'upper_body_movement_candidate': body_movement,
                     'head_calibration_status': calibration_status,
                     'head_calibration_diagnostics': calibration_diagnostics,
                     'face_postprocessing_version': POSTPROCESSING_VERSION,
                     'sampling': {
                         'target_face_hz': self.face_analysis_hz,
                         'actual_face_hz': self._sample_rate(self.face_sample_times),
-                        'target_pose_hz': self.pose_analysis_hz if self.pose_analyzer else None,
-                        'actual_pose_hz': self._sample_rate(self.pose_sample_times),
-                        'pose_observation_age_ms': pose_age_ms,
                         'source_size': {'width': source_width, 'height': source_height},
                         'analysis_size': {'width': width, 'height': height},
                     },
                 },
-                'quality': feature_quality(
-                    faces, bodies, self.pose_analyzer is not None,
-                    pose_age_ms, max_pose_age_ms,
-                ),
+                'quality': feature_quality(faces),
                 'feature_version': FEATURE_VERSION,
             }
             # Optional intermediate rows use the same face sampling rate as the model input.
@@ -313,11 +260,7 @@ class VisionPipeline:
                 if hasattr(self.capture, 'close'):
                     self.capture.close()
             finally:
-                try:
-                    self.analyzer.close()
-                finally:
-                    if self.pose_analyzer is not None:
-                        self.pose_analyzer.close()
+                self.analyzer.close()
         finally:
             if hasattr(self.face_postprocessor, 'reset'):
                 self.face_postprocessor.reset()
@@ -338,8 +281,6 @@ def main():
     parser.add_argument('--quiet', action='store_true', help='특징값 터미널 표시 끄기')
     parser.add_argument('--face-hz', type=float, default=DEFAULT_FACE_ANALYSIS_HZ,
                         help='Target face analysis rate (default: 10 Hz)')
-    parser.add_argument('--pose-hz', type=float, default=DEFAULT_POSE_ANALYSIS_HZ,
-                        help='Target pose analysis rate (default: 5 Hz)')
     parser.add_argument('--max-analysis-dimension', type=int,
                         default=DEFAULT_MAX_ANALYSIS_DIMENSION,
                         help='Maximum model input dimension; 0 disables resizing')
@@ -359,15 +300,9 @@ def main():
     # 참여 모델이 정해지면 model_consumer에 실제 모델 입력 함수를 연결한다.
     analyzer = FaceAnalyzer(args.model, show_landmarks=not args.no_preview)
     try:
-        pose_analyzer = PoseAnalyzer(show_landmarks=not args.no_preview)
-    except Exception:
-        analyzer.close()
-        raise
-    try:
         capture = WindowCapture(args.hwnd)
     except Exception:
         analyzer.close()
-        pose_analyzer.close()
         raise
     preview_window = 'Class capture - V: landmarks, Q: quit'
     if not args.no_preview:
@@ -377,9 +312,8 @@ def main():
         capture = PreviewCapture(capture)
     pipeline = VisionPipeline(
         service, sid, capture, analyzer,
-        intermediate_path=args.intermediate, pose_analyzer=pose_analyzer,
+        intermediate_path=args.intermediate,
         face_analysis_hz=args.face_hz,
-        pose_analysis_hz=args.pose_hz,
         max_analysis_dimension=args.max_analysis_dimension,
     )
     if args.calibrate:
@@ -419,7 +353,7 @@ def main():
             if not args.no_preview:
                 frame = capture.last_frame
                 if show_overlay:
-                    frame = draw_landmarks(frame, analyzer.last_landmarks, pose_analyzer.last_landmarks)
+                    frame = draw_landmarks(frame, analyzer.last_landmarks)
                 else:
                     frame = frame.copy()
                 status = result['features']['head_calibration_status']

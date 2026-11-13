@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 import cv2
 from integration import IntegrationService
-from engagement_model.gaussian import GaussianRuntime
 from engagement_model.config import ModelConfig
 from engagement_model.multi_face import MultiFaceGaussianRuntime
 from engagement_model.position_tracks import PositionTrackGaussianRuntime
@@ -14,7 +13,6 @@ from engagement_model.window_publisher import WindowPublisher
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
-from video_recognition.pose_analysis import PoseAnalyzer
 from video_recognition.face_reidentification import FaceReidentifier
 from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother
 from engagement_model.webcam_demo import PoseInputDiagnostics, render_panel
@@ -222,7 +220,7 @@ class LiveSession:
                         'stt': self.audio_source is not None, 'preview': preview},
             'components': {key: snapshot['status'].get(key) for key in ('vision', 'model', 'stt', 'assistant')},
             'video': {'result_age_ms': max(0, now-latest['start_ms']) if latest else None,
-                      'face_hz': sampling.get('actual_face_hz'), 'pose_hz': sampling.get('actual_pose_hz'),
+                      'face_hz': sampling.get('actual_face_hz'),
                       'source_size': sampling.get('source_size'), 'analysis_size': sampling.get('analysis_size')},
             'stt': {key: stats.get(key) for key in ('source', 'rtf', 'lag_ms_latest', 'lag_ms_p50',
                 'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities')},
@@ -320,11 +318,10 @@ class LiveSession:
                 return
 
     def _run_vision(self):
-        face = pose = window = capture = pipeline = None
+        face = window = capture = pipeline = None
         try:
             # 좌표는 개발자 창을 위해서만 메모리에 유지하며 JSON 이벤트나 최종 세션에는 넣지 않는다.
             face = FaceAnalyzer(show_landmarks=True, pose_source='face-transform')
-            pose = PoseAnalyzer(show_landmarks=True)
             window = WindowCapture(self.hwnd, expected_process_id=self._window_process_id)
             if self._window_process_id is None:
                 self._window_process_id = getattr(window, 'process_id', None)
@@ -340,7 +337,7 @@ class LiveSession:
                 self._start_model()
             pipeline = VisionPipeline(
                 self.service, self.sid, capture, face,
-                model_consumer=self._consume_frame if self.model_enabled or self.reidentification_enabled else None, pose_analyzer=pose,
+                model_consumer=self._consume_frame if self.model_enabled or self.reidentification_enabled else None,
             )
             while not self.stop_event.is_set():
                 self._maybe_restart_model()
@@ -354,7 +351,6 @@ class LiveSession:
                 capture.keep_frame = preview_enabled or self.reidentification_enabled
                 # 오버레이를 숨겨도 자세 입력 품질 진단에는 기준점이 필요하다.
                 face.show_landmarks = preview_enabled
-                pose.show_landmarks = preview_enabled and show_landmarks
                 try:
                     result = pipeline.process_one()
                 except FrameNotAvailable:
@@ -374,7 +370,7 @@ class LiveSession:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
                 if preview_enabled and capture.last_frame is not None:
-                    if self._render_developer_preview(capture.last_frame, result, face, pose, show_landmarks):
+                    if self._render_developer_preview(capture.last_frame, result, face, show_landmarks):
                         # 키 입력도 분석기와 같은 스레드에서 처리해 보정 상태를 안전하게 바꾼다.
                         self._recalibrate_pipeline(pipeline)
                 else:
@@ -389,7 +385,7 @@ class LiveSession:
                 if pipeline:
                     pipeline.close()
                 else:
-                    for resource in (capture or window, pose, face):
+                    for resource in (capture or window, face):
                         if resource:
                             resource.close()
             except Exception as exc:
@@ -622,7 +618,7 @@ class LiveSession:
         self._developer_windows_ready = False
         self._pose_input_diagnostics.reset()
 
-    def _render_developer_preview(self, image, result, face, pose, show_landmarks):
+    def _render_developer_preview(self, image, result, face, show_landmarks):
         """웹캠 모델 데모와 같은 패널에 현재 수업 프레임과 실제 모델 결과를 표시한다."""
         if image is None:
             return False
@@ -668,7 +664,7 @@ class LiveSession:
                           'head_calibration_status': calibration.get('status', 'waiting'),
                           'head_calibration_diagnostics': calibration}}
         panel = render_panel(frame, display_result, {'gaussian': model},
-            overlay_smoother=self._landmark_overlay_smoother, face=face, pose=pose,
+            overlay_smoother=self._landmark_overlay_smoother, face=face,
             show_overlay=show_landmarks, primary='gaussian', debug=True,
             diagnostics=diagnostics, debug_page=page, live=True)
         cv2.imshow(DEBUG_INFO_WINDOW, panel)
