@@ -1,6 +1,6 @@
 # 웹캠 실행과 좌우 진단
 
-[모델 개요](../README.md) · [수식](model-formulas.md) · [실험 해석](experiments.md) · [과거 기록](implementation-history.md)
+[모델 개요](../README.md) · [수식](model-formulas.md) · [실험 해석](experiments.md)
 
 ## 실행 환경과 기본 조작
 

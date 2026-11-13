@@ -18,7 +18,6 @@
 - [모델별 수식·원식과 변형·버전](docs/model-formulas.md)
 - [실험 조건·버전별 결과·검증 범위](docs/experiments.md)
 - [웹캠 조작·자동 좌우 진단·결과 해석](docs/webcam-diagnostics.md)
-- [MediaPipe 통합 범위·검증·남은 제약](docs/integration-review.md)
 
 ### MediaPipe 얼굴 변환행렬 자세 추정
 
@@ -61,7 +60,6 @@ ID 이탈·재식별 불확실 구간은 현재/최근 점수 모두 null입니�
 
 프런트는 재식별을 끄면 단기 위치 트랙별 다인 경로를 사용합니다. 트랙은 신원이 아니며 누락·인원 수 변화·겹침·큰 이동·긴 공백에서 기준을 폐기합니다.
 MobileGaze 시선 실험은 포함하지 않습니다. [프런트 실행 안내](../frontend/README.md)를 참고하세요.
-- [정리 전 README 원문·과거 실험·변경 이력](docs/implementation-history.md)
 
 ## 2. 전체 데이터 처리 흐름
 
@@ -312,7 +310,6 @@ A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기
   [DOI](https://doi.org/10.3390/s24051365)
 
 원식·온라인 변형·예외 정책의 구분은 [상세 수식](docs/model-formulas.md)에 정리했습니다.
-과거 실험 표는 [이력 문서](docs/implementation-history.md)의 당시 조건으로만 해석합니다.
 
 ### 프런트 머리·눈 결합 점수
 
