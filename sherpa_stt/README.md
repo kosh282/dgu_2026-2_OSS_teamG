@@ -15,7 +15,8 @@ SherpaTranscriber
   ├─ 텍스트 변경 시 transcript_partial (revision 증가)
   ├─ 엔드포인트 감지 시 transcript_final (is_edited: false)
   │    구간 = 토큰 타임스탬프를 세션 시각으로 변환한 추정값
-  └─ 청크 공백 > max_gap_ms 이면 현재 발화 확정 + analysis_status(audio_unavailable)
+  └─ 청크 번호가 빠지면(캡처가 청크를 버림) 현재 발화 확정 + analysis_status(audio_unavailable)
+     번호가 이어지면 시각이 건너뛰어도(콜백 지연) 같은 발화로 이어서 인식
   ↓ service.make_event() → service.receive_event()
 IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON에 저장)
 ```
@@ -24,7 +25,7 @@ IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON�
 
 | 파일 | 내용 |
 |---|---|
-| [config.py](config.py) | `SttConfig`: 모델 경로·ID·버전, 샘플레이트, 엔드포인트 규칙, 공백 허용치. `public_info()`는 로컬 경로를 뺀 공개 설정 |
+| [config.py](config.py) | `SttConfig`: 모델 경로·ID·버전, 샘플레이트, 엔드포인트 규칙, 과거 시각 허용치, 자동 음량 조절. `public_info()`는 로컬 경로를 뺀 공개 설정 |
 | [audio.py](audio.py) | 계약 5절 `AudioChunk`, mono float32 변환, 세션 시계 기준 청크 시각 `ChunkClock` |
 | [engine.py](engine.py) | `SherpaEngine`: 모델 파일 탐색, 인식기 생성, 토큰 기반 한국어 띄어쓰기 복원과 토큰 구간 |
 | [download_model.py](download_model.py) | 기본 한국어 모델을 `sherpa_stt/models/`에 내려받기 |
@@ -46,7 +47,7 @@ IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON�
 
 - `provenance.module`은 `speech`, `model_id`/`model_version`은 `SttConfig` 값입니다.
 - `analysis_status.payload.component`는 `stt`입니다. 모델 로드 실패는 `unavailable` + `model_not_configured`, 입력 장치 실패·중단이나 청크 공백은 `audio_unavailable`로 알립니다.
-- 청크 번호가 건너뛰면 500ms보다 짧은 누락도 기존 발화를 마감하고 상태 이벤트로 알립니다. 드라이버 오버플로 또는 불연속 경고도 상태 이벤트로 남깁니다. 청크 처리 지연이 2초를 넘거나 다시 해소되면 상태 이벤트를 생성합니다. 길이와 구간을 알 수 없는 장치 내부 누락까지 정확히 복원할 수는 없습니다.
+- 청크 번호가 건너뛰면 짧은 누락도 기존 발화를 마감하고 상태 이벤트로 알립니다. 번호가 이어지는 청크는 시각만 건너뛰어도 누락으로 보지 않습니다. 영상 분석 부하로 오디오 콜백이 늦게·몰려서 오면 시각이 건너뛰는데, 이를 누락으로 보고 발화를 끊으면 "지하철에서 다리" / "를 벌리고"처럼 문장이 조각났습니다(지연 0.8초 이상에서 5회 중 3~5회, 시뮬레이션 실측). 드라이버 오버플로 또는 불연속 경고도 상태 이벤트로 남깁니다. 청크 처리 지연이 2초를 넘거나 다시 해소되면 상태 이벤트를 생성합니다. 길이와 구간을 알 수 없는 장치 내부 누락까지 정확히 복원할 수는 없습니다.
 - 루프백은 재생되는 소리가 없을 때도 0으로 채운 블록이 연속으로 들어옵니다(실측). 이것은 실제 출력이 무음인 상태입니다. 장치 누락을 무음으로 위장하는 것이 아닙니다.
 - 전사 텍스트는 sherpa-onnx 결과의 `text`가 아니라 토큰을 이어 붙여 만듭니다. `text`는 한글 사이 공백을 지우기 때문입니다(`주민등록증을보여주시겠어요?` → `주민등록증을 보여 주시겠어요?`). 직전 발화에서 넘어온 앞쪽 구두점 토큰은 버립니다.
 - 확정 전사의 `revision`은 같은 발화의 마지막 부분 전사 `revision`과 같습니다.

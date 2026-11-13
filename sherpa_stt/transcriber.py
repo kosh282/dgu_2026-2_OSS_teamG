@@ -22,8 +22,10 @@ class SherpaTranscriber:
       세션 시각으로 변환하고, 현재 세그먼트(직전 확정 이후 첫 청크 시작 ~ 마지막 청크 끝)
       안으로 제한한다. 타임스탬프가 없으면 세그먼트 전체를 쓴다. 단어 정렬이 아닌 추정값이다.
     - `utterance_id`는 텍스트가 처음 인식될 때 만든다. 빈 구간은 이벤트를 남기지 않는다.
-    - `max_gap_ms`보다 긴 청크 공백은 무음으로 채우지 않고 현재 발화를 확정한 뒤
-      `analysis_status`(사유 `audio_unavailable`)로 알린다.
+    - 청크 번호가 빠지면(캡처가 청크를 버림) 무음으로 채우지 않고 현재 발화를 확정한 뒤
+      `analysis_status`(사유 `audio_unavailable`)로 알린다. 번호가 이어지는 청크는 시각이
+      건너뛰어도 같은 오디오로 이어서 인식한다. `max_gap_ms`는 시각이 과거로 되돌아간
+      청크를 거부하는 허용 폭으로 쓴다.
     - 세션 종료(`stop_session`) 전에 `finish()`를 호출해야 마지막 발화가 확정된다.
     """
 
@@ -136,9 +138,12 @@ class SherpaTranscriber:
                 raise ValueError("청크 시각이 이전 청크보다 과거입니다")
             samples = to_mono_float32(chunk)
             events = []
+            # 청크 번호가 이어지면 오디오는 끊기지 않은 것이다. CPU 부하로 콜백이 늦게·몰려서 오면
+            # 시각만 건너뛰므로, 시간 공백만으로 발화를 끊고 인식기를 초기화하지 않는다
+            # (끊으면 "지하철에서 다리" / "를 벌리고"처럼 문장이 조각난다. 지연 시뮬레이션 실측).
+            # 실제 누락은 캡처가 청크를 버려 번호가 빠질 때다.
             missing_ids = self._last_chunk_id is not None and chunk.chunk_id > self._last_chunk_id + 1
-            timed_gap = self._last_end_ms is not None and chunk.start_ms - self._last_end_ms > self._max_gap_ms
-            if self._last_end_ms is not None and (missing_ids or timed_gap):
+            if self._last_end_ms is not None and missing_ids:
                 gap_start = self._last_end_ms
                 events += self._finalize(gap_start)
                 events.append(self.report_status(

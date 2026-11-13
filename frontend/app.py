@@ -505,6 +505,9 @@ def live_page():
                 if level < -50:
                     # 자동 조절 최대치(+30dB)로도 인식이 불안정해지는 범위(실측). 원본 크기를 키우는 것이 근본 해결이다.
                     st.warning('말소리가 매우 작아 전사가 빠질 수 있습니다. 마이크를 가까이 하거나 Windows 입력·출력 볼륨을 높이세요.')
+                elif level < -35:
+                    # 실측(노트북 마이크 -34 dBFS): 파열음 최고값 때문에 자동 조절이 +10dB 안팎에서 멈춰 오류가 잦았다.
+                    st.info('말소리가 작은 편이라 인식 오류가 늘 수 있습니다. Windows 마이크 입력 볼륨을 높이거나 마이크에 가까이 말해 주세요.')
         if diagnostics['video_result_age_ms'] is not None:
             st.caption(f"최근 영상 분석 결과 경과: {diagnostics['video_result_age_ms']}ms")
         if live.model_enabled:

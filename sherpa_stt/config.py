@@ -30,7 +30,8 @@ class SttConfig:
     rule1_min_trailing_silence: float = 2.4
     rule2_min_trailing_silence: float = 1.2
     rule3_min_utterance_length: float = 20.0
-    # 연속 청크 사이 허용 공백. 이를 넘으면 오디오 누락으로 보고 현재 발화를 확정한다.
+    # 청크 시각이 직전 청크보다 과거로 되돌아갈 때 허용하는 폭. 오디오 누락 판단은 청크 번호로 한다
+    # (번호가 이어지면 콜백 지연으로 시각이 건너뛰어도 같은 오디오로 이어서 인식).
     max_gap_ms: int = 500
     # 마이크 입력 청크 길이
     chunk_ms: int = 100
