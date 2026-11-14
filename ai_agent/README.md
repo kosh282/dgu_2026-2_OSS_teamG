@@ -38,6 +38,8 @@ STT ─ transcript_final ─▶ IntegrationService ─▶ LiveAssistant ──�
 
 `teaching_suggestion`은 `title`, `description`, `search_query`, `origin: ai_generated`, `evidence_event_ids`와 선택적인 `trigger_threshold`, `material_sources`, `external_sources`를 포함합니다. 실시간 제안에는 임계값과 점수 근거를 남기고 사후 제안은 전사 구간을 근거로 합니다. 검색 결과는 검증된 출처가 아닙니다.
 - 세션이 종료되면 스스로 멈춥니다. 조교 오류는 `assistant: unavailable`로 알리며, 수업 세션과 다른 모듈은 계속 동작합니다.
+- 종료 요청 또는 세션 종료 후 도착한 외부 응답은 발행하지 않으며 후속 검색·보완 요청도 시작하지 않습니다. 이미 진행 중인 HTTP 요청은 해당 요청의 제한 시간까지 기다릴 수 있습니다.
+- 외부 생성이 실패해도 관련 업로드 자료가 있으면 `resource_suggestion`을 로컬 검색 결과로 제공합니다. provenance는 `local-bm25-ko`이며 AI 생성 제안으로 표시하지 않습니다. 자료가 없으면 제안을 보류합니다. SDK 응답도 개인 API 응답과 같은 필수 필드·자료형 검사를 거칩니다.
 
 **사후 피드백·자료 제안 (`generate_post_session`)**
 - 전사가 있는 5분 구간 중 유효한 실험 점수가 설정값 이하인 구간, 교수자 메모가 있는 구간, 사후 화면에서 명시적으로 선택한 검토 구간에만 시각 맞춤 제안을 추가합니다. 기존 제안이 있으면 중복 생성하지 않습니다. 점수가 없거나 관측 불가인 경우 낮은 점수로 간주하지 않습니다.

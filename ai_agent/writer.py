@@ -192,7 +192,10 @@ class ClaudeWriter:
             return self._client
 
     def _ask(self, system, content, schema, effort):
-        import anthropic
+        try:
+            import anthropic
+        except ImportError as error:
+            raise ClaudeUnavailable('anthropic 패키지가 없습니다. ai_agent/requirements.txt를 설치하세요') from error
         try:
             response = self._get_client().beta.messages.create(
                 model=self._model,
@@ -222,8 +225,10 @@ class ClaudeWriter:
         if text is None:
             raise ClaudeUnavailable("Claude 응답에 텍스트가 없습니다")
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as error:
+            data = json.loads(text)
+            _validate_response(data, schema)
+            return data
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
             raise ClaudeUnavailable("Claude 응답을 해석할 수 없습니다") from error
 
     def suggest(self, evidence_texts, hits):
