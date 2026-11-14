@@ -12,7 +12,7 @@ from .window_capture import FrameNotAvailable, WindowCapture
 
 FEATURE_VERSION = 'experimental-0.9'
 DEFAULT_FACE_ANALYSIS_HZ = 10.0
-DEFAULT_MAX_ANALYSIS_DIMENSION = 2560
+DEFAULT_MAX_ANALYSIS_DIMENSION = 1920
 
 
 def _without_transient_tracking(value):
@@ -137,10 +137,13 @@ class VisionPipeline:
         """창 원본은 보존하고 모델 입력에만 종횡비 유지 축소를 적용한다."""
         height, width = image.shape[:2]
         limit = self.max_analysis_dimension
-        if limit is None or limit <= 0 or max(width, height) <= limit:
+        if limit is None or limit <= 0:
+            return image
+        # 16:9 기준 상자 안에 종횡비를 유지하며 맞춘다. 작은 입력은 확대하지 않는다.
+        scale = min(1.0, limit / width, (limit * 9 / 16) / height)
+        if scale >= 1.0:
             return image
         import cv2
-        scale = limit / max(width, height)
         size = (max(1, round(width * scale)), max(1, round(height * scale)))
         return cv2.resize(image, size, interpolation=cv2.INTER_AREA)
 
@@ -291,7 +294,7 @@ def main():
                         help='Target face analysis rate (default: 10 Hz)')
     parser.add_argument('--max-analysis-dimension', type=int,
                         default=DEFAULT_MAX_ANALYSIS_DIMENSION,
-                        help='Maximum model input dimension; 0 disables resizing')
+                        help='Maximum model input width in a 16:9 bounding box; 0 disables resizing')
     parser.add_argument('--no-preview', action='store_true', help='캡처 미리보기 창 끄기')
     parser.add_argument('--calibrate', action='store_true', help='시작 시 단일 얼굴 정면 기준 수집')
     args = parser.parse_args()

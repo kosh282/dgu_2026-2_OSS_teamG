@@ -31,7 +31,8 @@ class FrameEfficiencyTests(unittest.TestCase):
         self.assertEqual([call.args[0].frame_id for call in analyzer.analyze.call_args_list], [0, 2])
         self.assertEqual((first['start_ms'], second['start_ms']), (0, 100))
         self.assertEqual(second['features']['sampling']['source_size'], {'width': 120, 'height': 80})
-        self.assertEqual(second['features']['sampling']['analysis_size'], {'width': 60, 'height': 40})
+        # 60×33.75(16:9) 상자 안에서 원래 3:2 종횡비를 유지한다.
+        self.assertEqual(second['features']['sampling']['analysis_size'], {'width': 51, 'height': 34})
         clock[0] = 450
         third = pipeline.process_one()
         self.assertEqual(third['features']['sampling']['last_face_interval_ms'], 350)
