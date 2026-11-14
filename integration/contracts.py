@@ -68,7 +68,7 @@ def _check_forbidden(value, field="event"):
             if key.lower() in FORBIDDEN_KEYS:
                 _fail(f"{field}.{key}", "원본 또는 개인별 중간 데이터 키는 허용하지 않습니다")
             _check_forbidden(child, f"{field}.{key}")
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         for child in value:
             _check_forbidden(child, field)
 

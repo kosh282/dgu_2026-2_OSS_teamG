@@ -47,6 +47,7 @@ class IntegrationService:
             config = {"config_version": "initial", "participation_model": None, "stt_model": None}
         if not isinstance(config, dict) or not isinstance(config.get("config_version"), str) or not config["config_version"].strip():
             raise ValueError("config.config_version이 필요합니다")
+        _check_forbidden(config, "config")
         try:
             json.dumps(config, allow_nan=False)
         except (TypeError, ValueError):
@@ -241,6 +242,12 @@ class IntegrationService:
         session, config, events = data.get("session"), data.get("config"), data.get("events")
         if not isinstance(session, dict) or not isinstance(config, dict) or not isinstance(events, list):
             raise IntegrationError("세션 파일 형식이 올바르지 않습니다")
+        # 이벤트 밖의 설정·메타데이터도 재저장되므로 같은 저장 경계를 검사한다.
+        _check_forbidden(data, "session_file")
+        try:
+            json.dumps(data, allow_nan=False)
+        except (TypeError, ValueError):
+            raise IntegrationError("세션 파일은 유한한 JSON 값만 포함해야 합니다") from None
         try:
             sid = session["session_id"]
             UUID(sid)
