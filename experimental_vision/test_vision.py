@@ -26,6 +26,49 @@ class Analyzer:
 
 class VisionTests(unittest.TestCase):
 
+    def test_paused_capture_releases_last_frame_without_stopping_native_capture(self):
+        import threading
+        from unittest.mock import Mock
+        from video_recognition.window_capture import WindowCapture
+        capture = WindowCapture.__new__(WindowCapture)
+        capture.condition = threading.Condition()
+        capture.stopped = False
+        capture.paused = False
+        capture.latest_frame = object()
+        capture.control = Mock()
+        capture.close()
+        capture.close()
+        self.assertIsNone(capture.latest_frame)
+        self.assertTrue(capture.paused)
+        capture.control.stop.assert_not_called()
+
+    def test_frame_callback_cannot_restore_frame_after_close_during_copy(self):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        import numpy as np
+        from video_recognition.window_capture import WindowCapture
+        callbacks = {}
+        backend = Mock()
+        def register(callback):
+            callbacks[callback.__name__] = callback
+            return callback
+        backend.event.side_effect = register
+        with patch.dict(WindowCapture._shared, clear=True), \
+             patch.dict(sys.modules, {'windows_capture': SimpleNamespace(WindowsCapture=Mock(return_value=backend))}), \
+             patch('video_recognition.window_capture.ctypes.WinDLL', return_value=Mock()), \
+             patch('video_recognition.window_capture.get_window_process_id', return_value=123):
+            capture = WindowCapture(42)
+            image = np.zeros((2, 2, 3), dtype=np.uint8)
+            def close_during_copy(_):
+                capture.close()
+                return image
+            with patch('numpy.ascontiguousarray', side_effect=close_during_copy):
+                callbacks['on_frame_arrived'](SimpleNamespace(frame_buffer=image), Mock())
+            self.assertIsNone(capture.latest_frame)
+            self.assertEqual(capture.generation, 0)
+            backend.start_free_threaded.return_value.stop.assert_not_called()
+
     def test_frame_quality_distinguishes_missing_streams(self):
         from video_recognition.integrated_analysis import feature_quality
         face = {'eye_openness': 0.2, 'head_angles_degrees': {'pitch': 0},

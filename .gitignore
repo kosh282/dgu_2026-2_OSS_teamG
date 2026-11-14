@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 frontend/diagnostic_logs/
 engagement_model/diagnostic_logs/
+video_recognition/demo_logs/

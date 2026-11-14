@@ -90,6 +90,9 @@ class WindowCapture:
             import numpy as np
             image = np.ascontiguousarray(frame.frame_buffer[:, :, :3])
             with self.condition:
+                # 복사 도중 close()가 호출돼도 마지막 원본을 다시 보관하지 않는다.
+                if self.paused or self.closed or self.stopped:
+                    return
                 self.latest_frame = image
                 self.generation += 1
                 self.condition.notify_all()
@@ -154,4 +157,5 @@ class WindowCapture:
                 return
             self.stopped = True
             self.paused = True
+            self.latest_frame = None
             self.condition.notify_all()
