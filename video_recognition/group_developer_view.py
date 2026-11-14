@@ -6,14 +6,20 @@ from engagement_model.multi_face import MultiFaceGaussianRuntime
 from engagement_model.position_tracks import PositionTrackGaussianRuntime
 
 
+def group_model_identity(reidentification_enabled=False):
+    """실제 생성 모델과 세션 설정·상태 이벤트가 같은 버전을 사용한다."""
+    return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.5-head'}
+            if reidentification_enabled else
+            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.5-head'})
+
+
 def make_group_runtime(reidentification_enabled=False):
-    """두 진입점의 다인 모델과 눈 감김 설정을 일치시킨다."""
+    """두 진입점에서 다인 머리 점수와 별도 눈 관측을 사용한다."""
     if reidentification_enabled:
-        model = MultiFaceGaussianRuntime(eye_fusion=True)
-        version = 'multi-gaussian-0.4+face-transform-eye'
+        model = MultiFaceGaussianRuntime(eye_fusion=False)
     else:
-        model = PositionTrackGaussianRuntime(eye_fusion=True)
-        version = 'position-gaussian-0.4+face-transform-eye'
+        model = PositionTrackGaussianRuntime(eye_fusion=False)
+    version = group_model_identity(reidentification_enabled)['model_version']
     model.model_version = version
     model.latest['model_version'] = version
     return model

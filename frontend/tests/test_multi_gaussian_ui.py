@@ -31,6 +31,9 @@ class FakeLive:
     def developer_preview_enabled(self): return False
     def diagnostics(self): return {'stt': None, 'video_result_age_ms': None}
     def calibration_state(self): return {'status': 'ready', 'progress': 1}
+    def request_head_calibration(self, identity=None):
+        self.requested_calibration = identity
+        return True
 
     def participant_snapshot(self):
         return [
@@ -81,11 +84,19 @@ class MultiGaussianUITests(unittest.TestCase):
         self.assertFalse(app.exception)
         table = next(item.value for item in app.dataframe if '임시 ID' in item.value.columns)
         self.assertEqual(table['임시 ID'].tolist(), ['S001', 'S002'])
-        self.assertEqual(table.loc[0, '현재 결합 점수'], 87.5)
-        self.assertEqual(table.loc[0, '최근 결합 점수'], 82.0)
+        self.assertEqual(table.loc[0, '현재 머리 점수'], 87.5)
+        self.assertEqual(table.loc[0, '최근 머리 점수'], 82.0)
         self.assertEqual(table.loc[1, '상태'], '관측 불가')
-        self.assertTrue(pd.isna(table.loc[1, '현재 결합 점수']))
-        self.assertTrue(pd.isna(table.loc[1, '최근 결합 점수']))
+        self.assertTrue(pd.isna(table.loc[1, '현재 머리 점수']))
+        self.assertTrue(pd.isna(table.loc[1, '최근 머리 점수']))
+
+    def test_targeted_recalibration_offers_only_observed_tracks(self):
+        app = self.app(live=True).run()
+        selector = next(item for item in app.selectbox if item.label == '개별 재보정 대상')
+        self.assertEqual(selector.options, ['S001'])
+        next(button for button in app.button if button.label == '선택한 대상 재보정').click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.session_state['live'].requested_calibration, 'S001')
 
     def test_reidentification_error_is_visible_while_session_continues(self):
         app = self.app(live=True)

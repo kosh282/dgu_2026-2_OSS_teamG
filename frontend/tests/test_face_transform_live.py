@@ -14,6 +14,11 @@ class FrontendFaceTransformTests(unittest.TestCase):
         analyzer = FaceAnalyzer.__new__(FaceAnalyzer)
         analyzer.mp = SimpleNamespace(Image=lambda **kwargs: None, ImageFormat=SimpleNamespace(SRGB=0))
         analyzer.detector = SimpleNamespace(detect_for_video=lambda *args: result)
+        analyzer.tile_detector = SimpleNamespace(detect=lambda *args: result)
+        analyzer.max_faces = 20
+        analyzer._layout_frame_size = None
+        analyzer._layout_timestamp = None
+        analyzer._layout_regions = []
         analyzer.pose_source = 'face-transform'
         analyzer.last_timestamp = -1
         analyzer.show_landmarks = False
@@ -32,6 +37,8 @@ class FrontendFaceTransformTests(unittest.TestCase):
             live = LiveSession(1, reidentification_enabled=multi)
             runtime = live._make_model()
             self.assertEqual(runtime.model_version, live._model_identity()['model_version'])
-            self.assertIn('face-transform', runtime.latest['model_version'])
+            self.assertEqual(runtime.model_id, live._model_identity()['model_id'])
+            self.assertEqual(runtime.latest['model_version'], runtime.model_version)
+            self.assertFalse(runtime.eye_fusion)
 
 if __name__ == '__main__': unittest.main()

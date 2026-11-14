@@ -280,7 +280,7 @@ def preparation():
             reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
                 key='reidentification_enabled',disabled=running or not video_enabled)
             st.caption('점수는 Gaussian 모델입니다. 재식별을 켜면 임시 ID별로, 끄면 단기 위치 트랙별로 계산합니다. 위치 트랙은 사람을 식별하지 않습니다.')
-            st.caption('실험 구간 점수는 머리 방향 80%와 최근 눈 관측 점수 20%를 결합합니다. 눈을 관측할 수 없는 얼굴은 해당 구간에서 보류합니다.')
+            st.caption('실험 구간 점수는 머리 방향을 사용합니다. 눈 관측값은 별도로 표시하며 점수에 결합하지 않습니다.')
             if reidentification_enabled and video_enabled:
                 st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
                 if importlib.util.find_spec('insightface') is None:
@@ -425,6 +425,8 @@ def live_page():
         model_status=snapshot['status'].get('model')
         stale=bool(live.is_running() and latest_window and duration-latest_window['end_ms'] > 5000)
         value=score(latest_window) if latest_window and model_status != 'unavailable' and not stale and not (live.is_running() and model_status == 'stopped') else None
+        previous_windows=[e for e in windows if score(e) is not None and (not latest_window or e['end_ms'] <= latest_window['end_ms'])]
+        previous_window=max(previous_windows, key=lambda e: (e['end_ms'], e.get('created_ms') or 0)) if previous_windows else None
         _,error,_=live.snapshot()
         if error:
             st.error(f'영상 분석 오류: {error}')
@@ -450,6 +452,8 @@ def live_page():
         metric_options={'height': 'stretch'} if show_calibration and 'height' in inspect.signature(st.metric).parameters else {}
         score_column.metric('최근 실험 구간 점수', f'{value:g}점' if value is not None else ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'), **metric_options)
         if value is None:
+            if previous_window is not None:
+                score_column.caption(f"이전 점수 {score(previous_window):g}점 · {clock(previous_window['end_ms'])} 기준 · 현재 관측 보류")
             rows=live.participant_snapshot() if hasattr(live, 'participant_snapshot') else []
             reason=live_score_unavailable_reason(model_status, getattr(live, 'model_enabled', False), stale, rows, latest_window,
                                                  snapshot.get('status_messages', {}).get('model'))
@@ -584,7 +588,7 @@ def live_page():
                          and isinstance(row.get('head_score'), (int,float))
                          and not isinstance(row.get('head_score'), bool)]
             if model_status == 'running' and age is not None and age <= 1000 and head_values:
-                st.caption(f"참고: 머리 방향만의 임시 평균 {sum(head_values)/len(head_values):.1f}점 · 결합 점수 아님, 저장·제안에 사용하지 않음")
+                st.caption(f"참고: 현재 머리 방향 평균 {sum(head_values)/len(head_values):.1f}점 · 저장 구간 점수와 집계 기준이 다릅니다")
         stt_stats=diagnostics['stt']
         if stt_stats:
             dropped=stt_stats['dropped_chunks']
@@ -630,7 +634,8 @@ def live_page():
                         'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
                 st.dataframe([{('임시 ID' if reid else '임시 위치 트랙'):row['id'], '상태':states.get(row['status'],row['status']),
                     '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
-                    '현재 결합 점수':row['current_direction_score'], '최근 결합 점수':row['score'],
+                    '현재 머리 점수':row['current_direction_score'], '최근 머리 점수':row['score'],
+                    '눈 점수':row.get('eye_score'),
                     '눈 관측률':row.get('eye_coverage'),
                     '보류 사유':', '.join(row.get('reason_codes', []))}
                     for row in rows],hide_index=True,use_container_width=True)
@@ -697,14 +702,15 @@ def review_page():
     windows=snapshot['engagement_windows']
     ordered_windows=sorted(windows,key=lambda e:(e['start_ms'],e['end_ms']))
     has_overlap=any(b['start_ms'] < a['end_ms'] for a,b in zip(ordered_windows,ordered_windows[1:]))
-    measured=[(score(e),max(1,e['end_ms']-e['start_ms'])) for e in windows if score(e) is not None] if not has_overlap else []
+    measured=([(score(e),1) for e in ordered_windows if score(e) is not None] if has_overlap else
+              [(score(e),max(1,e['end_ms']-e['start_ms'])) for e in windows if score(e) is not None])
     average=sum(s*w for s,w in measured)/sum(w for _,w in measured) if measured else None
     valid_scores=[score(e) for e in windows if score(e) is not None]
     columns=st.columns(4)
-    for column,label,value in zip(columns,['수업 전체 실험 점수','점수 있는 구간','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else ('중첩으로 미산출' if has_overlap else '점수 없음'),f'{len(valid_scores)} / {len(windows)}개',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
+    for column,label,value in zip(columns,['롤링 구간 점수 평균' if has_overlap else '수업 전체 실험 점수','점수 있는 구간','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '점수 없음',f'{len(valid_scores)} / {len(windows)}개',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
         column.metric(label,value)
     if has_overlap:
-        st.caption('구간이 서로 겹쳐 전체 평균은 계산하지 않습니다. 구간 수는 수업 시간의 분석 가능률이 아닙니다.')
+        st.caption('겹치는 롤링 구간의 유효 점수를 이벤트마다 한 번씩 평균합니다. 수업 시간 전체의 관측률이나 참여도를 뜻하지 않습니다.')
     if valid_scores:
         st.caption(f'유효 구간 점수 범위 {min(valid_scores):.1f}~{max(valid_scores):.1f}점 · 실험 점수는 집중도나 이해도를 뜻하지 않습니다.')
     else:

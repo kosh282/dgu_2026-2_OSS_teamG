@@ -14,7 +14,7 @@ from video_recognition.face_analysis import FaceAnalyzer
 from video_recognition.face_reidentification import FaceReidentifier
 from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother
 from engagement_model.webcam_demo import PoseInputDiagnostics
-from video_recognition.group_developer_view import make_group_runtime, render_group_panel
+from video_recognition.group_developer_view import group_model_identity, make_group_runtime, render_group_panel
 
 
 # 별도 웹캠을 열지 않고, 실제 분석기에 전달한 프레임을 그대로 보여 주는 창 이름이다.
@@ -429,9 +429,7 @@ class LiveSession:
                     self._active_capture = self._active_face = None
 
     def _model_identity(self):
-        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.4+face-transform-eye'}
-                if self.reidentification_enabled else
-                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.4+face-transform-eye'})
+        return group_model_identity(self.reidentification_enabled)
 
     def _make_model(self):
         return make_group_runtime(self.reidentification_enabled)

@@ -33,6 +33,26 @@ class MultiGaussianLiveTests(unittest.TestCase):
         self.assertEqual(group.model_runtime.model_id, 'multi-face-gaussian')
         self.assertEqual(group.model_runtime.config.scoring_method, 'gaussian')
 
+    def test_selective_recalibration_preserves_other_person_and_publisher(self):
+        from engagement_model.tests.test_position_tracks import sample
+        live = self.live()
+        live._start_model()
+        for t in range(0, 15001, 100):
+            value = sample(t)
+            value['session_id'] = live.sid
+            live.service.elapsed_ms = Mock(return_value=t)
+            live._consume_frame(value)
+        publisher = live.window_publisher
+        with patch.object(live, 'is_running', return_value=True):
+            self.assertTrue(live.request_head_calibration('T1'))
+            self.assertFalse(live.request_head_calibration('unknown'))
+        live._recalibrate_pipeline(Mock(), 'T1')
+        rows = {row['id']: row for row in live.participant_snapshot()}
+        self.assertEqual(rows['T1']['calibration_status'], 'collecting')
+        self.assertEqual(rows['T2']['calibration_status'], 'ready')
+        self.assertIs(live.window_publisher, publisher)
+        self.assertIsNone(publisher._sample)
+
     def test_started_session_uses_matching_gaussian_metadata(self):
         for enabled, expected in ((False,'position-track-gaussian'),(True,'multi-face-gaussian')):
             live = LiveSession(123,reidentification_enabled=enabled)
