@@ -41,13 +41,17 @@ def _evidence(transcripts, hit):
     return matched or list(transcripts)
 
 
-def _external_suggestion(writer, texts, hits, searcher):
+def _external_suggestion(writer, texts, hits, searcher, cancelled=None):
     """AI가 검색어를 만들면 검색 결과 제목을 참고해 제안을 보완한다."""
     result = writer.suggest_teaching(texts, hits)
+    if cancelled is not None and cancelled():
+        return None
     if not result:
         return None
     references = searcher(result.get('search_query', '')) if result.get('search_query') else []
     if references:
+        if cancelled is not None and cancelled():
+            return None
         searched_query = result['search_query']
         refined = writer.suggest_teaching(texts, hits, references)
         if refined:
@@ -142,6 +146,8 @@ class LiveAssistant:
     def step(self):
         """최근 유효 점수가 기준 이하이고 전사가 있으면 자료 또는 수업 제안을 만든다."""
         snapshot = self.service.get_dashboard_snapshot(self.session_id)
+        if self._stop.is_set() or snapshot['session']['status'] != 'running':
+            return None
         now = self.service.elapsed_ms(self.session_id)
         windows = snapshot['engagement_windows']
         if snapshot['status'].get('model') != 'running' or not windows:
@@ -165,7 +171,11 @@ class LiveAssistant:
         hits = [hit for hit in self.index.search(query)
                 if newest - self._suggested.get((hit.page.document_id, hit.page.page), -10**12) > self.cooldown_ms]
         if self.writer.uses_external_service and hasattr(self.writer, 'suggest_teaching'):
-            result = _external_suggestion(self.writer, [event['payload']['text'] for event in window], hits, self.searcher)
+            result = _external_suggestion(self.writer, [event['payload']['text'] for event in window], hits,
+                                          self.searcher,
+                                          cancelled=lambda: self._stop.is_set() or not self._session_running())
+            if self._stop.is_set() or not self._session_running():
+                return None
             self._report_writer_error(fallback=False)
             if result is None:
                 return None
@@ -185,6 +195,8 @@ class LiveAssistant:
         if not hits:
             return None
         result = self.writer.suggest([event["payload"]["text"] for event in window], hits)
+        if self._stop.is_set() or not self._session_running():
+            return None
         self._report_writer_error()
         if result is None:
             return None
