@@ -193,7 +193,10 @@ class LoopbackCapture:
     def stop(self):
         self._stop.set()
         if self._recorder is not None:
-            self._recorder.stop()
+            # SoundCard 녹음기는 stop이 없으며 컨텍스트를 벗어날 때 닫힌다.
+            stop_recorder = getattr(self._recorder, 'stop', None)
+            if callable(stop_recorder):
+                stop_recorder()
         if self._thread is not None:
             self._thread.join(timeout=2)
             self._thread = None

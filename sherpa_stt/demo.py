@@ -27,9 +27,9 @@ def _print_event(event):
     kind, payload = event["event_type"], event["payload"]
     span = f"[{event['start_ms'] / 1000:7.2f}s ~ {event['end_ms'] / 1000:7.2f}s]"
     if kind == "transcript_partial":
-        print(f"\r{span} … {payload['text']}", end="", flush=True)
+        print(f"{span} [인식 중] {payload['text']}", flush=True)
     elif kind == "transcript_final":
-        print(f"\r{span} ✔ {payload['text']}", flush=True)
+        print(f"{span} [확정 전사] {payload['text']}", flush=True)
     elif kind == "analysis_status":
         reasons = ",".join(event["quality"]["reason_codes"])
         print(f"\n{span} [{payload['component']}:{payload['state']}] {payload['message']} {reasons}".rstrip(), flush=True)
@@ -38,10 +38,17 @@ def _print_event(event):
 class _PrintingService(IntegrationService):
     """수신한 이벤트를 콘솔에 출력하는 데모용 통합 서비스."""
 
+    def __init__(self):
+        super().__init__()
+        self.final_texts = []
+
     def receive_event(self, event):
         accepted = super().receive_event(event)
         if accepted:
             _print_event(event)
+            if event['event_type'] == 'transcript_final':
+                self.final_texts.append(event['payload']['text'])
+                print(f"[확정 전체 전사] {' '.join(self.final_texts)}", flush=True)
         return accepted
 
 

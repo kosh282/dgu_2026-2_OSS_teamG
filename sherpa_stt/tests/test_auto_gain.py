@@ -138,7 +138,7 @@ class TranscriberGainTests(unittest.TestCase):
         samples = tone(-45)
         t.accept_chunk(AudioChunk(sid, 0, 0, 100, RATE, 1, "float32", samples))
         np.testing.assert_array_equal(engine.received[0][1], samples)
-        self.assertEqual(t.level_info(), {"input_level_dbfs": None, "gain_db": None})
+        self.assertEqual(t.level_info(), {"input_level_dbfs": None, "capture_level_dbfs": None, "gain_db": None})
 
 
 if __name__ == "__main__":
