@@ -47,16 +47,20 @@ class MultiFaceGaussianRuntime:
     def participants(self):
         return [deepcopy(person['row']) for person in self._people.values()]
 
-    def recalibrate(self):
-        for person in self._people.values():
-            if person['present']:
+    def recalibrate(self, identity=None):
+        changed = False
+        for key, person in self._people.items():
+            if person['present'] and (identity is None or key == identity):
+                changed = True
                 person['calibration'].start()
                 person['runtime'].reset()
                 person['row'].update(calibration_status='collecting', status='calibrating',
                                      current_direction_score=None, score=None,
                                      head_score=None, eye_score=None, eye_coverage=None, relative_angles=None,
                                      reason_codes=['baseline_unavailable'])
-        self.latest = self._empty('baseline_unavailable')
+        if changed:
+            self.latest = self._empty('baseline_unavailable')
+        return changed
 
     def _new_person(self, identity, timestamp):
         calibration = HeadCalibration()
@@ -105,7 +109,10 @@ class MultiFaceGaussianRuntime:
             person = self._people[identity]
             track = face.get('transient_track_key')
             if not person['present'] or track != person['track']:
-                person['runtime'].reset()
+                short_gap = (not person['present'] and track == person['track']
+                             and 0 < timestamp - person['last_seen'] <= self.config.max_observation_hold_seconds * 1000)
+                if not short_gap:
+                    person['runtime'].reset()
                 # 미완료 보정은 연속 관측만 수집한다. 완료 기준은 복귀 후 유지한다.
                 if person['calibration'].status != 'ready':
                     person['calibration'].start()
@@ -150,8 +157,15 @@ class MultiFaceGaussianRuntime:
             outputs.append(result)
         for identity, person in self._people.items():
             if identity not in active:
+                was_present = person['present']
                 person['present'] = False
-                person['runtime'].reset()
+                if counts[identity] > 1:
+                    person['calibration'].start()
+                    person['runtime'].reset()
+                elif timestamp - person['last_seen'] > self.config.max_observation_hold_seconds * 1000:
+                    person['runtime'].reset()
+                elif was_present:
+                    person['runtime'].pause_observation()
                 person['row'].update(status='missing', score=None, current_direction_score=None,
                                      head_score=None, eye_score=None, eye_coverage=None, relative_angles=None,
                                      reason_codes=['identity_not_observed'])

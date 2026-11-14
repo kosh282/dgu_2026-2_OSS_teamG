@@ -114,6 +114,16 @@ class GaussianRuntime(HeadOrientationState):
         self._down_confirm_start_ms = None
         self._eye_candidate.reset()
 
+    def pause_observation(self):
+        """짧은 누락은 관측 구간을 끊되 이미 관측한 이력은 보존한다."""
+        super()._reset_time_state()
+        self._gaussian_sample = None
+        self._down_confirm_start_ms = None
+        self._eye_candidate.previous_time = None
+        self._eye_candidate.previous_closed = False
+        self._eye_candidate.closed_since = None
+        self._last_display_score = self._last_display_score_ms = None
+
     def _empty_result(self, reason):
         # 실행 중/미리보기 전용 값이다. JSON 이벤트의 score 의미는 변경하지 않는다.
         return {**super()._empty_result(reason), 'current_direction_score': None,

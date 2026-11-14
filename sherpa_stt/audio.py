@@ -93,6 +93,7 @@ class AutoGain:
         self.max_step_up_db = float(max_step_up_db)
         self.noise_dbfs = None   # 배경 잡음 바닥 추정
         self.speech_dbfs = None  # 최근 말소리 크기 추정(원본 기준)
+        self.latest_input_dbfs = None  # 말소리 판정 전 최근 캡처 청크의 원본 레벨
         self.gain_db = 0.0
         # 짧은 구간 리미터 상태(이전 청크에서 이어짐)
         self._ceiling = 10 ** (float(ceiling_dbfs) / 20)
@@ -123,6 +124,7 @@ class AutoGain:
         if not len(samples):
             return samples
         level = _dbfs(float(np.sqrt(np.mean(np.square(samples, dtype=np.float64)))))
+        self.latest_input_dbfs = level
         # 잡음 바닥: 더 작은 값이 오면 바로 내리고, 평소에는 천천히(청크당 0.1dB) 올린다.
         self.noise_dbfs = level if self.noise_dbfs is None else min(level, self.noise_dbfs + 0.1)
         is_speech = level > self.floor_dbfs and level >= self.noise_dbfs + self.speech_margin_db

@@ -75,6 +75,11 @@ class WindowPublisher:
         if now_ms > self._last_end:
             self._publish(now_ms, partial=now_ms - self._start_ms < self.window_ms)
 
+    def interrupt_sample(self, now_ms):
+        """보정 요청 이후 이전 관측을 새 구간으로 연장하지 않는다."""
+        self.advance(now_ms)
+        self._sample = None
+
     def _publish(self, end, partial):
         start = max(self._start_ms, end - self.window_ms)
         duration = end - start

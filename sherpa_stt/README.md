@@ -7,7 +7,7 @@
 ## 처리 흐름
 
 ```text
-LoopbackCapture (SoundCard WASAPI 루프백: 스피커로 재생되는 소리)   ┐ 100ms 청크
+LoopbackCapture (선택 앱 프로세스 트리 WASAPI 루프백)             ┐ 100ms 청크
 MicrophoneCapture (sounddevice: 마이크)                            ┘ 둘 중 하나 선택
   ↓ AudioChunk (메모리 전용) + ChunkClock: 세션 공통 시계 기준 start_ms/end_ms
 SherpaTranscriber
@@ -30,7 +30,8 @@ IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON�
 | [engine.py](engine.py) | `SherpaEngine`: 모델 파일 탐색, 인식기 생성, 토큰 기반 한국어 띄어쓰기 복원과 토큰 구간 |
 | [download_model.py](download_model.py) | 기본 한국어 모델을 `sherpa_stt/models/`에 내려받기 |
 | [transcriber.py](transcriber.py) | `SherpaTranscriber`: 청크 → 전사 이벤트, 상태 이벤트 |
-| [loopback.py](loopback.py) | `LoopbackCapture`: 출력 장치 루프백 → `AudioChunk` 큐 |
+| [loopback.py](loopback.py) | `LoopbackCapture`: 선택 프로세스 또는 출력 장치 루프백 → `AudioChunk` 큐 |
+| [native/process_loopback.cpp](native/process_loopback.cpp) | Windows WASAPI 프로세스 트리 루프백 도우미. PCM은 stdout으로만 전달하고 파일로 쓰지 않음 |
 | [microphone.py](microphone.py) | `MicrophoneCapture`: 마이크 → `AudioChunk` 큐 |
 | [runner.py](runner.py) | `LiveTranscription`: 입력·전사 스레드 실행, 시작/종료 상태 이벤트, 실시간 계측 `stats()` |
 | [demo.py](demo.py) | 콘솔 데모(루프백·마이크·WAV) |
@@ -106,11 +107,14 @@ video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo --wav sherpa_stt/m
 from sherpa_stt.config import SttConfig
 from sherpa_stt.engine import SherpaEngine
 from sherpa_stt.runner import LiveTranscription
+from video_recognition.window_capture import get_window_process_id
 
 config = SttConfig()                 # 기본: sherpa_stt/models/ 아래 한국어 모델
 engine = SherpaEngine(config)        # 약 5초. 세션 시작 전에 불러 둔다
 # service, sid = 영상 분석이 쓰는 IntegrationService와 세션 ID
-live = LiveTranscription(service, sid, config, source="loopback", engine=engine)
+pid = get_window_process_id(hwnd)    # 선택한 Windows 창 핸들
+live = LiveTranscription(service, sid, config, source="loopback", engine=engine,
+                         target_process_id=pid)
 live.start()
 ...
 live.stop()                          # 반드시 service.stop_session(sid) 보다 먼저
@@ -143,10 +147,17 @@ service.stop_session(sid)
 - 확정 이벤트 생성 시각(`created_ms`)은 재생 종료 후 약 1.2~2.0초입니다. 대부분 엔드포인트 무음 대기(1.2초)입니다.
 - 루프백 시험 4회 중 1회는 시작 직후 STT가 `unavailable`로 멈췄습니다. 이후 재현되지 않았고 원인은 확인하지 못했습니다.
 
+**3) 프로세스 루프백 개발 확인**: 2026-11-13, Windows 11 build 26300에서 MSVC로 도우미를 빌드하고 테스트 음성을 재생한 Python 프로세스 PID만 지정했습니다. 3초 캡처에서 48,000 샘플, 입력 RMS -11.4 dBFS, 불연속 0회를 확인했습니다. STT 연결 실행은 RTF 0.065, 처리 지연 p95 172ms, 버린 청크 0개였고 전사 결과는 `배는 괜찮은 척할이라고? 에쓰는 것 같았다`였습니다. **프로세스 필터링과 STT 연결은 동작했지만 이 샘플의 전사 품질은 좋지 않았습니다.** 실제 Zoom 창과 오디오를 내는 브라우저 자식 프로세스는 별도 확인이 필요합니다.
+
+## 선택 창 오디오 입력
+
+- 프런트엔드의 루프백은 선택 창의 소유 프로세스와 자식 프로세스에 속한 오디오만 Windows 프로세스 루프백으로 받습니다. 선택한 출력 장치와 무관하며, 다른 앱의 알림음은 제외됩니다.
+- Windows 오디오 API는 창 핸들이 아니라 프로세스 ID를 필터링합니다. 같은 앱 프로세스 안의 다른 창 소리도 함께 들어올 수 있고, 브라우저처럼 오디오를 별도 프로세스에서 내보내는 앱은 자식 프로세스 트리에 포함되는지에 따라 결과가 달라질 수 있습니다. 대상 프로세스에서 출력 중인 오디오 스트림이 없으면 무음이 들어옵니다.
+- 이 기능에는 Windows 10 build 20348 이상과 MSVC x64 빌드 도구가 필요합니다. 최초 한 번 `powershell -ExecutionPolicy Bypass -File sherpa_stt/native/build_process_loopback.ps1`을 실행해 도우미를 빌드합니다. 기본 출력 장치 루프백을 사용하는 콘솔 데모에는 기존 SoundCard 경로를 유지합니다.
+- 루프백은 선택 앱이 재생하는 소리만 받으므로 교수자 마이크는 포함하지 않습니다. 교수자 발화를 전사하려면 마이크 입력을 선택해야 합니다.
+
 ## 한계
 
-- **선택한 창의 소리만 분리하지 않습니다.** 루프백은 선택한 출력 장치로 나가는 모든 소리(알림음, 다른 앱 소리 포함)를 받습니다. 창 단위 분리에는 Windows 프로세스 루프백 API가 필요합니다.
-- 루프백은 스피커로 재생되는 소리만 받습니다. 교수자 본인의 목소리는 수업 프로그램이 되돌려 재생하지 않으므로 대개 루프백에 들어가지 않습니다. 교수자 발화를 전사하려면 `source="microphone"`을 쓰거나 두 입력을 함께 쓰는 방식을 정해야 합니다.
 - 실제 수업 프로그램(Zoom 등) 음성, 장시간(10분 이상) 동작, 출력 장치 변경·블루투스 전환은 확인하지 않았습니다.
 
 ## 테스트

@@ -9,6 +9,23 @@ class FrameNotAvailable(Exception):
     """창이 변하지 않아 아직 새 프레임이 없는 정상적인 대기 상태."""
 
 
+def get_window_process_id(hwnd):
+    """선택한 Windows 창을 소유한 프로세스 ID를 반환한다."""
+    if hwnd is None:
+        raise ValueError('오디오 캡처 대상 창이 선택되지 않았습니다.')
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    if not user32.IsWindow(hwnd):
+        raise ValueError('선택한 창을 찾을 수 없습니다. 창 목록을 다시 확인하세요.')
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    owner = wintypes.DWORD()
+    if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner)) or not owner.value:
+        raise ValueError('선택한 창의 프로세스를 확인할 수 없습니다.')
+    return owner.value
+
+
 class WindowCapture:
     """창 핸들에 연결하며 새 프레임만 전달한다. 여러 프레임이 오면 최신 프레임만 유지한다.
 
@@ -49,14 +66,7 @@ class WindowCapture:
         self.user32.IsWindow.restype = wintypes.BOOL
         self.user32.IsIconic.argtypes = [wintypes.HWND]
         self.user32.IsIconic.restype = wintypes.BOOL
-        if not self.user32.IsWindow(hwnd):
-            raise ValueError('선택한 창을 찾을 수 없습니다. 창 목록을 다시 확인하세요.')
-        self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-        self.user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-        owner = wintypes.DWORD()
-        if not self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner)) or not owner.value:
-            raise ValueError('선택한 창의 프로세스를 확인할 수 없습니다.')
-        self.process_id = owner.value
+        self.process_id = get_window_process_id(hwnd)
         if expected_process_id is not None and self.process_id != expected_process_id:
             raise ValueError('선택한 창의 프로세스가 변경되었습니다. 수업 창을 다시 선택하세요.')
         self.hwnd = hwnd

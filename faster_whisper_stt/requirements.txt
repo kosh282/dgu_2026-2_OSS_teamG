@@ -1,0 +1,5 @@
+# 별도 가상환경에서 설치: faster-whisper의 의존성을 프로젝트 환경과 분리합니다.
+faster-whisper==1.2.1
+sounddevice==0.5.6
+SoundCard==0.4.6
+numpy

@@ -13,12 +13,14 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
 
     def __init__(self, config=None, *, eye_fusion=False):
         self._positions = {}
+        self._position_seen = {}
         self._position_time = None
         super().__init__(config, eye_fusion=eye_fusion)
 
     def reset(self):
         super().reset()
         self._positions = {}
+        self._position_seen = {}
         self._position_time = None
 
     def __call__(self, feature):
@@ -57,13 +59,27 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
         if ambiguous:
             self._people.clear()
         else:
-            # 사라진 얼굴은 즉시 기준을 폐기하고, 안전하게 유지된 얼굴만 보존한다.
-            for key in removed:
-                self._people.pop(f'T{key}', None)
+            # 크게 이동한 트랙은 다른 얼굴과의 연결 가능성을 고려해 기준을 버린다.
             for key in set(old) & set(positions):
-                if math.dist(old[key], positions[key]) > self.maximum_center_shift:
+                person = self._people.get(f'T{key}')
+                expired = (person is not None and not person['present'] and
+                           timestamp - person['last_seen'] > self.config.max_observation_hold_seconds * 1000)
+                if expired or math.dist(old[key], positions[key]) > self.maximum_center_shift:
                     self._people.pop(f'T{key}', None)
-        self._positions = positions if valid else {}
+        if ambiguous:
+            self._position_seen.clear()
+        retained = {}
+        if valid:
+            for key in removed:
+                last_seen = self._position_seen.get(key)
+                if last_seen is not None and 0 < timestamp - last_seen <= self.config.max_observation_hold_seconds * 1000:
+                    retained[key] = old[key]
+                else:
+                    self._people.pop(f'T{key}', None)
+                    self._position_seen.pop(key, None)
+            for key in positions:
+                self._position_seen[key] = timestamp
+        self._positions = {**retained, **positions} if valid else {}
         self._position_time = timestamp if valid else None
         self.update_identities({key: f'T{key}' for key in positions} if valid else {})
         result = super().__call__(feature)

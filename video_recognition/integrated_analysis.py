@@ -12,7 +12,7 @@ from .window_capture import FrameNotAvailable, WindowCapture
 
 FEATURE_VERSION = 'experimental-0.9'
 DEFAULT_FACE_ANALYSIS_HZ = 10.0
-DEFAULT_MAX_ANALYSIS_DIMENSION = 1920
+DEFAULT_MAX_ANALYSIS_DIMENSION = 2560
 
 
 def _without_transient_tracking(value):

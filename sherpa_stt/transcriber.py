@@ -174,8 +174,13 @@ class SherpaTranscriber:
         """최근 말소리 크기(원본, dBFS)와 적용 이득(dB). 진단용이며 세션 JSON에 넣지 않는다."""
         gain = self._auto_gain
         if gain is None:
-            return {"input_level_dbfs": None, "gain_db": None}
-        return {"input_level_dbfs": gain.input_level_dbfs, "gain_db": round(gain.gain_db, 1)}
+            return {"input_level_dbfs": None, "capture_level_dbfs": None, "gain_db": None}
+        capture_level = gain.latest_input_dbfs
+        return {
+            "input_level_dbfs": gain.input_level_dbfs,
+            "capture_level_dbfs": round(capture_level, 1) if capture_level is not None else None,
+            "gain_db": round(gain.gain_db, 1),
+        }
 
     def finish(self):
         """입력 종료를 알리고 남은 발화를 확정한다. 여러 번 호출해도 된다."""

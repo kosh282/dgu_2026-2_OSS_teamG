@@ -148,9 +148,14 @@ def stt_readiness(source):
     missing = []
     if importlib.util.find_spec('sherpa_onnx') is None:
         missing.append('sherpa-onnx 패키지')
-    audio_package = 'soundcard' if source == 'loopback' else 'sounddevice'
-    if importlib.util.find_spec(audio_package) is None:
-        missing.append(f'{audio_package} 패키지')
+    if source == 'loopback':
+        helper = Path(__file__).resolve().parents[1] / 'sherpa_stt' / 'native' / 'process_loopback.exe'
+        if sys.platform != 'win32':
+            missing.append('Windows 프로세스 루프백 지원')
+        elif not helper.is_file():
+            missing.append('창 오디오 도우미 (sherpa_stt/native/build_process_loopback.ps1 실행)')
+    elif importlib.util.find_spec('sounddevice') is None:
+        missing.append('sounddevice 패키지')
     config = SttConfig()
     try:
         find_transducer_files(Path(config.model_dir))
@@ -282,23 +287,25 @@ def preparation():
                     st.warning('재식별 패키지 설치가 필요합니다: python -m pip install -r video_recognition/requirements-reidentification.txt. 준비에 실패하면 개인별 점수는 보류됩니다.')
             windows=st.session_state.get('class_window_list', [])
             window_error=None
-            refresh_windows=st.button('창 목록 새로고침',disabled=running or not video_enabled)
-            if video_enabled and sys.platform == 'win32' and ('class_window_list' not in st.session_state or refresh_windows):
+            window_audio_target=(st.session_state.get('stt_enabled',False)
+                                 and st.session_state.get('stt_source','loopback')=='loopback')
+            refresh_windows=st.button('창 목록 새로고침',disabled=running or not (video_enabled or window_audio_target))
+            if (video_enabled or window_audio_target) and sys.platform == 'win32' and ('class_window_list' not in st.session_state or refresh_windows):
                 try:
                     from video_recognition.integrated_analysis import list_windows
                     windows=list_windows()
                     st.session_state.class_window_list=windows
                 except Exception as exc:
                     window_error=str(exc)
-            elif video_enabled and sys.platform != 'win32':
-                window_error='실시간 창 캡처는 Windows 로컬 실행에서 사용할 수 있습니다.'
+            elif (video_enabled or window_audio_target) and sys.platform != 'win32':
+                window_error='창 영상·오디오 캡처는 Windows 로컬 실행에서 사용할 수 있습니다.'
             # 창 제목·순서가 바뀌어도 같은 핸들로 선택을 유지한다. 목록은 명시적으로 새로고침한다.
             window_titles=dict(windows)
             if st.session_state.get('class_window_handle') not in window_titles:
                 st.session_state.class_window_handle=None
             selected_handle=st.selectbox('분석할 수업 창',list(window_titles),index=None,
                 key='class_window_handle',format_func=lambda hwnd: window_titles[hwnd],
-                disabled=running or not video_enabled,placeholder='수업 창을 선택하세요')
+                disabled=running or not (video_enabled or window_audio_target),placeholder='수업 창을 선택하세요')
             selected=(selected_handle, window_titles[selected_handle]) if selected_handle is not None else None
             if window_error:
                 st.info(window_error)
@@ -331,7 +338,10 @@ def preparation():
                 else:
                     st.warning('전사 시작 전 준비가 필요합니다: '+missing)
                 if audio_source=='loopback':
-                    st.caption('기본 출력 장치의 모든 소리를 받습니다. 선택한 Zoom 창의 소리만 분리하지 않습니다.')
+                    st.caption('선택 창을 소유한 앱 프로세스와 자식 프로세스의 소리만 받습니다. 같은 앱의 다른 창 소리도 포함될 수 있습니다.')
+                    st.caption('Windows 프로세스 루프백은 시스템 출력 장치와 무관하게 캡처합니다. 별도 창의 마이크 입력은 포함하지 않습니다.')
+                    if not selected:
+                        st.warning('창 단위 오디오를 받으려면 위에서 수업 창을 선택하세요.')
                 else:
                     st.caption('기본 마이크 입력을 받습니다. 시스템 출력 소리와 동시 수집은 지원하지 않습니다.')
             else:
@@ -368,10 +378,10 @@ def preparation():
                 st.info('진행 중인 수업이 있습니다.')
                 if st.button('라이브 세션으로 이동',use_container_width=True):
                     navigate('라이브 세션')
-            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or not video_enabled) and title.strip() and consent and storage and writer_ready)):
+            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or (not video_enabled and not (stt_enabled and audio_source=='loopback'))) and title.strip() and consent and storage and writer_ready)):
                 try:
                     from frontend.live_session import LiveSession
-                    live=LiveSession(selected[0] if selected and video_enabled else None,
+                    live=LiveSession(selected[0] if selected else None,
                                      audio_source=audio_source if stt_enabled else None,
                                      video_enabled=video_enabled, model_enabled=model_enabled,
                                      reidentification_enabled=reidentification_enabled,
@@ -394,7 +404,7 @@ def preparation():
                     navigate('라이브 세션')
                 except Exception as exc:
                     st.error(f'수업을 시작하지 못했습니다: {exc}')
-            st.caption('수업 제목과 동의를 확인하세요. 영상 사용 시 수업 창을 선택해야 합니다.')
+            st.caption('수업 제목과 동의를 확인하세요. 영상 분석 또는 창 단위 루프백을 사용하면 수업 창 선택이 필요합니다.')
 
 
 def live_page():
@@ -590,6 +600,15 @@ def live_page():
                 st.warning(f'음성 입력 누락 가능: 버린 청크 {dropped}개 · 장치 불연속 {device_errors}회')
             st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
             level,gain=stt_stats.get('input_level_dbfs'),stt_stats.get('gain_db')
+            capture_level=stt_stats.get('capture_level_dbfs')
+            if capture_level is not None:
+                st.caption(f'최근 오디오 입력 신호 {capture_level:g} dBFS')
+                if capture_level < -55:
+                    source=stt_stats.get('source')
+                    if source=='loopback':
+                        st.warning('선택한 창에서 오디오 신호가 거의 들어오지 않습니다. 선택한 앱에서 소리가 재생되는지, 실제 소리가 나는 창을 선택했는지 확인하세요.')
+                    else:
+                        st.warning('마이크 입력 신호가 거의 없습니다. 마이크 선택과 Windows 입력 음량을 확인하세요.')
             if level is not None:
                 st.caption(f'말소리 입력 크기 {level:g} dBFS · 자동 음량 조절 +{gain:g} dB')
                 if level < -50:
@@ -622,6 +641,14 @@ def live_page():
                     '눈 관측률':row.get('eye_coverage'),
                     '보류 사유':', '.join(row.get('reason_codes', []))}
                     for row in rows],hide_index=True,use_container_width=True)
+                active_ids=[row['id'] for row in rows if row['status'] not in ('missing','not_observable','unavailable')]
+                if active_ids and live.is_running():
+                    target=st.selectbox('개별 재보정 대상', active_ids, key='calibration-participant')
+                    if st.button('선택한 대상 재보정', key='recalibrate-participant'):
+                        if not live.request_head_calibration(target):
+                            st.warning('대상이 현재 관측되지 않아 재보정을 요청하지 못했습니다.')
+                        else:
+                            st.rerun()
             else:
                 st.caption('재식별 ID 확인 대기 중입니다.' if reid else '안정적인 위치 트랙 확인 대기 중입니다.')
         if result:

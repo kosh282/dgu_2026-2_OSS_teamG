@@ -1,6 +1,7 @@
 """한 대시보드 세션이 소유하는 영상 분석 작업."""
 import threading
 import time
+import sys
 from copy import deepcopy
 from pathlib import Path
 import cv2
@@ -88,6 +89,7 @@ class LiveSession:
         self._model_retry_count = 0
         self._model_retry_at = None
         self._calibration_request = threading.Event()
+        self._calibration_target = None
         self._calibration_blocked = False
         self._calibration_window_start = None
         self.performance_monitor = None
@@ -99,6 +101,11 @@ class LiveSession:
         with self.lock:
             if self.thread is not None:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
+        if self.audio_source == 'loopback' and self.hwnd is not None:
+            if sys.platform != 'win32':
+                raise RuntimeError('선택 창 오디오 캡처는 Windows에서만 지원합니다.')
+            from video_recognition.window_capture import get_window_process_id
+            self._window_process_id = get_window_process_id(self.hwnd)
         stt_config = None
         self._stt_engine = None
         if self.audio_source is not None:
@@ -285,7 +292,8 @@ class LiveSession:
                     except Exception:
                         pass  # 아래 runner.start()가 같은 오류를 unavailable로 알린다.
                 runner = LiveTranscription(self.service, self.sid, self._stt_config,
-                                           source=self.audio_source, engine=self._stt_engine)
+                                           source=self.audio_source, engine=self._stt_engine,
+                                           target_process_id=self._window_process_id)
                 with self.lock:
                     self.transcription = runner
                 if not runner.start():
@@ -342,8 +350,11 @@ class LiveSession:
             while not self.stop_event.is_set():
                 self._maybe_restart_model()
                 if self._calibration_request.is_set():
-                    self._calibration_request.clear()
-                    self._recalibrate_pipeline(pipeline)
+                    with self.lock:
+                        target = self._calibration_target
+                        self._calibration_target = None
+                        self._calibration_request.clear()
+                    self._recalibrate_pipeline(pipeline, target)
                 with self.lock:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
@@ -418,9 +429,9 @@ class LiveSession:
                     self._active_capture = self._active_face = None
 
     def _model_identity(self):
-        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.3+face-transform-eye'}
+        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.4+face-transform-eye'}
                 if self.reidentification_enabled else
-                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.3+face-transform-eye'})
+                {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.4+face-transform-eye'})
 
     def _make_model(self):
         return make_group_runtime(self.reidentification_enabled)
@@ -448,9 +459,17 @@ class LiveSession:
             if self.reidentification_error:
                 self._model_status('unavailable', self.reidentification_error, ['reidentification_unavailable'])
 
-    def _recalibrate_pipeline(self, pipeline):
+    def _recalibrate_pipeline(self, pipeline, identity=None):
         if self.model_runtime is not None and callable(getattr(self.model_runtime, 'aggregate_window', None)):
             now = self.service.elapsed_ms(self.sid)
+            if identity is not None:
+                if self.model_runtime.recalibrate(identity):
+                    if self.window_publisher is not None:
+                        self.window_publisher.interrupt_sample(now)
+                    with self.lock:
+                        self._participant_rows = self.model_runtime.participants()
+                        self.model_latest = dict(self.model_runtime.latest)
+                return
             if self.window_publisher is not None:
                 self.window_publisher.finish(now)
             self.model_runtime.recalibrate()
@@ -567,14 +586,23 @@ class LiveSession:
         if self.thread.is_alive():
             raise RuntimeError('분석 작업을 종료하는 중입니다. 잠시 후 다시 시도하세요.')
 
-    def request_head_calibration(self):
+    def request_head_calibration(self, identity=None):
         """UI에서는 요청만 전달하고 실제 보정 객체는 영상 스레드에서 변경한다."""
         if not self.model_enabled or not self.is_running():
             return False
         with self.lock:
-            self.latest = None
+            if self._calibration_request.is_set():
+                return False
+            if identity is not None and not any(
+                    row.get('id') == identity and row.get('status') not in {'missing', 'not_observable', 'unavailable'}
+                    for row in self._participant_rows):
+                return False
+            self._calibration_target = identity
+            if identity is None:
+                self.latest = None
             self._calibration_request.set()
-        self._model_status('unavailable', '정면 기준 재보정 요청을 처리합니다.', ['baseline_unavailable'])
+        if identity is None:
+            self._model_status('unavailable', '정면 기준 재보정 요청을 처리합니다.', ['baseline_unavailable'])
         return True
 
     def calibration_state(self):

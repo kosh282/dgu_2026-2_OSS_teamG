@@ -10,10 +10,10 @@ def make_group_runtime(reidentification_enabled=False):
     """두 진입점의 다인 모델과 눈 감김 설정을 일치시킨다."""
     if reidentification_enabled:
         model = MultiFaceGaussianRuntime(eye_fusion=True)
-        version = 'multi-gaussian-0.3+face-transform-eye'
+        version = 'multi-gaussian-0.4+face-transform-eye'
     else:
         model = PositionTrackGaussianRuntime(eye_fusion=True)
-        version = 'position-gaussian-0.3+face-transform-eye'
+        version = 'position-gaussian-0.4+face-transform-eye'
     model.model_version = version
     model.latest['model_version'] = version
     return model
