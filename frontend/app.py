@@ -140,27 +140,30 @@ def add_note(service, sid, text, at, linked=None):
     service.receive_event(event)
 
 
-def stt_readiness(source):
+def stt_readiness(source, model='sherpa'):
     """선택한 오디오 입력에 필요한 패키지와 로컬 모델 파일을 확인한다."""
     from sherpa_stt.config import SttConfig
     from sherpa_stt.engine import find_transducer_files
 
     missing = []
-    if importlib.util.find_spec('sherpa_onnx') is None:
+    if model == 'sherpa' and importlib.util.find_spec('sherpa_onnx') is None:
         missing.append('sherpa-onnx 패키지')
+    if model != 'sherpa' and importlib.util.find_spec('faster_whisper') is None:
+        missing.append('faster-whisper 패키지 (python -m pip install -r faster_whisper_stt/requirements.txt)')
     if source == 'loopback':
-        helper = Path(__file__).resolve().parents[1] / 'sherpa_stt' / 'native' / 'process_loopback.exe'
-        if sys.platform != 'win32':
-            missing.append('Windows 프로세스 루프백 지원')
-        elif not helper.is_file():
-            missing.append('창 오디오 도우미 (sherpa_stt/native/build_process_loopback.ps1 실행)')
+        if importlib.util.find_spec('soundcard') is None:
+            missing.append('SoundCard 패키지')
     elif importlib.util.find_spec('sounddevice') is None:
         missing.append('sounddevice 패키지')
-    config = SttConfig()
-    try:
-        find_transducer_files(Path(config.model_dir))
-    except (FileNotFoundError, OSError) as exc:
-        missing.append(f'한국어 모델 파일 ({exc})')
+    if model == 'sherpa':
+        config = SttConfig()
+        try:
+            find_transducer_files(Path(config.model_dir))
+        except (FileNotFoundError, OSError) as exc:
+            missing.append(f'한국어 모델 파일 ({exc})')
+    else:
+        from faster_whisper_stt.runner import WhisperConfig
+        config = WhisperConfig(model=model.removeprefix('whisper-'))
     return not missing, ', '.join(missing), config
 
 
@@ -331,17 +334,22 @@ def preparation():
                 format_func=lambda value: '시스템 출력 음성 (루프백)' if value=='loopback' else '교수자 마이크',
                 key='stt_source', disabled=running or not stt_enabled,
             )
+            stt_model=st.selectbox('음성 전사 모델', ['sherpa', 'whisper-base', 'whisper-small'],
+                                   format_func=lambda value: {'sherpa':'sherpa 한국어 스트리밍',
+                                       'whisper-base':'faster-whisper base (10초)',
+                                       'whisper-small':'faster-whisper small (10초)'}[value],
+                                   key='stt_model', disabled=running or not stt_enabled)
             if stt_enabled:
-                ready,missing,stt_config=stt_readiness(audio_source)
+                ready,missing,stt_config=stt_readiness(audio_source, stt_model)
                 if ready:
-                    st.success('전사 패키지와 한국어 모델을 찾았습니다.')
+                    st.success('전사 실행에 필요한 패키지를 확인했습니다.')
+                    if stt_model != 'sherpa':
+                        st.caption('10초 음성을 한 번씩 전사합니다. 첫 사용 시 모델 다운로드가 필요할 수 있으며, 결과는 수집 및 추론 후 표시됩니다.')
                 else:
                     st.warning('전사 시작 전 준비가 필요합니다: '+missing)
                 if audio_source=='loopback':
-                    st.caption('선택 창을 소유한 앱 프로세스와 자식 프로세스의 소리만 받습니다. 같은 앱의 다른 창 소리도 포함될 수 있습니다.')
-                    st.caption('Windows 프로세스 루프백은 시스템 출력 장치와 무관하게 캡처합니다. 별도 창의 마이크 입력은 포함하지 않습니다.')
-                    if not selected:
-                        st.warning('창 단위 오디오를 받으려면 위에서 수업 창을 선택하세요.')
+                    st.caption('기본 출력 장치의 전체 소리를 받습니다. 수업 소리와 함께 다른 앱의 소리·알림음도 전사될 수 있습니다.')
+                    st.caption('수업 음성이 Windows 기본 출력 장치로 재생되는지 확인하세요. 마이크 입력은 포함하지 않습니다.')
                 else:
                     st.caption('기본 마이크 입력을 받습니다. 시스템 출력 소리와 동시 수집은 지원하지 않습니다.')
             else:
@@ -364,10 +372,10 @@ def preparation():
     with right:
         with st.container(border=True):
             st.subheader('점검 요약')
-            stt_ready,stt_missing,_=stt_readiness(audio_source)
+            stt_ready,stt_missing,_=stt_readiness(audio_source, stt_model)
             audio_label='사용 안 함' if not stt_enabled else ('출력 루프백' if audio_source=='loopback' else '마이크')
             model_label='미선택' if not stt_enabled else ('준비됨' if stt_ready else '준비 필요')
-            for name,state in [('영상 캡처',('창 선택됨' if selected else '대기') if video_enabled else '사용 안 함'),('수업 음성',audio_label),('전사 모델 (sherpa-onnx)',model_label),('영상 분석 모델 (MediaPipe)',('설치됨' if importlib.util.find_spec('mediapipe') else '미설치') if video_enabled else '사용 안 함'),('참여 모델','사용' if video_enabled and model_enabled else '사용 안 함'),
+            for name,state in [('영상 캡처',('창 선택됨' if selected else '대기') if video_enabled else '사용 안 함'),('수업 음성',audio_label),('전사 모델 ('+stt_model+')',model_label),('영상 분석 모델 (MediaPipe)',('설치됨' if importlib.util.find_spec('mediapipe') else '미설치') if video_enabled else '사용 안 함'),('참여 모델','사용' if video_enabled and model_enabled else '사용 안 함'),
                                ('강의 조교',f'자료 {len(index.materials)}개 · 점수 {score_threshold} 이하 · {writer_options["provider"]}')]:
                 st.write(f'{name} · **{state}**')
             if stt_enabled and not stt_ready:
@@ -378,11 +386,12 @@ def preparation():
                 st.info('진행 중인 수업이 있습니다.')
                 if st.button('라이브 세션으로 이동',use_container_width=True):
                     navigate('라이브 세션')
-            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or (not video_enabled and not (stt_enabled and audio_source=='loopback'))) and title.strip() and consent and storage and writer_ready)):
+            elif st.button('세션 시작',type='primary',use_container_width=True,disabled=not((selected or not video_enabled) and title.strip() and consent and storage and writer_ready)):
                 try:
                     from frontend.live_session import LiveSession
                     live=LiveSession(selected[0] if selected else None,
                                      audio_source=audio_source if stt_enabled else None,
+                                     stt_model=stt_model,
                                      video_enabled=video_enabled, model_enabled=model_enabled,
                                      reidentification_enabled=reidentification_enabled,
                                      recovery_root=files.root / '.recovery')
@@ -404,7 +413,7 @@ def preparation():
                     navigate('라이브 세션')
                 except Exception as exc:
                     st.error(f'수업을 시작하지 못했습니다: {exc}')
-            st.caption('수업 제목과 동의를 확인하세요. 영상 분석 또는 창 단위 루프백을 사용하면 수업 창 선택이 필요합니다.')
+            st.caption('수업 제목과 동의를 확인하세요. 영상 분석을 사용하면 수업 창 선택이 필요합니다.')
 
 
 def live_page():
@@ -598,12 +607,15 @@ def live_page():
             st.caption(f"음성 처리 지연 최근 {stt_stats['lag_ms_latest']}ms · 대기 청크 {stt_stats['queue_size']}개 · RTF {stt_stats['rtf']} (처리 시간 / 음성 길이)")
             level,gain=stt_stats.get('input_level_dbfs'),stt_stats.get('gain_db')
             capture_level=stt_stats.get('capture_level_dbfs')
+            if stt_stats.get('processed_windows') is not None:
+                st.caption(f"10초 전사 처리 {stt_stats['processed_windows']}구간 · 빈 결과 {stt_stats['empty_windows']}구간")
             if capture_level is not None:
-                st.caption(f'최근 오디오 입력 신호 {capture_level:g} dBFS')
+                level_hint = ' · 최근 약 2초 최대' if stt_stats.get('processed_windows') is not None else ''
+                st.caption(f'최근 오디오 입력 신호 {capture_level:g} dBFS{level_hint}')
                 if capture_level < -55:
                     source=stt_stats.get('source')
                     if source=='loopback':
-                        st.warning('선택한 창에서 오디오 신호가 거의 들어오지 않습니다. 선택한 앱에서 소리가 재생되는지, 실제 소리가 나는 창을 선택했는지 확인하세요.')
+                        st.warning('기본 출력 장치에서 오디오 신호가 거의 들어오지 않습니다. 재생 중인 앱의 출력 장치와 Windows 기본 출력 장치, 음량을 확인하세요.')
                     else:
                         st.warning('마이크 입력 신호가 거의 없습니다. 마이크 선택과 Windows 입력 음량을 확인하세요.')
             if level is not None:

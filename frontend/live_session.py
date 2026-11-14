@@ -1,7 +1,6 @@
 """한 대시보드 세션이 소유하는 영상 분석 작업."""
 import threading
 import time
-import sys
 from copy import deepcopy
 from pathlib import Path
 import cv2
@@ -35,8 +34,12 @@ def _load_stt_engine(config):
     with _stt_engine_lock:
         engine = _stt_engines.get(config)
         if engine is None:
-            from sherpa_stt.engine import SherpaEngine
-            engine = _stt_engines[config] = SherpaEngine(config)
+            from faster_whisper_stt.runner import WhisperConfig, load_whisper
+            if isinstance(config, WhisperConfig):
+                engine = _stt_engines[config] = load_whisper(config)
+            else:
+                from sherpa_stt.engine import SherpaEngine
+                engine = _stt_engines[config] = SherpaEngine(config)
         return engine
 
 
@@ -44,7 +47,7 @@ class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
     def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True,
-                 reidentification_enabled=False, recovery_root=None):
+                 reidentification_enabled=False, recovery_root=None, stt_model='sherpa'):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
@@ -60,6 +63,9 @@ class LiveSession:
         if self.video_enabled and hwnd is None:
             raise ValueError('영상 분석을 사용하려면 수업 창을 선택하세요.')
         self.audio_source = audio_source
+        if stt_model not in ('sherpa', 'whisper-base', 'whisper-small'):
+            raise ValueError('지원하지 않는 전사 모델입니다.')
+        self.stt_model = stt_model
         self.transcription = None
         self._stt_engine = None
         self._stt_startup_error = None
@@ -101,17 +107,16 @@ class LiveSession:
         with self.lock:
             if self.thread is not None:
                 raise RuntimeError('이미 시작했거나 종료된 수업 연결입니다. 새 수업 연결을 사용하세요.')
-        if self.audio_source == 'loopback' and self.hwnd is not None:
-            if sys.platform != 'win32':
-                raise RuntimeError('선택 창 오디오 캡처는 Windows에서만 지원합니다.')
-            from video_recognition.window_capture import get_window_process_id
-            self._window_process_id = get_window_process_id(self.hwnd)
         stt_config = None
         self._stt_engine = None
         if self.audio_source is not None:
             try:
-                from sherpa_stt.config import SttConfig
-                stt_config = SttConfig()
+                if self.stt_model == 'sherpa':
+                    from sherpa_stt.config import SttConfig
+                    stt_config = SttConfig()
+                else:
+                    from faster_whisper_stt.runner import WhisperConfig
+                    stt_config = WhisperConfig(model=self.stt_model.removeprefix('whisper-'))
                 # 수업 시계가 시작되기 전에 모델을 불러, 로드 시간 동안 수업 앞부분 음성을 놓치지 않게 한다.
                 # 실패하면 기존처럼 STT 작업이 스스로 로드를 시도하고 unavailable/재시작을 알린다.
                 self._stt_engine = _load_stt_engine(stt_config)
@@ -230,7 +235,8 @@ class LiveSession:
                       'face_gap_over_300ms': sampling.get('face_gap_over_300ms'),
                       'source_size': sampling.get('source_size'), 'analysis_size': sampling.get('analysis_size')},
             'stt': {key: stats.get(key) for key in ('source', 'rtf', 'lag_ms_latest', 'lag_ms_p50',
-                'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities')},
+                'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities',
+                'capture_level_dbfs', 'processed_windows', 'empty_windows')},
             'transcript': {'final_count': len(snapshot['transcripts']),
                            'partial_count': len(snapshot['partial_transcripts']),
                            'last_final_event_age_ms': event_age(snapshot['transcripts']),
@@ -282,18 +288,25 @@ class LiveSession:
             runner = None
             try:
                 if self._stt_config is None:
-                    from sherpa_stt.config import SttConfig
-                    self._stt_config = SttConfig()
-                from sherpa_stt.runner import LiveTranscription
+                    if self.stt_model == 'sherpa':
+                        from sherpa_stt.config import SttConfig
+                        self._stt_config = SttConfig()
+                    else:
+                        from faster_whisper_stt.runner import WhisperConfig
+                        self._stt_config = WhisperConfig(model=self.stt_model.removeprefix('whisper-'))
+                if self.stt_model == 'sherpa':
+                    from sherpa_stt.runner import LiveTranscription
+                else:
+                    from faster_whisper_stt.runner import WhisperLiveTranscription as LiveTranscription
                 if self._stt_engine is None:
                     # 시작 전 로드에 실패했으면 재시도마다 다시 불러 본다.
                     try:
                         self._stt_engine = _load_stt_engine(self._stt_config)
                     except Exception:
                         pass  # 아래 runner.start()가 같은 오류를 unavailable로 알린다.
+                # 오디오는 선택한 영상 창과 무관하게 기본 출력 장치 전체를 받는다.
                 runner = LiveTranscription(self.service, self.sid, self._stt_config,
-                                           source=self.audio_source, engine=self._stt_engine,
-                                           target_process_id=self._window_process_id)
+                                           source=self.audio_source, engine=self._stt_engine)
                 with self.lock:
                     self.transcription = runner
                 if not runner.start():
