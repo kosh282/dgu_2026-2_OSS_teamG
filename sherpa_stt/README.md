@@ -87,6 +87,22 @@ sherpa_stt/models/sherpa-onnx-streaming-zipformer-korean-2024-06-16/
 
 저장소 루트에서 실행합니다.
 
+### 기본 입력·모델 분리 테스트
+
+전사만 표시하는 최소 데모는 `video_recognition/.venv/Scripts/python.exe -m sherpa_stt.simple_demo --source loopback`으로 실행합니다. 마이크는 `--source microphone`입니다. 자동 음량 조절과 통합 이벤트 없이 입력을 모델에 전달하며 모델 원본 텍스트와 엔드포인트 결과를 콘솔에 표시합니다. 캡처 누락을 피하기 위해 큐를 사용하고 큐 손실이 있으면 인식을 리셋합니다. 종료 시 남은 큐는 처리하지 않습니다.
+
+`basic_demo`는 기존 STT의 청크 큐, 자동 음량 조절, 통합 이벤트·토큰 재조합을 우회하여 입력을 sherpa 모델로 전달하는 독립 진단입니다. 마이크는 sounddevice, 출력 루프백은 SoundCard를 사용합니다. 스테레오는 모노 평균으로 변환하며 장치에서 16kHz를 요청합니다. WAV는 16비트 PCM을 float로 변환하고 다른 샘플레이트는 sherpa가 내부 변환합니다. 모델 원본 `text`는 한국어 띄어쓰기가 부족할 수 있습니다.
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.basic_demo --source microphone
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.basic_demo --source loopback
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.basic_demo --wav sherpa_stt/models/sherpa-onnx-streaming-zipformer-korean-2024-06-16/test_wavs/0.wav
+```
+
+실시간 입력에서는 캡처와 추론을 별도 스레드로 실행하며 최대 10초의 메모리 큐를 사용합니다. 2초마다 해당 시점 오디오 블록의 RMS와 큐 길이, 캡처 후 대기 시간, 평균 처리 RTF, 버린 블록, 장치 불연속 횟수를 출력합니다. RTF는 모델 입력·디코딩·결과 조회 시간 / 처리한 음성 길이이며 전체 지연은 아닙니다. RMS가 계속 0에 가까우면 입력 경로 또는 음량을 확인하되, RMS만으로 무음과 수신 실패를 확정할 수는 없습니다. 큐가 가득 차면 새 블록을 버리고 누락이 확인된 다음 구간부터 모델을 리셋합니다. 장치 불연속은 별도로 표시하지만 해당 오디오를 복구하지는 못합니다. 종료는 Ctrl+C이며 전사는 콘솔에만 표시하고 종료 시 큐에 남은 블록은 처리하지 않습니다. 운영용이 아닌 진단 데모입니다.
+
+### 기존 통합 경로 데모
+
 ```powershell
 # 출력 장치(루프백) 목록 / 마이크 목록
 video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo --list-devices
@@ -100,6 +116,8 @@ video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo --wav sherpa_stt/m
 ```
 
 종료하면 실시간 계측(`rtf`, 청크 처리 지연 `lag_ms_*`)을 출력합니다. 이 값은 세션 JSON에 저장하지 않습니다.
+
+콘솔에는 갱신되는 `[인식 중]` 부분 전사와 발화 종료 시 `[확정 전사]`를 별도 줄로 표시하고, 확정된 발화만 `[확정 전체 전사]`에 이어 붙입니다. 부분 전사는 같은 발화가 여러 번 표시될 수 있습니다. 이는 sherpa 자체 발화 종료 기준을 사용하는 별도 데모이며 faster-whisper의 롤링 창 후처리와 다릅니다. 기본적으로 전사 텍스트를 파일에 저장하지 않습니다.
 
 영상 분석과 같은 세션에 붙이는 코드:
 
@@ -149,9 +167,9 @@ service.stop_session(sid)
 
 **3) 프로세스 루프백 개발 확인**: 2026-11-13, Windows 11 build 26300에서 MSVC로 도우미를 빌드하고 테스트 음성을 재생한 Python 프로세스 PID만 지정했습니다. 3초 캡처에서 48,000 샘플, 입력 RMS -11.4 dBFS, 불연속 0회를 확인했습니다. STT 연결 실행은 RTF 0.065, 처리 지연 p95 172ms, 버린 청크 0개였고 전사 결과는 `배는 괜찮은 척할이라고? 에쓰는 것 같았다`였습니다. **프로세스 필터링과 STT 연결은 동작했지만 이 샘플의 전사 품질은 좋지 않았습니다.** 실제 Zoom 창과 오디오를 내는 브라우저 자식 프로세스는 별도 확인이 필요합니다.
 
-## 선택 창 오디오 입력
+## 프로세스 오디오 입력 실험
 
-- 프런트엔드의 루프백은 선택 창의 소유 프로세스와 자식 프로세스에 속한 오디오만 Windows 프로세스 루프백으로 받습니다. 선택한 출력 장치와 무관하며, 다른 앱의 알림음은 제외됩니다.
+- 프런트엔드는 기본 출력 장치 전체를 받습니다. 아래 프로세스 루프백은 별도 코드·콘솔 실험에만 남아 있으며 프런트에서는 사용하지 않습니다.
 - Windows 오디오 API는 창 핸들이 아니라 프로세스 ID를 필터링합니다. 같은 앱 프로세스 안의 다른 창 소리도 함께 들어올 수 있고, 브라우저처럼 오디오를 별도 프로세스에서 내보내는 앱은 자식 프로세스 트리에 포함되는지에 따라 결과가 달라질 수 있습니다. 대상 프로세스에서 출력 중인 오디오 스트림이 없으면 무음이 들어옵니다.
 - 이 기능에는 Windows 10 build 20348 이상과 MSVC x64 빌드 도구가 필요합니다. 최초 한 번 `powershell -ExecutionPolicy Bypass -File sherpa_stt/native/build_process_loopback.ps1`을 실행해 도우미를 빌드합니다. 기본 출력 장치 루프백을 사용하는 콘솔 데모에는 기존 SoundCard 경로를 유지합니다.
 - 루프백은 선택 앱이 재생하는 소리만 받으므로 교수자 마이크는 포함하지 않습니다. 교수자 발화를 전사하려면 마이크 입력을 선택해야 합니다.
