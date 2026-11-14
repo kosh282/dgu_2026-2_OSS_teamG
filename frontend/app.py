@@ -869,10 +869,13 @@ def review_page():
         st.download_button('세션 JSON 저장',path.read_bytes(),file_name=f'{sid}.json',mime='application/json')
     with st.expander('선택한 수업 삭제'):
         st.caption('이 앱에 저장한 수업 기록을 삭제합니다. 별도로 다운로드한 파일은 남습니다.')
+        running_same_session = active() and active().sid == sid and active().is_running()
+        if running_same_session:
+            st.caption('진행 중인 수업은 라이브 세션에서 종료한 뒤 삭제하세요.')
         confirmed=st.checkbox('이 수업의 전사·메모·집계를 삭제합니다',key='delete-'+sid)
-        if st.button('수업 삭제',disabled=not confirmed):
+        if st.button('수업 삭제',disabled=not confirmed or bool(running_same_session)):
             try:
-                files.path(sid).unlink(missing_ok=True)
+                files.delete(sid)
                 if active() and active().sid == sid:
                     st.session_state.live=None
                 st.session_state.review=None

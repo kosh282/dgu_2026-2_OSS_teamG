@@ -35,6 +35,25 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(list(fig.data[0].y),[70,None])
         self.assertEqual(fig.layout.xaxis.range[1],7200)
 
+    def test_delete_removes_both_saved_record_and_recovery(self):
+        files = SessionFiles(self.directory.name)
+        service, sid = files.load(SAMPLE)
+        files.save(service, sid)
+        service.save_session(sid, files.recovery_path(sid))
+        files.delete(sid)
+        self.assertFalse(files.path(sid).exists())
+        self.assertFalse(files.recovery_path(sid).exists())
+        files.delete(sid)
+
+    def test_failed_recovery_delete_preserves_saved_record(self):
+        files = SessionFiles(self.directory.name)
+        service, sid = files.load(SAMPLE)
+        files.save(service, sid)
+        with patch.object(files, 'clear_recovery', side_effect=PermissionError('locked')):
+            with self.assertRaises(PermissionError):
+                files.delete(sid)
+        self.assertTrue(files.path(sid).exists())
+
     def test_unknown_score_is_not_zero(self):
         for value in [None,True,float('nan'),101,-1,'70']:
             self.assertIsNone(score({'payload':{'score':value},'quality':{'status':'valid'}}))

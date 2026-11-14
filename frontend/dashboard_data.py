@@ -214,6 +214,11 @@ class SessionFiles:
     def clear_recovery(self, sid):
         self.recovery_path(sid).unlink(missing_ok=True)
 
+    def delete(self, sid):
+        """복구본까지 삭제한다. 복구본 삭제 실패 시 일반 기록은 유지한다."""
+        self.clear_recovery(sid)
+        self.path(sid).unlink(missing_ok=True)
+
     def recoveries(self):
         result = []
         for path in (self.root / '.recovery').glob('*.json'):
