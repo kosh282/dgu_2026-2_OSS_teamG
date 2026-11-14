@@ -13,7 +13,8 @@ class FakeRuntime:
     model_id = "gaussian-head-direction"
     model_version = "angle-time-0.4"
     def __init__(self):
-        self.config = ModelConfig(window_seconds=1, output_interval_seconds=0.5)
+        self.config = ModelConfig(window_seconds=1, output_interval_seconds=0.5,
+                                  max_observation_hold_seconds=0.3)
 
     def __call__(self, feature):
         return {'angles': {} if feature['observable'] else None, 'score': feature['score'],

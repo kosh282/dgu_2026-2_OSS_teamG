@@ -8,7 +8,7 @@ import math
 class ModelConfig:
     """각도는 도, 시간은 초입니다. 변경한 설정은 별도 버전으로 기록하세요."""
 
-    config_version: str = "gaussian-angle-time-0.5"
+    config_version: str = "gaussian-angle-time-0.6"
     feature_version: str = "experimental-0.9"
     window_seconds: float = 10.0
     output_interval_seconds: float = 1.0
@@ -24,7 +24,7 @@ class ModelConfig:
     down_grace_seconds: float = 5.0
     down_decay_seconds: float = 10.0
     down_penalty: float = 20.0
-    max_observation_hold_seconds: float = 0.3
+    max_observation_hold_seconds: float = 0.5
     min_observable_ratio: float = 0.7
     min_scoreable_ratio: float = 0.7
     scoring_method: str = "gaussian"
@@ -39,12 +39,12 @@ class ModelConfig:
     @classmethod
     def gaussian(cls, **overrides):
         """각도 공간 Gaussian의 실험 초기값. 논문의 시야 폭/높이 계수가 아니다."""
-        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-0.5",
+        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-0.6",
                       gaussian_angle_mode='softened',
                       window_seconds=10.0)
         values.update(overrides)
         if values['gaussian_angle_mode'] == 'relative' and 'config_version' not in overrides:
-            values['config_version'] = 'gaussian-angle-time-0.5-relative'
+            values['config_version'] = 'gaussian-angle-time-0.6-relative'
         return cls(**values)
 
     def __post_init__(self):

@@ -72,7 +72,9 @@ class GaussianRuntimeTests(unittest.TestCase):
 
     def test_scores_and_observation_states_match_before_model_cleanup(self):
         """삭제 작업 전 두 Gaussian 경로의 602개 출력과 대조한다."""
-        models = [GaussianRuntime(), GaussianRuntime(downward_policy=lambda f, r: (False, 'not_down'))]
+        # 기존 출력 기준은 관측 유지 시간이 0.3초였던 설정에 대응한다.
+        config = ModelConfig.gaussian(max_observation_hold_seconds=0.3)
+        models = [GaussianRuntime(config), GaussianRuntime(config, downward_policy=lambda f, r: (False, 'not_down'))]
         keys = ['score', 'current_direction_score', 'orientation_state', 'status', 'reason_codes', 'gaussian_observation', 'front_seconds', 'away_seconds', 'looking_down_seconds', 'eye_candidate']
         rows = []
         for ms in range(0, 30001, 100):

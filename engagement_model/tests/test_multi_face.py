@@ -59,6 +59,15 @@ class MultiFaceTests(unittest.TestCase):
         runtime.reset()
         self.assertEqual(runtime.participants(), [])
 
+    def test_selective_recalibration_keeps_other_participant(self):
+        runtime=self.ready()
+        self.assertTrue(runtime.recalibrate('A'))
+        rows={row['id']:row for row in runtime.participants()}
+        self.assertEqual(rows['A']['calibration_status'], 'collecting')
+        self.assertEqual(rows['B']['calibration_status'], 'ready')
+        self.assertIsNone(rows['A']['score'])
+        self.assertFalse(runtime.recalibrate('unknown'))
+
     def test_track_change_preserves_neutral_and_invalid_quality_never_scores(self):
         runtime = self.ready()
         runtime.update_identities({1: 'B', 2: 'A'})

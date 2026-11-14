@@ -6,7 +6,7 @@ from .multi_face import MultiFaceGaussianRuntime
 class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
     model_id = 'position-track-gaussian'
     model_version = 'position-gaussian-0.1'
-    association_gap_ms = 1000
+    association_gap_ms = 1500
     maximum_center_shift = 0.10
     minimum_separation = 0.12
     aggregation_label = 'position-track-time-weighted-gaussian'

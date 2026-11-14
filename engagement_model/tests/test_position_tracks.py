@@ -41,11 +41,35 @@ class PositionTrackTests(unittest.TestCase):
         model(sample(3500))
         rows={r['id']:r for r in model.participants()}
         self.assertEqual(rows['T1']['calibration_status'], 'ready')
+        self.assertEqual(rows['T2']['calibration_status'], 'ready')
+
+    def test_longer_dropout_recalibrates_only_missing_face(self):
+        model=self.ready()
+        model(sample(3400, (0.25,)))
+        model(sample(3900))
+        rows={r['id']:r for r in model.participants()}
+        self.assertEqual(rows['T1']['calibration_status'], 'ready')
         self.assertEqual(rows['T2']['calibration_status'], 'collecting')
         self.assertIsNone(rows['T2']['current_direction_score'])
 
+    def test_short_dropout_preserves_eye_history_without_scoring_missing_face(self):
+        model=PositionTrackGaussianRuntime(eye_fusion=True)
+        for t in range(0, 15001, 100):
+            model(sample(t))
+        self.assertIsNotNone({r['id']:r for r in model.participants()}['T2']['eye_score'])
+        group=model(sample(15100, (0.25,)))
+        missing={r['id']:r for r in model.participants()}['T2']
+        self.assertEqual(missing['status'], 'missing')
+        self.assertIsNone(missing['score'])
+        self.assertEqual(group['scoreable_count'], 1)
+        model(sample(15200))
+        returned={r['id']:r for r in model.participants()}['T2']
+        self.assertEqual(returned['calibration_status'], 'ready')
+        self.assertIsNotNone(returned['eye_score'])
+        self.assertLess(returned['eye_coverage'], 1.0)
+
     def test_large_move_overlap_and_gap_reset(self):
-        for data in (sample(3400,(0.49,0.51)),sample(4400)):
+        for data in (sample(3400,(0.49,0.51)),sample(5000)):
             model=self.ready(); result=model(data)
             self.assertIsNone(result['current_direction_score'])
             self.assertTrue(all(r['calibration_status']=='collecting' for r in model.participants()))
