@@ -12,6 +12,26 @@ def clock(ms):
     return f'{seconds // 3600:02}:{seconds // 60 % 60:02}:{seconds % 60:02}'
 
 
+def live_score_unavailable_reason(model_status, model_enabled, stale, rows, latest_window, status_message=None):
+    """점수가 없을 때 화면에 표시할 관측 가능한 사유를 우선순위대로 고른다."""
+    reason_codes = latest_window.get('quality', {}).get('reason_codes', []) if latest_window else []
+    if model_status == 'unavailable':
+        return status_message or '모델 또는 영상 입력을 확인하세요.'
+    if model_status == 'stopped' or not model_enabled:
+        return '실험 점수 모델이 꺼져 있습니다.'
+    if stale:
+        return '최근 점수 구간이 5초 이상 갱신되지 않았습니다.'
+    if any(row.get('calibration_status') == 'collecting' for row in rows):
+        return '정면 기준을 수집 중입니다. 관측된 얼굴이 정면을 유지해 주세요.'
+    if any('eye_observation_unavailable' in row.get('reason_codes', []) for row in rows):
+        return '눈 관측이 부족하거나 수집 중입니다. 얼굴 크기와 가림을 확인하세요.'
+    if 'insufficient_scoreable_time' in reason_codes:
+        return '최근 구간의 점수화 가능한 관측 시간이 부족합니다.'
+    if 'insufficient_observation' in reason_codes:
+        return '최근 구간의 얼굴 관측 시간이 부족합니다.'
+    return '얼굴 관측과 첫 점수 구간을 기다리는 중입니다.'
+
+
 def score(event):
     payload = event['payload']
     output = payload.get('model_output') or {}

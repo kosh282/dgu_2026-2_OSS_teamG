@@ -2,13 +2,23 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, overlap, score, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_score_unavailable_reason, overlap, score, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
 SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
 
 class DashboardTests(unittest.TestCase):
+    def test_live_score_reason_prioritizes_failure_and_explains_observation(self):
+        rows = [{'calibration_status': 'collecting', 'reason_codes': ['eye_observation_unavailable']}]
+        self.assertEqual(live_score_unavailable_reason('unavailable', True, True, rows, None, '입력 오류'), '입력 오류')
+        self.assertIn('5초', live_score_unavailable_reason('running', True, True, rows, None))
+        self.assertIn('정면 기준', live_score_unavailable_reason('running', True, False, rows, None))
+        self.assertIn('눈 관측', live_score_unavailable_reason('running', True, False, [{'reason_codes': ['eye_observation_unavailable']}], None))
+        window = {'quality': {'reason_codes': ['insufficient_observation']}}
+        self.assertIn('얼굴 관측 시간', live_score_unavailable_reason('running', True, False, [], window))
+        self.assertIn('꺼져', live_score_unavailable_reason('stopped', False, False, [], None))
+
     def setUp(self):
         self.directory=tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -173,7 +183,8 @@ class DashboardTests(unittest.TestCase):
             elements=list(app)
             stop_index=next(i for i, element in enumerate(elements) if element.type=='button' and element.label=='수업 종료')
             warning_index=next(i for i, element in enumerate(elements) if element.type=='warning' and '음성 입력 누락 가능' in element.value)
-            self.assertLess(warning_index, stop_index)
+            self.assertLess(stop_index, warning_index)
+            self.assertTrue(any('점수 상태:' in c.value for c in app.caption))
             app.session_state['live'].video_enabled=True
             app.session_state['live'].model_enabled=True
             app.run()
@@ -198,6 +209,7 @@ class DashboardTests(unittest.TestCase):
         app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20).run()
         next(c for c in app.checkbox if c.label=='영상 분석 사용').uncheck().run()
         next(c for c in app.checkbox if c.label=='실시간 음성 전사 사용').check().run()
+        next(s for s in app.selectbox if s.label=='음성 입력 방식').select('microphone').run()
         next(t for t in app.text_input if t.label=='수업 제목').set_value('음성 수업').run()
         next(c for c in app.checkbox if c.label.startswith('수업 영상·음성')).check().run()
         next(c for c in app.checkbox if c.label.startswith('전사·메모')).check().run()
