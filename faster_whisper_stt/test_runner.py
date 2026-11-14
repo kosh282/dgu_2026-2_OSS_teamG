@@ -31,6 +31,17 @@ class FakeWhisper:
 
 
 class WhisperRunnerTests(unittest.TestCase):
+    def test_invalid_window_is_rejected_before_processing_can_spin(self):
+        for value in (0, -1, True, 0.5, float('nan'), float('inf')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                WhisperConfig(window_seconds=value)
+
+    def test_invalid_capture_or_model_settings_fail_before_loading(self):
+        for settings in ({'sample_rate_hz': 8000}, {'chunk_ms': 0},
+                         {'num_threads': 0}, {'model': ''}):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                WhisperConfig(**settings)
+
     def test_ten_second_events_and_shutdown_tail(self):
         service = IntegrationService()
         sid = service.start_session('test', {'config_version': 'test', 'participation_model': None, 'stt_model': None})

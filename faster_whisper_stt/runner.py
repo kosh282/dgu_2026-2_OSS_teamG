@@ -20,6 +20,16 @@ class WhisperConfig:
     window_seconds: int = 10
     num_threads: int = 4
 
+    def __post_init__(self):
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ValueError('Whisper 모델 이름이 필요합니다')
+        for name in ('sample_rate_hz', 'chunk_ms', 'window_seconds', 'num_threads'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f'{name}는 양의 정수여야 합니다')
+        if self.sample_rate_hz != 16000:
+            raise ValueError('faster-whisper 입력은 16kHz가 필요합니다')
+
     def public_info(self):
         return {'model_id': f'faster-whisper-{self.model}', 'model_version': '1.2.1',
                 'sample_rate_hz': self.sample_rate_hz, 'window_seconds': self.window_seconds}
