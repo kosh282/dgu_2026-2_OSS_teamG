@@ -170,31 +170,36 @@ class LiveAssistant:
         newest = max(event['end_ms'] for event in window)
         hits = [hit for hit in self.index.search(query)
                 if newest - self._suggested.get((hit.page.document_id, hit.page.page), -10**12) > self.cooldown_ms]
+        suggestion_writer = self.writer
         if self.writer.uses_external_service and hasattr(self.writer, 'suggest_teaching'):
             result = _external_suggestion(self.writer, [event['payload']['text'] for event in window], hits,
                                           self.searcher,
                                           cancelled=lambda: self._stop.is_set() or not self._session_running())
             if self._stop.is_set() or not self._session_running():
                 return None
-            self._report_writer_error(fallback=False)
             if result is None:
-                return None
-            payload = {**result, 'origin': 'ai_generated', 'status': 'suggested', 'trigger_threshold': self.score_threshold,
+                if not self.writer.last_error or not hits:
+                    self._report_writer_error(fallback=False)
+                    return None
+                suggestion_writer = LocalWriter()
+            else:
+                self._report_writer_error(fallback=False)
+                payload = {**result, 'origin': 'ai_generated', 'status': 'suggested', 'trigger_threshold': self.score_threshold,
                        'evidence_event_ids': [score_event['event_id']] + [event['event_id'] for event in window]}
-            event = self.service.make_event(
-                self.session_id, 'teaching_suggestion', payload, score_event['start_ms'], score_event['end_ms'],
-                MODULE, model_id=self.writer.model_id, model_version=self.writer.model_version)
-            try:
-                self.service.receive_event(event)
-            except IntegrationError:
-                return None
-            self._last_score_event_id = score_event['event_id']
-            self._last_suggestion_ms = now
-            self.suggestion_count += 1
-            return event
+                event = self.service.make_event(
+                    self.session_id, 'teaching_suggestion', payload, score_event['start_ms'], score_event['end_ms'],
+                    MODULE, model_id=self.writer.model_id, model_version=self.writer.model_version)
+                try:
+                    self.service.receive_event(event)
+                except IntegrationError:
+                    return None
+                self._last_score_event_id = score_event['event_id']
+                self._last_suggestion_ms = now
+                self.suggestion_count += 1
+                return event
         if not hits:
             return None
-        result = self.writer.suggest([event["payload"]["text"] for event in window], hits)
+        result = suggestion_writer.suggest([event["payload"]["text"] for event in window], hits)
         if self._stop.is_set() or not self._session_running():
             return None
         self._report_writer_error()
@@ -204,7 +209,7 @@ class LiveAssistant:
         payload = _suggestion_payload(result, evidence)
         payload['trigger_threshold'] = self.score_threshold
         payload['evidence_event_ids'].append(score_event['event_id'])
-        model_id, model_version = _model_ids(self.writer, result)
+        model_id, model_version = _model_ids(suggestion_writer, result)
         event = self.service.make_event(
             self.session_id, "resource_suggestion", payload,
             min(e["start_ms"] for e in evidence), max(e["end_ms"] for e in evidence), MODULE,

@@ -41,7 +41,10 @@ class PersonalAPITests(unittest.TestCase):
         failure = HTTPError('https://api.openai.com/v1/responses', 401, 'private-key', {}, None)
         with patch('ai_agent.writer.request.urlopen', side_effect=failure):
             event = LiveAssistant(service, sid, MaterialIndex([LECTURE]), writer).step()
-        self.assertIsNone(event)  # 외부 생성 실패를 AI 제안인 것처럼 표시하지 않는다.
+        # 외부 생성 실패 시 업로드 자료의 로컬 검색 결과만 제공한다.
+        self.assertEqual(event['event_type'], 'resource_suggestion')
+        self.assertEqual(event['provenance']['model_id'], LocalWriter.model_id)
+        self.assertNotIn('origin', event['payload'])
         self.assertNotIn('private-key', json.dumps(service.get_dashboard_snapshot(sid)))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'session.json'
