@@ -164,10 +164,10 @@ class IntegrationService:
             def select(kind):
                 return [e for e in events if e["event_type"] == kind]
             def with_evidence_flag(event):
-                result = deepcopy(event)
+                result = dict(event)
                 result["evidence_needs_refresh"] = any(ref not in active_ids for ref in event["payload"]["evidence_event_ids"])
                 return result
-            session = deepcopy(state["session"])
+            session = dict(state["session"])
             session["duration_ms"] = self.elapsed_ms(session_id)
             session["status"] = "running" if state["running"] else "stopped"
             return deepcopy({
