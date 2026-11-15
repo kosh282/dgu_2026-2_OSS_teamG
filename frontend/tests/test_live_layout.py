@@ -120,16 +120,20 @@ class LiveLayoutTests(unittest.TestCase):
         for body in re.findall(r'\.st-key-live-dashboard[^{}]*\{([^{}]*)\}', styles):
             self.assertNotRegex(body, r'(?:^|;)\s*(?:gap|row-gap|column-gap|line-height|height|font-size|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?)\s*:')
 
-    def test_overview_separates_header_actions_score_calibration_and_full_width_reason(self):
+    def test_stop_action_is_in_page_header_outside_fixed_overview(self):
         self.app.run()
         self.assertFalse(self.app.exception)
         overview = next(item for item in self.app if item.type == 'flex_container'
                         and item.proto.id.endswith('-live-overview'))
         rows = [item for item in overview.children.values() if item.type == 'flex_container']
-        self.assertEqual(len(rows), 2)
-        header_columns = list(rows[0].children.values())
-        body_columns = list(rows[1].children.values())
-        self.assertTrue(any(item.type == 'button' and item.label == '수업 종료' for item in header_columns[1]))
+        self.assertEqual(len(rows), 1)
+        body_columns = list(rows[0].children.values())
+        self.assertFalse(any(item.type == 'button' and item.label == '수업 종료' for item in overview))
+        header = next(item for item in self.app if item.type == 'flex_container'
+                      and item.proto.id.endswith('-live-page-header'))
+        header_row = next(item for item in header.children.values() if item.type == 'flex_container')
+        action_column = list(header_row.children.values())[1]
+        self.assertTrue(any(item.type == 'button' and item.label == '수업 종료' for item in action_column))
         self.assertTrue(any(item.type == 'metric' and item.label == '최근 실험 구간 점수' for item in body_columns[0]))
         self.assertTrue(any(item.type == 'button' and item.label == '정면 기준 재보정' for item in body_columns[1]))
         footer = next(item for item in overview.children.values()

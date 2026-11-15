@@ -49,6 +49,7 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 .st-key-live-transcript,.st-key-live-notes,.st-key-live-assistant{background-color:#fff}
 /* 요약 카드 안의 점수에는 중첩 테두리·여백을 더하지 않는다. */
 .st-key-live-overview [data-testid="stMetric"]{border:0;padding:0;background:transparent}
+.st-key-live-page-header .st-key-page-title{left:0;margin-left:0;margin-right:0}
 .st-key-live-dashboard [data-testid="stColumn"]{min-width:0}
 @media(max-width:540px){.st-key-live-dashboard [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}
 .st-key-live-dashboard [data-testid="stColumn"]{flex:1 1 100%!important}}
@@ -511,9 +512,9 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
 
 
 def live_page():
-    page_title('라이브 세션')
     live=active()
     if not live or not live.has_started():
+        page_title('라이브 세션')
         st.info('세션 시작 준비에서 수업 창을 선택하고 수업을 시작하세요.')
         if st.button('세션 시작 준비로 이동'):
             navigate('세션 시작 준비')
@@ -566,6 +567,15 @@ def live_page():
         except Exception as exc:
             st.session_state.live_action_error=f'수업 종료·저장 실패: {exc}'
 
+    # 종료는 카드의 관측 정보와 분리해 페이지 제목 오른쪽에 둔다.
+    header_columns={'wrap':False} if 'wrap' in inspect.signature(st.columns).parameters else {}
+    with st.container(key='live-page-header'):
+        title_column,action_column=st.columns([4,1],gap='small',vertical_alignment='center',**header_columns)
+        with title_column:
+            page_title('라이브 세션')
+        with action_column, st.container(horizontal=True,horizontal_alignment='right'):
+            st.button('수업 종료',type='primary',key='live-stop',disabled=not live.is_running(),on_click=stop_session)
+
     # 카드와 도구를 한 갱신 단위에 고정해 서로 다른 시점의 화면이 섞이지 않게 한다.
     @st.fragment(run_every=1 if live.is_running() else None)
     def panel():
@@ -598,11 +608,8 @@ def live_page():
         with st.container(key='live-dashboard'):
             left,right=st.columns(2,gap='small',**column_options)
             with left, st.container(height=170,border=True,key='live-overview',**overview_options):
-                heading,actions=st.columns([3,1.2],gap='small',**column_options)
-                heading.caption(f"{status} · 진행 시간 {clock(duration)}",
-                                help=snapshot['session']['title'],**caption_options)
-                actions.button('수업 종료',type='primary',key='live-stop',disabled=not running,
-                               on_click=stop_session)
+                st.caption(f"{status} · 진행 시간 {clock(duration)}",
+                           help=snapshot['session']['title'],**caption_options)
                 summary,calibration_column=st.columns(2,gap='small',**column_options)
                 summary.metric('최근 실험 구간 점수',f'{value:g}점' if value is not None else
                                ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
