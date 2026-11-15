@@ -191,7 +191,9 @@ class DashboardTests(unittest.TestCase):
             note_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='교수자 메모')
             transcript_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='실시간 전사 · 분석 상태')
             self.assertLess(score_index, timeline_index)
-            self.assertLess(note_index, transcript_index)
+            # 두 번째 행은 타임라인·전사, 세 번째 행은 메모·조교 카드다.
+            self.assertLess(timeline_index, transcript_index)
+            self.assertLess(transcript_index, note_index)
             next(t for t in app.text_input if t.label=='메모 입력').set_value('라이브 메모')
             next(b for b in app.button if b.label=='메모 저장').click().run()
             self.assertFalse(app.exception)
