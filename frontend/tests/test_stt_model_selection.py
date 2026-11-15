@@ -50,19 +50,25 @@ class ModelSelectionTests(unittest.TestCase):
         app = AppTest.from_file(str(root / 'frontend' / 'app.py'), default_timeout=20).run()
         next(c for c in app.checkbox if c.label == '실시간 음성 전사 사용').check().run()
         select = next(s for s in app.selectbox if s.label == '음성 전사 모델')
-        self.assertEqual(select.options, ['sherpa 한국어 스트리밍', 'faster-whisper base (10초)',
-                                          'faster-whisper small (10초)'])
+        self.assertEqual(select.options, ['sherpa 한국어 스트리밍 (빠름, 강의 녹화 음성에 약함)',
+                                          'faster-whisper base (말 멈춤 단위)',
+                                          'faster-whisper small (말 멈춤 단위, 권장)'])
+        import importlib.util
+        expected = 'whisper-small' if importlib.util.find_spec('faster_whisper') else 'sherpa'
+        self.assertEqual(select.value, expected)
         select.select('whisper-base').run()
         self.assertFalse(app.exception)
         self.assertEqual(app.session_state['stt_model'], 'whisper-base')
 
     def test_only_selected_runner_and_model_are_started(self):
         started = threading.Event()
+        captured = {}
 
         class FakeRunner:
             last_error = None
             def __init__(self, service, sid, config, **kwargs):
                 self.config = config
+                captured.update(kwargs)
             def start(self): started.set(); return True
             def is_alive(self): return True
             def stop(self): pass
@@ -70,11 +76,13 @@ class ModelSelectionTests(unittest.TestCase):
         with patch('frontend.live_session._load_stt_engine', return_value=object()) as load, \
              patch('faster_whisper_stt.runner.WhisperLiveTranscription', FakeRunner), \
              patch('sherpa_stt.runner.LiveTranscription') as sherpa:
-            live = LiveSession(None, audio_source='microphone', video_enabled=False, stt_model='whisper-small')
+            live = LiveSession(None, audio_source='microphone', video_enabled=False, stt_model='whisper-small',
+                               stt_hint_terms=['인터페이스', '추상'])
             live.start('선택 테스트')
             try:
                 self.assertTrue(started.wait(2))
                 self.assertEqual(load.call_args.args[0].model, 'small')
+                self.assertEqual(captured['hint_terms'], ('인터페이스', '추상'))
                 sherpa.assert_not_called()
                 metadata = live.service._get(live.sid)['config']['stt_model']
                 self.assertEqual(metadata['model_id'], 'faster-whisper-small')

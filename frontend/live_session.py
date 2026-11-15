@@ -47,7 +47,7 @@ class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
     def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True,
-                 reidentification_enabled=False, recovery_root=None, stt_model='sherpa'):
+                 reidentification_enabled=False, recovery_root=None, stt_model='sherpa', stt_hint_terms=()):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
@@ -66,6 +66,8 @@ class LiveSession:
         if stt_model not in ('sherpa', 'whisper-base', 'whisper-small'):
             raise ValueError('지원하지 않는 전사 모델입니다.')
         self.stt_model = stt_model
+        # 강의 자료에서 고른 용어. faster-whisper 전사 힌트로만 쓰고 세션 JSON에는 넣지 않는다.
+        self.stt_hint_terms = tuple(stt_hint_terms or ())
         self.transcription = None
         self._stt_engine = None
         self._stt_startup_error = None
@@ -305,8 +307,9 @@ class LiveSession:
                     except Exception:
                         pass  # 아래 runner.start()가 같은 오류를 unavailable로 알린다.
                 # 오디오는 선택한 영상 창과 무관하게 기본 출력 장치 전체를 받는다.
+                extra = {} if self.stt_model == 'sherpa' else {'hint_terms': self.stt_hint_terms}
                 runner = LiveTranscription(self.service, self.sid, self._stt_config,
-                                           source=self.audio_source, engine=self._stt_engine)
+                                           source=self.audio_source, engine=self._stt_engine, **extra)
                 with self.lock:
                     self.transcription = runner
                 if not runner.start():

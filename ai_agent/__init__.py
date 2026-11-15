@@ -2,9 +2,11 @@
 from .assistant import LiveAssistant, generate_post_session
 from .materials import Material, MaterialError, MaterialPage, load_material
 from .retrieval import MaterialIndex
+from .terms import lecture_terms
 from .writer import ClaudeWriter, LocalWriter, claude_ready, make_writer
 
 __all__ = [
     "LiveAssistant", "generate_post_session", "Material", "MaterialError", "MaterialPage",
-    "load_material", "MaterialIndex", "ClaudeWriter", "LocalWriter", "claude_ready", "make_writer",
+    "load_material", "MaterialIndex", "lecture_terms", "ClaudeWriter", "LocalWriter", "claude_ready",
+    "make_writer",
 ]

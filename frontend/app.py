@@ -343,17 +343,22 @@ def preparation():
                 format_func=lambda value: '시스템 출력 음성 (루프백)' if value=='loopback' else '교수자 마이크',
                 key='stt_source', disabled=running or not stt_enabled,
             )
-            stt_model=st.selectbox('음성 전사 모델', ['sherpa', 'whisper-base', 'whisper-small'],
-                                   format_func=lambda value: {'sherpa':'sherpa 한국어 스트리밍',
-                                       'whisper-base':'faster-whisper base (10초)',
-                                       'whisper-small':'faster-whisper small (10초)'}[value],
+            # 강의 녹화 음성에서 sherpa는 거의 인식하지 못해(데모 영상 실측) faster-whisper small이
+            # 설치돼 있으면 기본으로 고른다. 없으면 sherpa가 기본이다.
+            stt_options=['sherpa', 'whisper-base', 'whisper-small']
+            whisper_installed=importlib.util.find_spec('faster_whisper') is not None
+            stt_model=st.selectbox('음성 전사 모델', stt_options,
+                                   index=stt_options.index('whisper-small' if whisper_installed else 'sherpa'),
+                                   format_func=lambda value: {'sherpa':'sherpa 한국어 스트리밍 (빠름, 강의 녹화 음성에 약함)',
+                                       'whisper-base':'faster-whisper base (말 멈춤 단위)',
+                                       'whisper-small':'faster-whisper small (말 멈춤 단위, 권장)'}[value],
                                    key='stt_model', disabled=running or not stt_enabled)
             if stt_enabled:
                 ready,missing,stt_config=stt_readiness(audio_source, stt_model)
                 if ready:
                     st.success('전사 실행에 필요한 패키지를 확인했습니다.')
                     if stt_model != 'sherpa':
-                        st.caption('10초 음성을 한 번씩 전사합니다. 첫 사용 시 모델 다운로드가 필요할 수 있으며, 결과는 수집 및 추론 후 표시됩니다.')
+                        st.caption('말이 멈추는 지점(8~20초)마다 한 번씩 전사하므로 문장은 십여 초 늦게 나타납니다. 첫 사용 시 모델 다운로드가 필요할 수 있으며, 결과는 구간 수집과 추론 후 표시됩니다.')
                 else:
                     st.warning('전사 시작 전 준비가 필요합니다: '+missing)
                 if audio_source=='loopback':
@@ -368,6 +373,11 @@ def preparation():
             uploaded=st.file_uploader('PDF · PPTX 강의 자료',type=['pdf','ppt','pptx'],accept_multiple_files=True,key='materials',disabled=running)
             index,errors=material_index(uploaded)
             material_summary(index,errors)
+            from ai_agent import lecture_terms
+            # 자료에 반복해서 나오는 용어를 faster-whisper 전사 힌트로 넘긴다(sherpa에는 적용하지 않음).
+            hint_terms=lecture_terms(index) if index else []
+            if hint_terms:
+                st.caption('전사 힌트 용어 (faster-whisper 선택 시 적용, 처리 시간 증가): '+', '.join(hint_terms))
             writer_options, writer_ready = assistant_options('live-assistant', disabled=running)
             st.caption('외부 AI 사용 시 전사·관련 자료가 제공자에 전달되며, AI가 검색어를 제안하면 한국어 위키백과에도 검색어가 전송됩니다. 검색 결과 제목만 참고하므로 링크 내용을 직접 확인하세요.')
             score_threshold=st.slider('제안 시작 실험 점수 (이하)', 0, 100, 60, key='assistant_score_threshold', disabled=running)
@@ -400,7 +410,7 @@ def preparation():
                     from frontend.live_session import LiveSession
                     live=LiveSession(selected[0] if selected else None,
                                      audio_source=audio_source if stt_enabled else None,
-                                     stt_model=stt_model,
+                                     stt_model=stt_model, stt_hint_terms=hint_terms,
                                      video_enabled=video_enabled, model_enabled=model_enabled,
                                      reidentification_enabled=reidentification_enabled,
                                      recovery_root=files.root / '.recovery')

@@ -8,6 +8,7 @@
 |---|---|
 | `materials.py` | PDF(pypdf)·PPTX(python-pptx, 슬라이드 노트 포함)를 페이지 단위 텍스트로 읽음. 구형 `.ppt`, 암호 PDF, 스캔 이미지 PDF(텍스트 없음)는 읽지 못함 |
 | `retrieval.py` | 로컬 BM25 검색. 한글은 글자 2-gram으로 색인해 조사 변화(`스케줄링을/에서는`)에 덜 민감함. 수업 말투(불용어, `~습니다` 서술어)는 제외 |
+| `terms.py` | `lecture_terms(index)`: 자료 여러 쪽에 반복되는 영문 식별자·한글 명사(조사 제거, 일반 단어 제외)를 최대 20개·150자로 골라 faster-whisper 전사 힌트로 제공. 규칙 기반이라 일반 단어가 섞이거나 용어가 빠질 수 있음 |
 | `writer.py` | 문장 작성. `LocalWriter`(기본)와 개인 키로 OpenAI·Gemini·Claude를 호출하는 작성기 |
 | `assistant.py` | `LiveAssistant`(수업 중 주기 실행)와 `generate_post_session`(수업 후 실행) |
 

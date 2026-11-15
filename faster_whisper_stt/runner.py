@@ -1,8 +1,9 @@
-"""10초 단위 faster-whisper 전사를 공통 세션에 전달한다."""
+"""말 멈춤 단위 faster-whisper 전사를 공통 세션에 전달한다."""
 from dataclasses import dataclass
 from collections import deque
 from pathlib import Path
 import queue
+import re
 import time
 from uuid import uuid4
 
@@ -11,28 +12,131 @@ import numpy as np
 from sherpa_stt.audio import to_mono_float32
 from sherpa_stt.runner import LiveTranscription
 
+from .segmenter import PauseSegmenter
+
+# Whisper가 무음·잡음 구간에서 자주 만들어 내는 문장. 구간 전체가 이 문장 하나일 때만 버린다.
+HALLUCINATED_PHRASES = frozenset(re.sub(r'[^0-9a-z가-힣]', '', text.lower()) for text in (
+    '시청해주셔서 감사합니다', '시청해 주셔서 감사합니다', '시청해주셔서 고맙습니다', '오늘도 시청해주셔서 감사합니다',
+    '구독과 좋아요', '구독과 좋아요 부탁드립니다', '다음 영상에서 만나요', '고맙습니다', '감사합니다',
+    'MBC 뉴스', '자막 제공', '한국어 자막',
+))
+
+
+def _normalized(text):
+    return re.sub(r'[^0-9a-z가-힣]', '', text.lower())
+
+
+def _copies_hints(text, hint_terms):
+    """출력이 용어 힌트 목록을 그대로 옮겨 적은 것인지(쉼표 항목 4개 이상, 75% 이상이 힌트)."""
+    if not hint_terms:
+        return False
+    hints = {_normalized(term) for term in hint_terms}
+    items = [_normalized(item) for item in re.split(r'[,、]', text) if _normalized(item)]
+    return len(items) >= 4 and sum(item in hints for item in items) >= 0.75 * len(items)
+
+
+def segment_text(segment, hint_terms=()):
+    """Whisper 구간 결과에서 쓸 텍스트. 지어낸 문장·힌트 복사로 보이면 빈 문자열(실험 기준).
+
+    실제로 같은 말을 반복했을 수 있으므로 텍스트는 고치지 않고 인식한 그대로 쓴다.
+    구간 전체가 반복으로 채워진 경우(압축률 2.4 초과, faster-whisper의 반복 판정 기준)만 버린다.
+    """
+    text = (getattr(segment, 'text', '') or '').strip()
+    normalized = _normalized(text)
+    if not normalized or normalized in HALLUCINATED_PHRASES:
+        return ''
+    if getattr(segment, 'compression_ratio', 0.0) > 2.4:
+        return ''
+    if getattr(segment, 'no_speech_prob', 0.0) > 0.6 and getattr(segment, 'avg_logprob', 0.0) < -1.0:
+        return ''
+    if _copies_hints(text, hint_terms):
+        return ''
+    return text
+
+
+def keep_segment(segment):
+    """`segment_text`가 텍스트를 남기는지(이전 호출부 호환)."""
+    return bool(segment_text(segment))
+
 
 @dataclass(frozen=True)
 class WhisperConfig:
     model: str = 'base'
     sample_rate_hz: int = 16000
     chunk_ms: int = 100
-    window_seconds: int = 10
-    num_threads: int = 4
+    # 한 구간의 최대 길이(초). 말이 멈추면 `min_segment_seconds` 이상에서 더 일찍 자른다.
+    # Whisper는 구간 길이와 관계없이 30초 입력으로 계산하므로 짧게 자를수록 계산이 늘어난다.
+    # 데모 영상 4분: 3~10초는 상대 CER 28.8%·RTF 0.65, 8~20초는 22.6%·0.34(스레드 2, 앞 문장 힌트).
+    window_seconds: int = 20
+    # 영상 분석과 CPU를 나눠 쓰도록 2개로 둔다(데모 영상 4분: 4개와 같은 정확도, 처리 시간 약 8% 증가).
+    num_threads: int = 2
+    min_segment_seconds: int = 8
+    pause_ms: int = 500
+    # 빔 5는 데모 영상에서 오차가 약간 줄었지만 처리 시간이 약 25% 늘어 기본은 1로 둔다.
+    beam_size: int = 1
+    # faster-whisper 내장 음성 구간 감지(Silero). 무음 구간의 지어낸 문장을 줄인다.
+    vad_filter: bool = True
+    # 직전 확정 문장 끝부분(최대 120자)을 다음 구간의 힌트로 넣어 문맥·용어를 잇는다.
+    prompt_previous_text: bool = True
+    # 용어 힌트를 쓰면 같은 말 반복("OnClick, OnClick, ...")이 생기고, faster-whisper 기본 온도 재시도
+    # (0.0~1.0, 최대 6회)가 매번 최대 길이까지 다시 디코딩해 8초 구간에 47초가 걸렸다(실측).
+    # 재시도 없이 온도 0만 쓰고 출력 길이를 제한한다. 인식한 텍스트는 고치지 않는다.
+    temperatures: tuple = (0.0,)
+    # 구간 1초당 최대 출력 토큰 수(+10). 데모 강의 말 속도(초당 약 4글자)보다 넉넉한 값.
+    max_tokens_per_second: int = 6
+    # 반복 n-gram 금지. 3으로 하면 정상적으로 다시 나온 말까지 바꿔 정확도가 떨어져(실측) 기본은 끈다(0).
+    no_repeat_ngram_size: int = 0
 
     def __post_init__(self):
         if not isinstance(self.model, str) or not self.model.strip():
             raise ValueError('Whisper 모델 이름이 필요합니다')
-        for name in ('sample_rate_hz', 'chunk_ms', 'window_seconds', 'num_threads'):
+        for name in ('sample_rate_hz', 'chunk_ms', 'window_seconds', 'num_threads',
+                     'min_segment_seconds', 'pause_ms', 'beam_size', 'max_tokens_per_second'):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f'{name}는 양의 정수여야 합니다')
         if self.sample_rate_hz != 16000:
             raise ValueError('faster-whisper 입력은 16kHz가 필요합니다')
+        if self.min_segment_seconds > self.window_seconds:
+            raise ValueError('min_segment_seconds는 window_seconds 이하여야 합니다')
+        for name in ('vad_filter', 'prompt_previous_text'):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f'{name}는 True/False여야 합니다')
+        size = self.no_repeat_ngram_size
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError('no_repeat_ngram_size는 0 이상의 정수여야 합니다(0은 끔)')
+        temps = self.temperatures
+        if (not isinstance(temps, tuple) or not temps
+                or any(isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= 1 for t in temps)):
+            raise ValueError('temperatures는 0~1 사이 값의 비어 있지 않은 튜플이어야 합니다')
+
+    def make_segmenter(self):
+        return PauseSegmenter(self.sample_rate_hz, min_seconds=self.min_segment_seconds,
+                              max_seconds=self.window_seconds, pause_ms=self.pause_ms)
+
+    def transcribe_options(self, previous_text='', hotwords=None, audio_seconds=None):
+        options = {'language': 'ko', 'beam_size': self.beam_size, 'vad_filter': self.vad_filter,
+                   'word_timestamps': False, 'condition_on_previous_text': False,
+                   'temperature': list(self.temperatures)}
+        if self.no_repeat_ngram_size:
+            options['no_repeat_ngram_size'] = self.no_repeat_ngram_size
+        if audio_seconds is not None:
+            options['max_new_tokens'] = int(audio_seconds * self.max_tokens_per_second) + 10
+        if self.vad_filter:
+            options['vad_parameters'] = {'min_silence_duration_ms': 500, 'speech_pad_ms': 300}
+        if self.prompt_previous_text and previous_text:
+            options['initial_prompt'] = previous_text[-120:]
+        if hotwords:
+            options['hotwords'] = hotwords
+        return options
 
     def public_info(self):
         return {'model_id': f'faster-whisper-{self.model}', 'model_version': '1.2.1',
-                'sample_rate_hz': self.sample_rate_hz, 'window_seconds': self.window_seconds}
+                'sample_rate_hz': self.sample_rate_hz, 'window_seconds': self.window_seconds,
+                'segmentation': {'min_seconds': self.min_segment_seconds, 'pause_ms': self.pause_ms},
+                'beam_size': self.beam_size, 'vad_filter': self.vad_filter,
+                'prompt_previous_text': self.prompt_previous_text,
+                'no_repeat_ngram_size': self.no_repeat_ngram_size, 'temperatures': list(self.temperatures)}
 
 
 def load_whisper(config):
@@ -42,12 +146,33 @@ def load_whisper(config):
 
 
 class WhisperLiveTranscription(LiveTranscription):
-    """같은 캡처·세션 시계를 사용하며 겹치지 않는 오디오 구간을 한 번씩 인식한다."""
-    def __init__(self, *args, **kwargs):
+    """같은 캡처·세션 시계를 사용하며 말 멈춤에서 자른 겹치지 않는 구간을 한 번씩 인식한다.
+
+    말소리가 없는 구간은 인식하지 않고, 지어낸 문장으로 보이는 결과는 버린다(`segment_text`).
+    `hint_terms`(강의 자료 용어 목록)를 주면 faster-whisper `hotwords`로 넣어 전문용어 인식을 돕는다.
+    데모 영상 4분에서 핵심 용어 55회 중 맞힌 수가 39→52회로 늘었지만 처리 시간이 약 1.6배가 됐다.
+    자료에 없는 말을 용어로 바꿔 적을 수 있다.
+    """
+    MAX_HINT_CHARS = 150
+
+    def __init__(self, *args, hint_terms=None, **kwargs):
         super().__init__(*args, **kwargs)
+        terms, length = [], 0
+        for term in hint_terms or ():
+            term = str(term).strip()
+            if not term or term in terms:
+                continue
+            extra = len(term) + (2 if terms else 0)
+            if length + extra > self.MAX_HINT_CHARS:
+                break
+            terms.append(term)
+            length += extra
+        self.hint_terms = tuple(terms)
+        self._hotwords = ', '.join(terms) or None
         self._recent_levels = deque(maxlen=20)
         self._processed_windows = 0
         self._empty_windows = 0
+        self._previous_text = ''
 
     def stats(self):
         stats = super().stats()
@@ -57,6 +182,7 @@ class WhisperLiveTranscription(LiveTranscription):
                                           if peak is not None else None)
             stats['processed_windows'] = self._processed_windows
             stats['empty_windows'] = self._empty_windows
+            stats['hint_term_count'] = len(self.hint_terms)
         return stats
 
     def start(self):
@@ -71,46 +197,43 @@ class WhisperLiveTranscription(LiveTranscription):
             self._stop_capture()
             self._status('unavailable', f'전사를 시작하지 못했습니다: {error}', ['audio_unavailable'])
             return False
-        self._status('running', 'faster-whisper 10초 구간 전사를 시작했습니다.')
+        self._status('running', 'faster-whisper 말 멈춤 단위 전사를 시작했습니다.')
         import threading
         self._thread = threading.Thread(target=self._loop, name='whisper-stt', daemon=True)
         self._thread.start()
         return True
 
+    def _transcribe(self, segment):
+        """말소리 구간 하나를 인식해 확정 전사로 보낸다."""
+        began = time.perf_counter()
+        options = self._config.transcribe_options(self._previous_text, self._hotwords,
+                                                  len(segment.audio) / self._config.sample_rate_hz)
+        results, _ = self._engine.transcribe(segment.audio, **options)
+        text = ' '.join(t for t in (segment_text(s, self.hint_terms) for s in results) if t).strip()
+        if text:
+            self._previous_text = text
+        elapsed = time.perf_counter() - began
+        lag = max(0, self._service.elapsed_ms(self._session_id) - segment.end_ms)
+        if text:
+            info = self._config.public_info()
+            event = self._service.make_event(self._session_id, 'transcript_final',
+                {'utterance_id': str(uuid4()), 'revision': 1, 'text': text, 'is_edited': False},
+                segment.start_ms, max(segment.start_ms, segment.end_ms), 'speech',
+                model_id=info['model_id'], model_version=info['model_version'])
+            self._service.receive_event(event)
+        with self._stats_lock:
+            self._process_s += elapsed
+            self._processed_windows += 1
+            self._empty_windows += int(not text)
+            self._lags.append(lag)
+            self._last_lag_ms = lag
+            if len(self._lags) > 36000:
+                del self._lags[:6000]
+
     def _loop(self):
         chunks = self._capture.chunks
-        parts, count, start_ms, end_ms, last_id = [], 0, None, None, None
-        limit = self._config.window_seconds * self._config.sample_rate_hz
-
-        def flush():
-            nonlocal parts, count, start_ms, end_ms
-            if not count:
-                return
-            samples = np.concatenate(parts)
-            began = time.perf_counter()
-            segments, _ = self._engine.transcribe(samples, language='ko', beam_size=1,
-                                                   vad_filter=False, word_timestamps=False,
-                                                   condition_on_previous_text=False)
-            text = ''.join(segment.text for segment in segments).strip()
-            elapsed = time.perf_counter() - began
-            lag = max(0, self._service.elapsed_ms(self._session_id) - end_ms)
-            if text:
-                info = self._config.public_info()
-                event = self._service.make_event(self._session_id, 'transcript_final',
-                    {'utterance_id': str(uuid4()), 'revision': 1, 'text': text, 'is_edited': False},
-                    start_ms, end_ms, 'speech', model_id=info['model_id'], model_version=info['model_version'])
-                self._service.receive_event(event)
-            with self._stats_lock:
-                self._process_s += elapsed
-                self._processed_windows += 1
-                self._empty_windows += int(not text)
-                self._audio_ms += count * 1000 / self._config.sample_rate_hz
-                self._lags.append(lag)
-                self._last_lag_ms = lag
-                if len(self._lags) > 36000:
-                    del self._lags[:6000]
-            parts, count, start_ms, end_ms = [], 0, None, None
-
+        segmenter = self._config.make_segmenter()
+        last_id = None
         try:
             while not self._stop.is_set() or not chunks.empty():
                 try:
@@ -121,31 +244,23 @@ class WhisperLiveTranscription(LiveTranscription):
                         raise RuntimeError(f'오디오 입력 중단: {error}')
                     continue
                 if last_id is not None and chunk.chunk_id != last_id + 1:
-                    flush()
+                    for segment in segmenter.flush():
+                        self._transcribe(segment)
                     self._status('running', '오디오 청크 누락으로 전사 구간을 나눴습니다.', ['audio_unavailable'])
                 last_id = chunk.chunk_id
                 if chunk.sample_rate_hz != self._config.sample_rate_hz:
                     raise ValueError('faster-whisper 입력은 16kHz가 필요합니다')
                 audio = to_mono_float32(chunk)
-                if len(audio):
-                    level = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
-                    with self._stats_lock:
-                        self._recent_levels.append(level)
-                offset = 0
-                while offset < len(audio):
-                    take = min(limit - count, len(audio) - offset)
-                    span = chunk.end_ms - chunk.start_ms
-                    piece_start = chunk.start_ms + int(span * offset / len(audio))
-                    piece_end = chunk.start_ms + int(span * (offset + take) / len(audio))
-                    if start_ms is None:
-                        start_ms = piece_start
-                    parts.append(audio[offset:offset + take].copy())
-                    count += take
-                    end_ms = max(start_ms, piece_end)
-                    offset += take
-                    if count == limit:
-                        flush()
-            flush()
+                if not len(audio):
+                    continue
+                level = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+                with self._stats_lock:
+                    self._recent_levels.append(level)
+                    self._audio_ms += len(audio) * 1000 / self._config.sample_rate_hz
+                for segment in segmenter.push(audio, chunk.start_ms, chunk.end_ms):
+                    self._transcribe(segment)
+            for segment in segmenter.flush():
+                self._transcribe(segment)
         except Exception as error:
             self.last_error = error
             self._safe_status('unavailable', f'faster-whisper 전사 오류: {error}', ['unknown'])
