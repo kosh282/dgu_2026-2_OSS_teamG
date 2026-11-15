@@ -113,11 +113,45 @@ class LiveLayoutTests(unittest.TestCase):
                  and any(item.proto.id.endswith('-' + key) for key in CARD_HEIGHTS)]
         self.assertEqual(len(cards), 6)
         for card in cards:
-            self.assertEqual(card.proto.flex_container.gap_config.gap_size, GapSize.XSMALL)
+            gap = GapSize.XXSMALL if card.proto.id.endswith('-live-overview') else GapSize.XSMALL
+            self.assertEqual(card.proto.flex_container.gap_config.gap_size, gap)
         # 카드의 측정값과 화면의 간격이 달라졌던 CSS 재정의를 다시 넣지 않는다.
         styles = '\n'.join(item.value for item in self.app.markdown if '<style>' in item.value)
         for body in re.findall(r'\.st-key-live-dashboard[^{}]*\{([^{}]*)\}', styles):
             self.assertNotRegex(body, r'(?:^|;)\s*(?:gap|row-gap|column-gap|line-height|height|font-size|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?)\s*:')
+
+    def test_overview_separates_header_actions_score_calibration_and_full_width_reason(self):
+        self.app.run()
+        self.assertFalse(self.app.exception)
+        overview = next(item for item in self.app if item.type == 'flex_container'
+                        and item.proto.id.endswith('-live-overview'))
+        rows = [item for item in overview.children.values() if item.type == 'flex_container']
+        self.assertEqual(len(rows), 2)
+        header_columns = list(rows[0].children.values())
+        body_columns = list(rows[1].children.values())
+        self.assertTrue(any(item.type == 'button' and item.label == '수업 종료' for item in header_columns[1]))
+        self.assertTrue(any(item.type == 'metric' and item.label == '최근 실험 구간 점수' for item in body_columns[0]))
+        self.assertTrue(any(item.type == 'button' and item.label == '정면 기준 재보정' for item in body_columns[1]))
+        footer = next(item for item in overview.children.values()
+                      if item.type == 'caption' and '점수 상태:' in item.value)
+        self.assertFalse(footer.proto.wrap)
+        self.assertEqual(footer.proto.help, footer.value)
+        self.assertEqual(overview.proto.height_config.pixel_height, 170)
+
+    def test_overview_collecting_and_long_title_keep_controls_and_footer(self):
+        title = '긴 수업 제목 ' * 30
+        self.live.sid = self.live.service.start_session(title)
+        self.live.service.stop_session(self.live.sid)
+        with patch.object(self.live, 'calibration_state', return_value={'status': 'collecting', 'progress': 0.25}):
+            self.app.run()
+        self.assertFalse(self.app.exception)
+        self.assertFalse(self.button('정면 기준 재보정').disabled)
+        self.assertFalse(self.button('수업 종료').disabled)
+        self.assertTrue(any('정면 기준 수집 중 · 25%' in item.value for item in self.app.caption))
+        header = next(item for item in self.app.caption if '진행 시간' in item.value)
+        self.assertFalse(header.proto.wrap)
+        self.assertEqual(header.proto.help, title)
+        self.assertEqual(self.cards()['live-overview'][1], 170)
 
     def test_preview_and_log_toggles_preserve_cards_draft_range_and_session(self):
         self.app.run()

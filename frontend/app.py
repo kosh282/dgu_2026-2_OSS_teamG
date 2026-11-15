@@ -47,6 +47,8 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 /* 간격·글자 높이는 Streamlit의 레이아웃 설정에 맡긴다. CSS로 gap을 덮어쓰지 않는다. */
 .st-key-live-overview,.st-key-live-health,.st-key-live-timeline,
 .st-key-live-transcript,.st-key-live-notes,.st-key-live-assistant{background-color:#fff}
+/* 요약 카드 안의 점수에는 중첩 테두리·여백을 더하지 않는다. */
+.st-key-live-overview [data-testid="stMetric"]{border:0;padding:0;background:transparent}
 .st-key-live-dashboard [data-testid="stColumn"]{min-width:0}
 @media(max-width:540px){.st-key-live-dashboard [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}
 .st-key-live-dashboard [data-testid="stColumn"]{flex:1 1 100%!important}}
@@ -590,31 +592,42 @@ def live_page():
         column_options={'wrap':False} if 'wrap' in inspect.signature(st.columns).parameters else {}
         # DOM gap만 바꾸면 Streamlit이 계산한 요소 높이와 어긋나 텍스트가 겹칠 수 있다.
         card_options={'gap':'xsmall'} if 'gap' in inspect.signature(st.container).parameters else {}
+        overview_options={'gap':'xxsmall'} if card_options else {}
+        caption_options={'wrap':False} if 'wrap' in inspect.signature(st.caption).parameters else {}
 
         with st.container(key='live-dashboard'):
             left,right=st.columns(2,gap='small',**column_options)
-            with left, st.container(height=170,border=True,key='live-overview',**card_options):
-                st.caption(f"{snapshot['session']['title']} · {status} · 진행 시간 {clock(duration)}")
+            with left, st.container(height=170,border=True,key='live-overview',**overview_options):
+                heading,actions=st.columns([3,1.2],gap='small',**column_options)
+                heading.caption(f"{status} · 진행 시간 {clock(duration)}",
+                                help=snapshot['session']['title'],**caption_options)
+                actions.button('수업 종료',type='primary',key='live-stop',disabled=not running,
+                               on_click=stop_session)
                 summary,calibration_column=st.columns(2,gap='small',**column_options)
                 summary.metric('최근 실험 구간 점수',f'{value:g}점' if value is not None else
                                ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
-                calibration_column.button('수업 종료',type='primary',key='live-stop',disabled=not running,
-                                          on_click=stop_session,use_container_width=True)
+                with calibration_column, st.container(**overview_options):
+                    if live.video_enabled and getattr(live,'model_enabled',False):
+                        calibration=live.calibration_state()
+                        state=calibration.get('status','starting')
+                        calibration_text={'starting':'정면 기준 준비 중','waiting':'정면 기준 대기',
+                            'recovering':'얼굴 재인식 중 · 점수 보류',
+                            'collecting':f"정면 기준 수집 중 · {calibration.get('progress',0)*100:.0f}%",
+                            'ready':'정면 기준 수집 완료'}.get(state,'정면 기준 확인 중')
+                        st.caption(calibration_text,help='정면을 약 3초 유지해 주세요.' if state!='ready' else None,
+                                   **caption_options)
+                        st.button('정면 기준 재보정',disabled=not running,key='recalibrate-head',on_click=calibrate)
+                    else:
+                        st.caption('영상·실험 점수 사용 안 함',**caption_options)
                 if value is None:
-                    if previous_window is not None:
-                        summary.caption(f"이전 점수 {score(previous_window):g}점 · {clock(previous_window['end_ms'])} 기준 · 현재 관측 보류")
                     reason=live_score_unavailable_reason(model_status,getattr(live,'model_enabled',False),stale,rows,
                                                         latest_window,snapshot.get('status_messages',{}).get('model'))
-                    summary.caption('점수 상태: '+reason)
-                if live.video_enabled and getattr(live,'model_enabled',False):
-                    calibration=live.calibration_state()
-                    state=calibration.get('status','starting')
-                    calibration_column.caption({'starting':'정면 기준 준비 중','waiting':'정면 기준 대기',
-                        'recovering':'얼굴 재인식 중 · 점수 보류','collecting':f"정면 기준 수집 중 · {calibration.get('progress',0)*100:.0f}%",
-                        'ready':'정면 기준 수집 완료'}.get(state,'정면 기준 확인 중'))
-                    calibration_column.button('정면 기준 재보정',disabled=not running,key='recalibrate-head',on_click=calibrate)
+                    detail='점수 상태: '+reason
+                    if previous_window is not None:
+                        detail+=f" · 이전 점수 {score(previous_window):g}점 ({clock(previous_window['end_ms'])} 기준, 현재 관측 보류)"
                 else:
-                    calibration_column.caption('영상·실험 점수 사용 안 함')
+                    detail=f"최근 구간 {clock(latest_window['start_ms'])}–{clock(latest_window['end_ms'])} · 관측 가능한 얼굴의 참고 점수"
+                st.caption(detail,help=detail,**caption_options)
 
             with right, st.container(height=170,border=True,key='live-assistant',**card_options):
                 st.subheader('강의 조교 · 자료 제안')
