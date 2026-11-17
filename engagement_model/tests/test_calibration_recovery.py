@@ -50,6 +50,31 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(cal.status, 'ready')
         self.assertAlmostEqual(cal.baseline['yaw'], 30)
 
+    def test_transient_invalid_face_does_not_discard_calibration_samples(self):
+        from video_recognition.head_calibration import HeadCalibration
+        cal = HeadCalibration(duration_ms=300, min_samples=4)
+        cal.start()
+        cal.update([face()], 0)
+        cal.update([face()], 100)
+        self.assertEqual(cal.update([], 150), 'collecting')
+        self.assertEqual(len(cal.samples), 2)
+        cal.update([face()], 200)
+        self.assertEqual(cal.status, 'collecting')
+        cal.update([face()], 300)
+        self.assertEqual(cal.status, 'ready')
+
+    def test_calibration_samples_restart_after_long_invalid_gap(self):
+        from video_recognition.head_calibration import HeadCalibration
+        cal = HeadCalibration(duration_ms=300, min_samples=4)
+        cal.start()
+        cal.update([face()], 0)
+        cal.update([face()], 100)
+        cal.update([], 150)
+        cal.update([face()], 1200)
+        self.assertEqual(cal.status, 'collecting')
+        self.assertEqual(len(cal.samples), 1)
+        self.assertEqual(cal.last_reason_code, 'calibration_frame_gap')
+
     def test_multi_reidentified_long_gap_recalibrates_person_only(self):
         model=MultiFaceGaussianRuntime()
         model.update_identities({1:'a',2:'b'})

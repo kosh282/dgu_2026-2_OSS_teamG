@@ -46,11 +46,21 @@ class PositionTrackTests(unittest.TestCase):
     def test_longer_dropout_recalibrates_only_missing_face(self):
         model=self.ready()
         model(sample(3400, (0.25,)))
-        model(sample(3900))
+        model(sample(4400))
         rows={r['id']:r for r in model.participants()}
         self.assertEqual(rows['T1']['calibration_status'], 'ready')
         self.assertEqual(rows['T2']['calibration_status'], 'collecting')
         self.assertIsNone(rows['T2']['current_direction_score'])
+
+    def test_dropout_under_one_second_keeps_baseline_but_not_stale_score(self):
+        model=self.ready()
+        model(sample(3400, (0.25,)))
+        model(sample(3900, (0.25,)))
+        model(sample(4000))
+        rows={r['id']:r for r in model.participants()}
+        self.assertEqual(rows['T2']['calibration_status'], 'ready')
+        self.assertEqual(rows['T2']['current_direction_score'], 100)
+        self.assertIsNone(rows['T2']['score'])
 
     def test_short_dropout_preserves_eye_history_without_scoring_missing_face(self):
         model=PositionTrackGaussianRuntime(eye_fusion=True)

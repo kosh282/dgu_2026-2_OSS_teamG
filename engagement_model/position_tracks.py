@@ -9,6 +9,7 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
     association_gap_ms = 1500
     maximum_center_shift = 0.10
     minimum_separation = 0.12
+    calibration_retention_ms = 1000
     aggregation_label = 'position-track-time-weighted-gaussian'
 
     def __init__(self, config=None, *, eye_fusion=False):
@@ -63,7 +64,7 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
             for key in set(old) & set(positions):
                 person = self._people.get(f'T{key}')
                 expired = (person is not None and not person['present'] and
-                           timestamp - person['last_seen'] > self.config.max_observation_hold_seconds * 1000)
+                           timestamp - person['last_seen'] > self.calibration_retention_ms)
                 if expired or math.dist(old[key], positions[key]) > self.maximum_center_shift:
                     self._people.pop(f'T{key}', None)
         if ambiguous:
@@ -72,7 +73,7 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
         if valid:
             for key in removed:
                 last_seen = self._position_seen.get(key)
-                if last_seen is not None and 0 < timestamp - last_seen <= self.config.max_observation_hold_seconds * 1000:
+                if last_seen is not None and 0 < timestamp - last_seen <= self.calibration_retention_ms:
                     retained[key] = old[key]
                 else:
                     self._people.pop(f'T{key}', None)
