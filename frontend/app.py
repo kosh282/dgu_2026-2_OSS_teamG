@@ -627,7 +627,7 @@ def live_page():
 
         with st.container(key='live-dashboard'):
             left,right=st.columns(2,gap='small',**column_options)
-            with left, st.container(height=210,border=True,key='live-overview',**overview_options):
+            with left, st.container(height=170,border=True,key='live-overview',**overview_options):
                 st.caption(f"{status} · 진행 시간 {clock(duration)}",
                            help=snapshot['session']['title'],**caption_options)
                 summary,calibration_column=st.columns(2,gap='small',**column_options)
@@ -662,7 +662,7 @@ def live_page():
                     detail=f"최근 구간 {clock(latest_window['start_ms'])}–{clock(latest_window['end_ms'])} · 관측 가능한 얼굴의 참고 점수"
                 st.caption(detail,help=detail,**caption_options)
 
-            with right, st.container(border=True,key='live-assistant',**card_options):
+            with right, st.container(height=170,border=True,key='live-assistant',**card_options):
                 st.subheader('강의 조교 · 자료 제안')
                 assistant_message=snapshot.get('status_messages',{}).get('assistant')
                 manual_assistant=st.session_state.assistant
