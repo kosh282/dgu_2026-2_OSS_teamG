@@ -1,12 +1,50 @@
 """팀원 얼굴 분석을 수업 창의 여러 얼굴에 적용하는 공통 분석기."""
 from pathlib import Path
 import math
+from types import SimpleNamespace
+from .layout_regions import detect_layout_regions
 
 LEFT_EYE = [362, 385, 387, 263, 373, 380]
 RIGHT_EYE = [33, 160, 158, 133, 153, 144]
 EXPRESSION_KEYS = {'mouthSmileLeft', 'mouthSmileRight', 'browInnerUp', 'jawOpen'}
 # 실행 위치가 달라도 영상 담당 폴더의 같은 모델을 읽는다.
 DEFAULT_MODEL = Path(__file__).resolve().parent / 'models' / 'face_landmarker.task'
+DEFAULT_FACE_DETECTION_CONFIDENCE = 0.3
+DEFAULT_FACE_PRESENCE_CONFIDENCE = 0.3
+
+
+def _overlapping_regions(width, height):
+    """화면 배치와 무관하게 전체 화면을 겹치는 네 영역으로 나눈다."""
+    tile_width = max(1, min(width, math.ceil(width * 0.65)))
+    tile_height = max(1, min(height, math.ceil(height * 0.65)))
+    return [(x, y, x + tile_width, y + tile_height)
+            for y in (0, height - tile_height) for x in (0, width - tile_width)]
+
+
+def _box_overlap(a, b):
+    left, top = max(a[0], b[0]), max(a[1], b[1])
+    right, bottom = min(a[2], b[2]), min(a[3], b[3])
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    return intersection / min(area_a, area_b) if min(area_a, area_b) > 0 else 0.0
+
+
+def _same_face_box(a, b):
+    """강한 겹침 또는 크기·중심이 거의 같은 경계만 중복 후보로 본다."""
+    overlap = _box_overlap(a, b)
+    if overlap >= 0.7:
+        return True
+    if overlap < 0.55:
+        return False
+    wa, ha = a[2] - a[0], a[3] - a[1]
+    wb, hb = b[2] - b[0], b[3] - b[1]
+    area_a, area_b = wa * ha, wb * hb
+    if min(area_a, area_b) <= 0 or min(area_a, area_b) / max(area_a, area_b) < 0.75:
+        return False
+    center_a = ((a[0] + a[2]) / 2, (a[1] + a[3]) / 2)
+    center_b = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+    return math.dist(center_a, center_b) <= 0.15 * min(math.hypot(wa, ha), math.hypot(wb, hb))
 
 
 def eye_ratio(landmarks, indices, width, height):
@@ -44,36 +82,16 @@ def periodic_angles(angles):
     }
 
 
-def head_angles(landmarks, width, height):
-    """기존 solvePnP 머리 방향 추정. 보정 전 실험값이며 참여도 판정이 아니다."""
-    import cv2
-    import numpy as np
-    # 코·턱·양쪽 눈과 입의 2D 위치를 기존 얼굴 모형과 대응시킨다.
-    image_points = np.array(
-        [[landmarks[i].x * width, landmarks[i].y * height]
-         for i in (1, 152, 33, 263, 61, 291)],
-        dtype=np.float64,
-    )
-    model_points = np.array(
-        [[0, 0, 0], [0, -330, -65], [-225, 170, -135],
-         [225, 170, -135], [-150, -150, -125], [150, -150, -125]],
-        dtype=np.float64,
-    )
-    camera = np.array([[width, 0, width / 2], [0, width, height / 2], [0, 0, 1]], dtype=np.float64)
-    ok, rotation, _ = cv2.solvePnP(model_points, image_points, camera, np.zeros((4, 1)))
-    if not ok:
-        return None
-    matrix, _ = cv2.Rodrigues(rotation)
-    angles = cv2.RQDecomp3x3(matrix)[0]
-    return {key: float(value) for key, value in zip(('pitch', 'yaw', 'roll'), angles)}
-
 
 class FaceAnalyzer:
     """프레임 단위 다중 얼굴 분석. 순서는 개인 식별이나 추적 정보가 아니다."""
-    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20, show_landmarks=False):
+    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20, show_landmarks=False, pose_source='face-transform'):
         import mediapipe as mp
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision
+        if pose_source != 'face-transform':
+            raise ValueError('지원하지 않는 얼굴 자세 추정 방식입니다')
+        self.pose_source = pose_source
         self.mp = mp
         # Windows의 한글 경로에서도 읽도록 Python에서 모델 바이트를 전달한다.
         base_options = python.BaseOptions(model_asset_buffer=Path(model_path).read_bytes())
@@ -81,10 +99,31 @@ class FaceAnalyzer:
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_faces=max_faces,
+            min_face_detection_confidence=DEFAULT_FACE_DETECTION_CONFIDENCE,
+            min_face_presence_confidence=DEFAULT_FACE_PRESENCE_CONFIDENCE,
             output_face_blendshapes=True,
+            output_facial_transformation_matrixes=pose_source == 'face-transform',
         )
         self.detector = vision.FaceLandmarker.create_from_options(options)
+        tile_options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=max_faces,
+            min_face_detection_confidence=DEFAULT_FACE_DETECTION_CONFIDENCE,
+            min_face_presence_confidence=DEFAULT_FACE_PRESENCE_CONFIDENCE,
+            output_face_blendshapes=True,
+            output_facial_transformation_matrixes=True,
+        )
+        try:
+            self.tile_detector = vision.FaceLandmarker.create_from_options(tile_options)
+        except Exception:
+            self.detector.close()
+            raise
+        self.max_faces = max_faces
         self.last_timestamp = -1
+        self._layout_regions = []
+        self._layout_timestamp = None
+        self._layout_frame_size = None
         # 시험 화면에서만 원본 좌표를 볼 수 있도록 보관한다. 기본 분석은 보관하지 않는다.
         self.show_landmarks = show_landmarks
         self.last_landmarks = []
@@ -100,32 +139,86 @@ class FaceAnalyzer:
         self.last_timestamp = timestamp
         result = self.detector.detect_for_video(
             self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), timestamp)
+        frame_size = (frame.width, frame.height)
+        if (self._layout_frame_size != frame_size or self._layout_timestamp is None
+                or timestamp - self._layout_timestamp >= 1000):
+            self._layout_regions = detect_layout_regions(frame.image)
+            self._layout_timestamp = timestamp
+            self._layout_frame_size = frame_size
+        # 전체 화면과 각 부분의 결과를 공통 좌표로 변환한 뒤 겹치는 얼굴을 한 번만 쓴다.
+        import numpy as np
+        candidates = []
+
+        def add_results(detected, region):
+            x0, y0, x1, y1 = region
+            rw, rh = x1 - x0, y1 - y0
+            for index, local in enumerate(detected.face_landmarks):
+                if not local:
+                    continue
+                xs, ys = [p.x for p in local], [p.y for p in local]
+                # 부분 영역 경계에 잘린 얼굴은 자세·눈 값을 신뢰하기 어렵다.
+                if ((x0 > 0 and min(xs) <= 0.01) or (x1 < frame.width and max(xs) >= 0.99)
+                        or (y0 > 0 and min(ys) <= 0.01) or (y1 < frame.height and max(ys) >= 0.99)):
+                    continue
+                points = [SimpleNamespace(x=(x0 + p.x * rw) / frame.width,
+                                          y=(y0 + p.y * rh) / frame.height,
+                                          z=p.z * rw / frame.width) for p in local]
+                box = (min(p.x for p in points), min(p.y for p in points),
+                       max(p.x for p in points), max(p.y for p in points))
+                blendshapes = detected.face_blendshapes or []
+                shapes = blendshapes[index] if index < len(blendshapes) else []
+                matrices = detected.facial_transformation_matrixes
+                matrix = matrices[index] if matrices is not None and index < len(matrices) else None
+                # 영역 안에서 더 크게 관측된 얼굴을 우선한다.
+                priority = (max(xs) - min(xs)) * (max(ys) - min(ys))
+                candidates.append((priority, box, points, shapes, matrix))
+
+        add_results(result, (0, 0, frame.width, frame.height))
+        regions = _overlapping_regions(frame.width, frame.height) + self._layout_regions
+        for x0, y0, x1, y1 in regions:
+            crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
+            tile = self.tile_detector.detect(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=crop))
+            add_results(tile, (x0, y0, x1, y1))
+        selected = []
+        for candidate in sorted(candidates, key=lambda item: item[0], reverse=True):
+            if not any(_same_face_box(candidate[1], item[1]) for item in selected):
+                selected.append(candidate)
+                if len(selected) >= self.max_faces:
+                    break
+        selected.sort(key=lambda item: (item[1][1], item[1][0]))
+        all_points = [item[2] for item in selected]
         self.last_landmarks = (
-            [[(float(p.x), float(p.y), float(p.z)) for p in points]
-             for points in result.face_landmarks]
+            [[(float(p.x), float(p.y), float(p.z)) for p in points] for points in all_points]
             if self.show_landmarks else []
         )
         self.last_face_centers = [
             (float(sum(point.x for point in points) / len(points)),
              float(sum(point.y for point in points) / len(points)))
-            for points in result.face_landmarks if points
+            for points in all_points if points
         ]
         # 재식별 표시용 현재 프레임 경계. 특징 사전/JSON에는 넣지 않는다.
         self.last_face_boxes = [
             [max(0., min(p.x for p in points)), max(0., min(p.y for p in points)),
              min(1., max(p.x for p in points)), min(1., max(p.y for p in points))]
-            for points in result.face_landmarks
+            for points in all_points
         ]
         # 원본은 첫 얼굴 하나만 사용했지만 수업 창에서는 검출된 모든 얼굴을 처리한다.
         # 배열의 순서는 매 프레임 바뀔 수 있으므로 참가자 ID로 사용하면 안 된다.
         faces = []
-        for index, points in enumerate(result.face_landmarks):
+        for _, _, points, shapes, matrix in selected:
             eye_observable = points_in_frame(points, LEFT_EYE + RIGHT_EYE)
             pose_observable = points_in_frame(points, (1, 152, 33, 263, 61, 291))
             left = eye_ratio(points, LEFT_EYE, frame.width, frame.height) if eye_observable else None
             right = eye_ratio(points, RIGHT_EYE, frame.width, frame.height) if eye_observable else None
             openness = (left + right) / 2 if left is not None and right is not None else None
-            angles = head_angles(points, frame.width, frame.height) if pose_observable else None
+            if self.pose_source == 'face-transform':
+                # 같은 검출의 행렬을 사용한다. 행렬이 없으면 PnP로 대체하지 않는다.
+                from engagement_model.face_transform import transform_angles
+                import numpy as np
+                try:
+                    angles = transform_angles(matrix) if pose_observable and matrix is not None else None
+                except (ValueError, IndexError, TypeError, np.linalg.LinAlgError):
+                    angles = None
             orientation = periodic_angles(angles)
             if orientation is None:
                 angles = None
@@ -133,13 +226,15 @@ class FaceAnalyzer:
             expression_observable = points_in_frame(points, (1, 13, 14, 33, 61, 105, 133, 263, 291, 334, 362))
             expression = {
                 category.category_name: float(category.score)
-                for category in (result.face_blendshapes[index] if result.face_blendshapes else [])
+                for category in shapes
                 if category.category_name in EXPRESSION_KEYS
                 and math.isfinite(category.score)
             } if expression_observable else {}
             if expression.keys() != EXPRESSION_KEYS:
                 expression = {}
             reasons = []
+            if angles is None and self.pose_source == 'face-transform':
+                reasons.append('pose_unreliable')
             if openness is None or angles is None or not expression:
                 reasons.append('insufficient_observation')
             faces.append({
@@ -159,4 +254,7 @@ class FaceAnalyzer:
         return faces
 
     def close(self):
-        self.detector.close()
+        try:
+            self.detector.close()
+        finally:
+            self.tile_detector.close()

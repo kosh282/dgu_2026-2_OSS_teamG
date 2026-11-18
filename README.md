@@ -5,8 +5,8 @@
 ## 현재 구현 상태
 
 - 프런트는 Streamlit 기반이며 수업 제목 입력, 창 연결, 수업 시작·종료, 메모, 세션 JSON 내보내기 기능을 제공합니다.
-- 영상 분석은 MediaPipe로 얼굴·상체 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 실험 점수를 확인할 수 있습니다.
-- 단일 얼굴용 규칙 기반 실험 점수는 통합부의 구간 이벤트로 전달되어 라이브 타임라인과 세션 JSON에 표시됩니다. 복수 얼굴의 점수 집계는 아직 구현되지 않았으며, 실험 점수는 최종 참여도 판단이 아닙니다.
+- 영상 분석은 MediaPipe로 얼굴 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 실험 점수를 확인할 수 있습니다.
+- 머리 방향 Gaussian 실험 점수는 통합부의 구간 이벤트로 전달되며, 눈 관측 점수는 별도 참고값입니다. 재식별을 켜면 ID별, 끄면 단기 위치 트랙별 점수를 익명으로 집계합니다. 실제 다인 화면의 정확도는 검증 전이며 실험 점수는 최종 참여도 판단이 아닙니다.
 - sherpa-onnx 한국어 스트리밍 전사는 프런트에서 선택적으로 사용할 수 있습니다. 강의 조교(`ai_agent/`)는 낮은 실험 점수와 확정 전사를 바탕으로 실시간 제안을 만들며 PDF·PPTX 자료는 선택 사항입니다. 개인 API 키로 OpenAI·Gemini·Claude를 선택하면 자료 유무와 무관하게 AI를 활용하고, AI 검색어가 있으면 한국어 위키백과에서 제목과 링크를 검색합니다. 검색 결과의 내용과 정확성은 사용자가 확인해야 합니다. 실제 API 호출과 수업 자료에서의 정확도는 아직 검증하지 않았습니다. 자세한 내용은 [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 - 창 단위 캡처는 현재 Windows용입니다. macOS에서는 창 선택·캡처 기능을 사용할 수 없습니다.
 
@@ -49,7 +49,9 @@ macOS에서는 웹캠 프레임을 직접 분석하는 별도 데모를 사용�
 video_recognition/.venv/bin/python -m video_recognition.webcam_test_mac
 ```
 
-두 데모는 브라우저 대신 OpenCV 창에 영상·각도·실험 점수를 표시합니다. 창을 선택하고 `C`로 정면 보정을 시작하고 `Q`로 종료합니다. 원본 영상은 저장하지 않으며, 진단 로그는 `video_recognition/demo_logs/`에 생성됩니다. Mac 데모는 Windows 수업 창 캡처를 대신하지 않습니다.
+Windows 데모는 프런트 개발자 모드와 같은 패널과 다인 Gaussian·눈 감김 점수 경로를 사용합니다. 기본은 임시 위치 추적이며 `--reidentify`로 세션 내 얼굴 재식별을 선택할 수 있습니다. 보정은 자동으로 시작하며, `C`는 재보정, `V`는 오버레이, `[`·`]`는 진단 페이지 전환, `Q`는 종료입니다. 원본 영상과 개인별 특징은 저장하지 않으며 집계 진단 로그는 `video_recognition/demo_logs/`에 생성됩니다. Mac 데모는 별도 출력과 웹캠 직접 입력을 사용하며 Windows 수업 창 캡처를 대신하지 않습니다.
+
+프런트와 Windows 웹캠 데모는 `video_recognition/group_developer_view.py`의 모델 생성·개발자 패널을 공유합니다. 진단 페이지에서 관측 중인 임시 트랙별 총점, 머리·눈 점수와 보정 각도·보류 사유를 확인할 수 있습니다. 개인별 값은 화면의 임시 진단 정보이며 세션 결과에 저장하지 않습니다.
 
 자세한 사용법은 [프런트 안내](frontend/README.md), [음성 전사 안내](sherpa_stt/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md), [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 
@@ -63,7 +65,7 @@ video_recognition/.venv/bin/python -m video_recognition.webcam_test_mac
 video_recognition/.venv/Scripts/python.exe -m streamlit run frontend/app.py
 ```
 
-수업 창을 연결하고 영상 분석을 선택해 수업을 시작한 다음, 하단 **개발자 도구 → 개발자 모드 켜기**를 누릅니다. 웹캠 모델 데모와 같은 별도 창에서 실제 분석 화면, 실험 점수와 자세 입력 품질을 확인합니다. 창에 초점을 두고 `V`로 오버레이, `[`·`]`로 상세 페이지, `C`로 재보정, `Q`로 창 숨기기를 할 수 있습니다. 모델이 꺼졌거나 관측이 불가능하면 점수는 표시되지 않습니다. 다인 모드 점수는 전체 집계이며 개별 각도와 구분해야 합니다. 개발자 화면은 분석기와 같은 프레임을 사용하며 별도 카메라는 열지 않습니다.
+수업 창을 연결하고 영상 분석을 선택해 수업을 시작한 다음, 셋째 행 오른쪽 **분석 상태 · 개발자 도구 → 개발자 모드 켜기**를 누릅니다. 웹캠 모델 데모와 같은 별도 창에서 실제 분석 화면, 실험 점수와 자세 입력 품질을 확인합니다. 창에 초점을 두고 `V`로 오버레이, `[`·`]`로 상세 페이지, `C`로 재보정, `Q`로 창 숨기기를 할 수 있습니다. 모델이 꺼졌거나 관측이 불가능하면 점수는 표시되지 않습니다. 다인 모드 점수는 전체 집계이며 개별 각도와 구분해야 합니다. 개발자 화면은 분석기와 같은 프레임을 사용하며 별도 카메라는 열지 않습니다.
 
 ### 웹캠 모델·각도 진단
 
@@ -79,7 +81,7 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --yaw-log --single-model --diagnostic-move-seconds 3 --diagnostic-hold-seconds 5
 ```
 
-초별 각도·기준점 변화·재투영 오차 통계는 `engagement_model/diagnostic_logs/`에 저장됩니다. 영상과 기준점 원본은 저장하지 않지만 진단 수치는 민감할 수 있으므로 사용 후 직접 삭제하세요. 자세한 해석과 한계는 [웹캠 진단 안내](engagement_model/docs/webcam-diagnostics.md)를 참고하세요.
+초별 각도·기준점 변화 통계는 `engagement_model/diagnostic_logs/`에 저장됩니다. 영상과 기준점 원본은 저장하지 않지만 진단 수치는 민감할 수 있으므로 사용 후 직접 삭제하세요. 자세한 해석과 한계는 [웹캠 진단 안내](engagement_model/docs/webcam-diagnostics.md)를 참고하세요.
 
 ### 수업 창 캡처 확인
 
@@ -98,3 +100,5 @@ video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s frontend/t
 ```
 
 자동 테스트는 실제 카메라·수업 창·음성 장치에서의 동작 검증을 대신하지 않습니다.
+
+전체 코드 검토의 수정 내역, 우선순위와 검증 한계는 [코드베이스 검토 보고서](docs/codebase-review.md)를 참고하세요.

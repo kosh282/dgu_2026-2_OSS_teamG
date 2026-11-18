@@ -13,14 +13,12 @@ import cv2
 from integration import IntegrationService
 from .face_analysis import FaceAnalyzer
 from .integrated_analysis import VisionPipeline
-from .pose_analysis import PoseAnalyzer
 from .preview import PreviewCapture
 from .webcam_test import (
     DEFAULT_LOG_DIR, DeveloperPreviewOutput, log_debug_transition,
     open_demo_log, write_frame_log,
 )
-from engagement_model.runtime import EngagementRuntime, MODEL_ID, MODEL_VERSION
-from engagement_model.config import ModelConfig
+from engagement_model.gaussian import GaussianRuntime
 
 
 class WebcamCapture:
@@ -67,18 +65,18 @@ def main():
             reidentifier.close()
         raise SystemExit('웹캠을 열 수 없습니다. 연결과 카메라 접근 권한을 확인하세요.')
 
-    analyzer = pose_analyzer = pipeline = service = sid = log_handle = None
+    analyzer = pipeline = service = sid = log_handle = None
     developer_output = DeveloperPreviewOutput()
     try:
         service = IntegrationService()
-        model_runtime = EngagementRuntime(config=ModelConfig())
+        model_runtime = GaussianRuntime()
         sid = service.start_session(
             'Webcam engagement demo',
             config={
                 'config_version': model_runtime.config.config_version,
                 'participation_model': {
-                    'model_id': MODEL_ID,
-                    'model_version': MODEL_VERSION,
+                    'model_id': model_runtime.model_id,
+                    'model_version': model_runtime.model_version,
                 },
                 'stt_model': None,
             },
@@ -87,10 +85,9 @@ def main():
         print(f'테스트 로그: {log_path.resolve()}')
         analyzer = FaceAnalyzer(show_landmarks=True)
         preview_capture = PreviewCapture(WebcamCapture(camera))
-        pose_analyzer = PoseAnalyzer(show_landmarks=True)
         pipeline = VisionPipeline(
             service, sid, preview_capture, analyzer,
-            model_consumer=model_runtime, pose_analyzer=pose_analyzer,
+            model_consumer=model_runtime,
         )
         print('C: 정면 보정 시작 (3초), V: 기준점 표시 전환, Q 또는 Ctrl+C: 종료')
         started = time.monotonic()
@@ -103,7 +100,6 @@ def main():
             if source_controls["quit"]:
                 break
             analyzer.show_landmarks = developer_output.show_landmarks
-            pose_analyzer.show_landmarks = developer_output.show_landmarks
             result = pipeline.process_one()
             if result is None:
                 continue
@@ -118,7 +114,7 @@ def main():
                     boxes=getattr(analyzer, 'last_face_boxes', []),
                 )
             controls = developer_output.render(
-                display_frame, result, analyzer, pose_analyzer,
+                display_frame, result, analyzer,
                 model_runtime.latest,
             )
             if controls['calibrate']:
@@ -135,8 +131,6 @@ def main():
         else:
             if analyzer is not None:
                 analyzer.close()
-            if pose_analyzer is not None:
-                pose_analyzer.close()
         if service is not None:
             service.stop_session(sid)
         if log_handle is not None:

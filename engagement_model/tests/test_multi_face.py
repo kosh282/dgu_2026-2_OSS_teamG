@@ -12,6 +12,7 @@ def frame(ms, angles=(0, 20)):
     for i, (face, yaw) in enumerate(zip(value['features']['faces'], angles), 1):
         face['transient_track_key'] = i
         face['head_angles_degrees'] = dict(pitch=0, yaw=yaw, roll=0)
+        face['eye_aspect_ratio_left'] = face['eye_aspect_ratio_right'] = 0.3
     return value
 
 
@@ -57,6 +58,15 @@ class MultiFaceTests(unittest.TestCase):
         self.assertTrue(all(r['score'] is None for r in runtime.participants()))
         runtime.reset()
         self.assertEqual(runtime.participants(), [])
+
+    def test_selective_recalibration_keeps_other_participant(self):
+        runtime=self.ready()
+        self.assertTrue(runtime.recalibrate('A'))
+        rows={row['id']:row for row in runtime.participants()}
+        self.assertEqual(rows['A']['calibration_status'], 'collecting')
+        self.assertEqual(rows['B']['calibration_status'], 'ready')
+        self.assertIsNone(rows['A']['score'])
+        self.assertFalse(runtime.recalibrate('unknown'))
 
     def test_track_change_preserves_neutral_and_invalid_quality_never_scores(self):
         runtime = self.ready()

@@ -43,7 +43,6 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
     """
     features = result.get("features", {})
     faces = features.get("faces", [])
-    bodies = features.get("upper_bodies", [])
     page_size = 2
     page_count = max(1, (len(faces) + page_size - 1) // page_size)
     face_page = min(max(0, face_page), page_count - 1)
@@ -70,7 +69,7 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
     lines = [
         "Developer preview: same captured frame supplied to the analyzers",
         (f"Capture: {result.get('start_ms', 'n/a')} ms | faces: {len(faces)} | "
-         f"bodies: {len(bodies)} | quality: {result.get('quality', {}).get('status', 'n/a')}"),
+         f"quality: {result.get('quality', {}).get('status', 'n/a')}"),
         (f"Calibration: {features.get('head_calibration_status', 'waiting')} | "
          f"samples={calibration_samples}/{calibration_required} | "
          f"time={calibration_elapsed:.1f}/{calibration_duration:.1f}s | "
@@ -79,12 +78,9 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
         (f"Postprocess: {features.get('face_postprocessing_version', 'n/a')} | "
          "calibration: press C, face forward, keep still for 3 seconds"),
         (f"Analysis Hz face target/actual: {_number(sampling.get('target_face_hz'), 0)}/"
-         f"{_number(sampling.get('actual_face_hz'), 1)} | pose: "
-         f"{_number(sampling.get('target_pose_hz'), 0)}/"
-         f"{_number(sampling.get('actual_pose_hz'), 1)}"),
+         f"{_number(sampling.get('actual_face_hz'), 1)}"),
         (f"Frame size: {source.get('width', 'n/a')}x{source.get('height', 'n/a')} -> "
-         f"{analysis.get('width', 'n/a')}x{analysis.get('height', 'n/a')} | "
-         f"pose observation age: {_number(sampling.get('pose_observation_age_ms'), 0)} ms"),
+         f"{analysis.get('width', 'n/a')}x{analysis.get('height', 'n/a')}"),
         (f"Faces {start + 1}-{min(start + page_size, len(faces))} / {len(faces)} "
          f"(page {face_page + 1}/{page_count}) | V overlay, M mesh, [ ] page, C calibrate, Q close"),
     ]
@@ -123,7 +119,6 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
              f"{model_result.get('thresholds', {}).get('yaw_neutral_deadband_degrees', 2)}/"
              f"{model_result.get('thresholds', {}).get('yaw_small_angle_scale', 0.75)} through "
              f"{model_result.get('thresholds', {}).get('yaw_full_scale_start_degrees', 15)} deg; "
-             f"away grace {model_result.get('thresholds', {}).get('away_grace_seconds', 3)} s; "
              f"down grace/decay {model_result.get('thresholds', {}).get('down_grace_seconds', 5)}/"
              f"{model_result.get('thresholds', {}).get('down_decay_seconds', 10)} s, max penalty "
              f"{model_result.get('thresholds', {}).get('down_penalty', 20)}"),
@@ -184,21 +179,11 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
     if not faces:
         lines.append("No face detected in the selected window.")
 
-    for index, body in enumerate(bodies, start=1):
-        center = body.get("shoulder_center") or {}
-        lines.append(
-            f"Body {index}: shoulder center x={_number(center.get('x'))}, y={_number(center.get('y'))} | "
-            f"visibility={_number(body.get('shoulder_visibility'))} | "
-            f"quality={body.get('quality', {}).get('status', 'n/a')}"
-        )
-
-    for label, key in (("Head movement candidate", "head_movement_candidate"),
-                       ("Upper-body movement candidate", "upper_body_movement_candidate")):
-        motion = features.get(key)
-        lines.append(
-            f"{label}: distance={_number(motion.get('distance_normalized'))} / "
-            f"{motion.get('interval_ms', 'n/a')} ms" if motion else f"{label}: unavailable"
-        )
+    motion = features.get("head_movement_candidate")
+    lines.append(
+        f"Head movement candidate: distance={_number(motion.get('distance_normalized'))} / "
+        f"{motion.get('interval_ms', 'n/a')} ms" if motion else "Head movement candidate: unavailable"
+    )
 
     line_height = 23
     panel = np.zeros((max(190, 34 + len(lines) * line_height), width, 3), dtype=np.uint8)
@@ -209,7 +194,7 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
     return panel
 
 
-def render_video_frame(frame, result, face_landmarks, pose_landmarks, overlay_smoother,
+def render_video_frame(frame, result, face_landmarks, overlay_smoother,
                        *, show_overlay=True, show_tessellation=False):
     """두 화면에서 공통으로 쓰는 메시/자세/후처리 오버레이를 만든다."""
     if frame is None:
@@ -222,7 +207,7 @@ def render_video_frame(frame, result, face_landmarks, pose_landmarks, overlay_sm
             face_landmarks, faces, result.get("start_ms", 0)
         )
         output = draw_landmarks(
-            output, smoothed_landmarks, pose_landmarks,
+            output, smoothed_landmarks,
             face_mesh=True, tessellation=show_tessellation, show_points=False,
         )
     return draw_face_postprocessing(output, faces)

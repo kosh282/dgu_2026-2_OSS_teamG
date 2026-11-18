@@ -257,7 +257,7 @@ class AdapterTests(unittest.TestCase):
              patch.object(demo.cv2, 'VideoCapture', return_value=camera), \
              patch.object(demo.cv2, 'destroyAllWindows'), \
              patch.object(face_reidentification, 'FaceReidentifier', return_value=reid), \
-             patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])), patch.object(demo, 'PoseAnalyzer'), \
+             patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])), \
              patch.object(demo, 'PreviewCapture', return_value=capture), \
              patch.object(demo, 'VisionPipeline', return_value=pipeline), \
              patch.object(demo, 'DeveloperPreviewOutput', return_value=preview), \
@@ -272,7 +272,7 @@ class AdapterTests(unittest.TestCase):
         pipeline.close.assert_called_once()
 
 
-    def test_windows_demo_reidentification_is_opt_in_and_display_only(self):
+    def test_windows_demo_reidentification_is_opt_in_and_uses_current_window(self):
         import json
         import sys
         from contextlib import ExitStack
@@ -303,28 +303,38 @@ class AdapterTests(unittest.TestCase):
                 stack.enter_context(patch.object(demo.cv2, 'VideoCapture', return_value=camera))
                 for name in ('namedWindow', 'resizeWindow', 'moveWindow', 'imshow', 'waitKey', 'destroyAllWindows'):
                     stack.enter_context(patch.object(demo.cv2, name))
-                windows = stack.enter_context(patch.object(demo, 'list_windows', return_value=[(42, demo.CAMERA_WINDOW)]))
+                # 현재 데모는 자기 프로세스 창을 FindWindowW로 직접 찾는다.
+                user32 = MagicMock()
+                user32.FindWindowW.return_value = 42
+                def owner(hwnd, pointer):
+                    pointer._obj.value = demo.os.getpid()
+                    return 1
+                user32.GetWindowThreadProcessId.side_effect = owner
+                stack.enter_context(patch.object(demo.ctypes, 'WinDLL', return_value=user32))
                 win_capture = stack.enter_context(patch.object(demo, 'WindowCapture'))
                 stack.enter_context(patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])))
-                stack.enter_context(patch.object(demo, 'PoseAnalyzer'))
                 stack.enter_context(patch.object(demo, 'PreviewCapture', return_value=capture))
                 stack.enter_context(patch.object(demo, 'VisionPipeline', return_value=pipeline))
-                stack.enter_context(patch.object(demo, 'DeveloperPreviewOutput', return_value=preview))
+                stack.enter_context(patch.object(demo, 'FrontendStylePreview', return_value=preview))
+                model_factory = stack.enter_context(patch.object(demo, 'DemoMultiModel'))
                 stack.enter_context(patch.object(demo, 'open_demo_log', return_value=(MagicMock(), demo.Path('/tmp/mock-log'))))
-                writer = stack.enter_context(patch.object(demo, 'write_frame_log'))
-                stack.enter_context(patch.object(demo, 'log_debug_transition'))
+                writer = stack.enter_context(patch.object(demo, 'write_group_frame_log'))
+                stack.enter_context(patch.object(demo, 'log_group_transition'))
+                reid.render.return_value = annotated
                 demo.main()
-                windows.assert_called_once()
+                user32.FindWindowW.assert_called_once_with(None, demo.CAMERA_WINDOW)
                 win_capture.assert_called_once_with(42)
                 self.assertEqual(json.dumps(result), original)
                 self.assertIs(writer.call_args.args[1], result)
                 if enabled:
                     factory.assert_called_once()
-                    reid.annotate.assert_called_once_with(frame, 0, result['features']['faces'], boxes=[])
+                    reid.render.assert_called_once_with(frame, result['features']['faces'], boxes=[])
+                    self.assertIs(model_factory.call_args.args[-1], reid)
                     self.assertIs(preview.render.call_args.args[0], annotated)
                     reid.close.assert_called_once()
                 else:
                     factory.assert_not_called()
+                    self.assertIsNone(model_factory.call_args.args[-1])
                     self.assertIs(preview.render.call_args.args[0], frame)
                 pipeline.close.assert_called_once()
                 camera.release.assert_called_once()

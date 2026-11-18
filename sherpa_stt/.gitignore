@@ -1,2 +1,4 @@
 # 내려받은 STT 모델은 커밋하지 않는다.
 models/
+native/*.obj
+native/*.pdb

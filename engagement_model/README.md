@@ -7,9 +7,9 @@
 관측 불가와 판단 보류는 0점 대신 `null`과 사유로 표현합니다.
 
 - 독립 웹캠과 프런트의 기본 모델은 **Gaussian softened**입니다.
-- `EngagementRuntime()` 자체의 기본 모델은 Legacy로 유지합니다. 프런트는 `GaussianRuntime`을 명시적으로 생성합니다.
-- 독립 데모에서 모델을 비교할 수 있으며, 프런트는 Gaussian을 사용합니다. 재식별을 함께 켜면 다인 Gaussian 경로로 실행합니다.
-- 개별 계산기는 단일 얼굴 입력을 사용하며, 프런트 다인 경로는 확정된 재식별 ID마다 계산기를 따로 둡니다.
+- 모델은 Gaussian만 제공합니다. `ModelConfig()`와 모든 웹캠 점수기도 Gaussian을 사용합니다.
+- 독립 데모는 Gaussian의 상대각/완화 및 보정 방식을 비교합니다. 프런트에서 재식별을 함께 켜면 다인 Gaussian 경로로 실행합니다.
+- 개별 계산기는 단일 얼굴 입력을 사용하며, 프런트는 재식별 ID 또는 임시 위치 트랙마다 계산기를 따로 둡니다.
 - 현재 Gaussian 점수와 최근 10초 집계 점수는 다른 값입니다.
 - 원본 영상·얼굴 이미지·영구 식별자를 이 모듈의 저장 항목으로 추가하지 않습니다.
 
@@ -18,6 +18,17 @@
 - [모델별 수식·원식과 변형·버전](docs/model-formulas.md)
 - [실험 조건·버전별 결과·검증 범위](docs/experiments.md)
 - [웹캠 조작·자동 좌우 진단·결과 해석](docs/webcam-diagnostics.md)
+
+### MediaPipe 얼굴 변환행렬 자세 추정
+
+프런트와 독립 웹캠은 MediaPipe 얼굴 변환행렬을 기본으로 사용합니다. 유효하지 않은 행렬은 관측 불가로 처리합니다. Gaussian 점수와 정면 보정은 유지되며, 각도 정확도와 수업 화면 다인 성능은 별도 검증이 필요합니다.
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --single-model --debug
+video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --diagnostic-down --front-stability --single-model --yaw-log
+```
+
+이전 `--pose-source`, `--validated-pose`, `--compare-face-transform` 옵션은 제거했습니다. `--gaze`는 별도 시선 모델 선택 기능입니다. 실험용 회전행렬 보정(`--calibration-method matrix`)은 기본 Euler 보정과 별개입니다.
 
 ## 프런트 다인 Gaussian
 
@@ -32,7 +43,9 @@ ID 이탈·재식별 불확실 구간은 현재/최근 점수 모두 null입니�
 현재 관측자 재보정, 최대32명/마지막 확인 후120초 수명, 수업 종료 시 삭제를 적용합니다.
 이름·ID·임베딩·개인별 점수 이력은 저장하지 않습니다.
 
-그룹 provenance는 `multi-face-gaussian` / `multi-gaussian-0.1`입니다.
+현재 프런트·Windows 데모의 그룹 provenance는 재식별 사용 시 `multi-face-gaussian` / `multi-gaussian-0.5-head`,
+미사용 시 `position-track-gaussian` / `position-gaussian-0.5-head`입니다. 머리 점수만 집계하며 눈 점수는 별도 참고값입니다.
+`group_developer_view.group_model_identity()`가 실제 생성기와 세션 설정·상태 이벤트의 모델 정보를 함께 제공합니다.
 `WindowPublisher`는 다인 런타임의 `aggregate_window()`를 사용합니다. 각 유효 관측의
 완화된 Pitch/Yaw로 Gaussian을 한 번 계산하고, 최근성 선형 커널의 시간 적분으로 가중합니다.
 분자는 모든 유효한 사람·구간의 `시간가중치 × Gaussian 점수` 합,
@@ -40,26 +53,25 @@ ID 이탈·재식별 불확실 구간은 현재/최근 점수 모두 null입니�
 보류·미검출·보정 중인 사람은 0점을 넣지 않습니다. 이 값은 관측 가능한 사람들에 대한 참고 집계이며
 전체 수강생 평균·출석률·집중도는 아닙니다.
 
-구간은 최근10초/출력2초이며 기존 최소 관측·점수화 시간 기준을 적용합니다.
+구간은 최근 10초/출력 1초이며 기존 최소 관측·점수화 시간 기준을 적용합니다.
 비율은 해당 구간에 적어도 한 사람의 유효 관측/점수가 있는 **벽시계 시간**을 분모로 계산합니다.
 `model_extensions.multi-face-gaussian.scoreable_person_duration_ms`는 별도의
 점수화 가능한 사람·밀리초 합이므로 구간 길이보다 클 수 있습니다.
 예를 들어 두 명을 각각10초 유효 관측하면20000입니다. 이 값은 최근성 가중치 합 자체는 아닙니다.
 개별 원시 각도는 집계 메모리에만 있고 저장 이벤트에는 없습니다. 공통 참가자 수 분모는 null입니다.
 
-프런트에서 재식별을 켜야 다인 경로를 사용합니다. 재식별을 끄면 단일 얼굴 Gaussian으로 실행합니다.
+프런트는 재식별을 끄면 단기 위치 트랙별 다인 경로를 사용합니다. 트랙은 신원이 아닙니다. 같은 트랙이 0.5초 이내에 돌아오면 누락 시간을 제외한 기존 이력을 보존하며, 긴 누락·큰 이동은 해당 기준을, 겹침·동시 교체·긴 공백은 모든 기준을 폐기합니다.
 MobileGaze 시선 실험은 포함하지 않습니다. [프런트 실행 안내](../frontend/README.md)를 참고하세요.
-- [정리 전 README 원문·과거 실험·변경 이력](docs/implementation-history.md)
 
 ## 2. 전체 데이터 처리 흐름
 
 ```text
-video_recognition: 얼굴/상체 특징 → 스무딩 → 정면 보정 → FeatureWindow
+video_recognition: 얼굴 특징 → 스무딩 → 정면 보정 → FeatureWindow
   ↓ model_consumer 콜백
 input_adapter.py: 형식·단일 얼굴·보정·품질 검사, 상대각/Yaw 완화
   ↓
-runtime.py: 상태·관측 시간 관리, Legacy 또는 Huang 계산
-  또는 gaussian.py: 같은 상태 관리를 재사용해 Gaussian 계산
+runtime.py: 방향 상태·연속 관측 시간 관리
+  ↓ gaussian.py: Gaussian 점수 계산
   ↓ latest: 실행 메모리에 보관
 선택적으로 WindowPublisher 연결 → engagement_window → IntegrationService
 ```
@@ -73,41 +85,26 @@ runtime.py: 상태·관측 시간 관리, Legacy 또는 Huang 계산
 |---|---|
 | [config.py](config.py) | `ModelConfig`: 실험 설정과 값 검증 |
 | [input_adapter.py](input_adapter.py) | `HeadAngles`, `Observation`, `parse_feature_window()`, `soften_angle()` |
-| [scoring.py](scoring.py) | 공통 상태 분류, Legacy 규칙, Huang 순수 함수·구간 계산 |
-| [runtime.py](runtime.py) | `EngagementRuntime`, 세 모델을 같은 입력으로 실행하는 `ComparisonRuntime` |
+| [scoring.py](scoring.py) | Gaussian용 각도 검증·방향 상태 분류 |
+| [runtime.py](runtime.py) | `HeadOrientationState`: Gaussian용 방향·시간 공통 상태 |
 | [gaussian.py](gaussian.py) | `GaussianRuntime`, 방향 점수·시간 가중 집계 |
 | [window_publisher.py](window_publisher.py) | 구간 집계와 공통 계약 이벤트 발행 |
 | [webcam_demo.py](webcam_demo.py) | 기존 영상 기능을 재사용하는 독립 웹캠·메모리 진단 |
 | [tests/](tests/) | 입력·산정식·시간 상태·복귀·계약·실행기 모의 검사 |
 
-## 3. Legacy / Huang / Gaussian
+## 3. Gaussian 전용 모델
 
-| 항목 | Legacy | Huang 온라인 | Gaussian 기본 |
-|---|---|---|---|
-| 생성 | `EngagementRuntime()` | `EngagementRuntime(ModelConfig.huang())` | `GaussianRuntime()` |
-| 점수 | 상태·각도 강도·유지시간 규칙 | Pitch/Yaw 지표의 정규화 거리 결합 | 상대 Pitch/Yaw의 Gaussian 각도 공간 변형 |
-| 정면 | 90점에서 5초간 100점으로 증가 | 정확한 정지 0도는 온라인 중립 처리로 약 64.6점 | 중립 입력 100점, 방향 편차에 따라 연속 감소 |
-| ambiguous | 보류 | 유효 관측이면 계산 | 유효 관측이면 계산 |
-| away | 초기 3초는 이전 안정 점수, 이후 각도·시간 감점 | 별도 Legacy 유예 없음 | 현재 방향 점수에 유예 없음 |
-| 아래 보기 | 이전 안정 점수로 5초 유예 후 10초간 최대 20점 감점 | 보류 | 하향 전이부터 보류 |
-| 시간 구간 | 기본 10초 | 큰 구간 30초·작은 구간 3초 | 최근 10초 시간 가중 |
-
-각 모델이 점수화하는 구간과 점수 의미는 같지 않습니다.
-Legacy의 높은 표시값이 현재 관측의 유효한 새 점수인지, 계산 유예나 화면 캐시인지 구분해야 합니다.
-실제 얼굴·각도 입력의 좌우 비대칭은 모델의 수학적 대칭성과 별개의 검증 대상입니다.
-
-선택 예시:
+Legacy/Huang 계산식·설정·비교 실행기는 제거했습니다. `--huang-only`, `--model legacy`, `--model huang`은 사용할 수 없습니다. `--model gaussian`과 `--single-model`은 기존 실행 명령의 호환을 위해 유지합니다.
 
 ```python
 from engagement_model.config import ModelConfig
-from engagement_model.runtime import EngagementRuntime
 from engagement_model.gaussian import GaussianRuntime
 
-legacy = EngagementRuntime()
-huang = EngagementRuntime(ModelConfig.huang())
-gaussian = GaussianRuntime()  # softened, angle-time-0.3
+gaussian = GaussianRuntime()  # softened, angle-time-0.4
 reference = GaussianRuntime(ModelConfig.gaussian(gaussian_angle_mode='relative'))
 ```
+
+상체 분석은 실행하지 않습니다. 어깨 좌표·상체 움직임과 상체 오버레이·분석 주기 옵션을 제거했습니다. 얼굴 머리 방향, 눈·표정 특징, 재식별 및 독립 데모의 나머지 진단·시선 옵션은 유지합니다.
 
 ## 4. 현재 Gaussian 산정식과 설정값
 
@@ -123,13 +120,13 @@ Y_eff = h(Y; 2, 0.75, 15)
 S_current = 100*exp(-0.5*((P_eff/15)^2+(Y_eff/20)^2))
 ```
 
-Yaw 완화는 Legacy와 같은 `soften_angle()`을 재사용합니다.
+Yaw 완화는 `soften_angle()`을 사용합니다.
 Pitch 완화와 sigma 15/20도는 프로젝트 실험 설정이며 논문의 최적값이 아닙니다.
 큰 각도의 기울기는 1을 유지합니다. Roll은 점수에 사용하지 않습니다.
 relative 비교 모드는 완화 전 P/Y를 그대로 사용합니다.
 스무딩·보정은 영상 모듈에서 수행하며 모델이 얼굴 각도를 다시 추정하지 않습니다.
 
-softened 0.3이 현재 기본이며, relative 0.2는 하향 전이 보류를 유지하는 비교 모드입니다.
+softened 0.4가 현재 기본이며, relative 모드도 동일한 아래 보기 정책을 사용합니다.
 0.1은 과거 설명으로, 현재 코드에 별도 실행 모드가 없습니다. 버전별 실험 표를 혼용하지 마세요.
 
 최근 10초는 실제 시각에 따른 선형 최근성 커널로 유효 구간만 가중평균합니다.
@@ -150,14 +147,11 @@ softened 0.3이 현재 기본이며, relative 0.2는 하향 전이 보류를 유
 | `yaw_full_scale_start_degrees` / `front_pitch_degrees` | 15° / 10° | Yaw/Pitch 완화 경계 |
 | `gaussian_down_transition_pitch_degrees` | 10° | Gaussian 하향 전이 |
 | `gaussian_down_confirm_seconds` | 0.3초 | 아래 방향 확인 |
-| `window_seconds` | Legacy/Gaussian 10초, Huang 30초 | 집계 구간 |
-| `output_interval_seconds` | 2초 | publisher 발행 간격 |
-| `max_observation_hold_seconds` | 0.3초 | 관측 유지 상한 |
+| `window_seconds` | 10초 | 집계 구간 |
+| `output_interval_seconds` | 1초 | publisher 발행 간격 |
+| `max_observation_hold_seconds` | 0.5초 | 관측 유지 상한 |
 | `min_observable_ratio` / `min_scoreable_ratio` | 0.7 / 0.7 | 구간 품질 기준 |
-| `huang_small_seconds` / `huang_amplitude_degrees` / `huang_max_yaw_degrees` | 3초 / 5° / 90° | Huang 온라인 |
 
-Legacy의 각도·시간·점수 계수는 `config.py`와 [상세 수식](docs/model-formulas.md)을 참고합니다.
-`recovery_seconds=2`는 설정에 있으나 별도 2초 복귀 확인 로직으로 연결돼 있지 않습니다.
 
 ### 현재 점수와 JSON 이벤트
 
@@ -168,10 +162,10 @@ Legacy의 각도·시간·점수 계수는 `config.py`와 [상세 수식](docs/m
 | `payload.model_output.value` | publisher가 해당 근거 구간으로 계산한 집계 | `engagement_window` 이벤트 |
 | `status`, `reason_codes` | 런타임 집계의 계산·보류 상태 | 현재 방향 점수 품질과 구분 |
 
-현재 점수가 유효해도 집계는 보류일 수 있습니다. 장시간 하향 후 복귀 사례가 이에 해당합니다.
+현재 점수가 유효해도 구간 내 유효 관측 시간이 부족하면 집계는 보류될 수 있습니다.
 기존 10초 이력의 점수화 시간 70%를 다시 채우는 데 합성 사례에서 약 7초가 필요할 수 있습니다.
 초기 런타임은 첫 관측 이후 부분 이력으로 계산합니다.
-정기 이벤트는 publisher 시작 기준 한 구간이 지난 뒤 처음 발행하고 이후 2초마다 발행합니다.
+정기 이벤트는 publisher 시작 기준 한 구간이 지난 뒤 처음 발행하고 이후 기본 1초마다 발행합니다.
 종료 시 `finish()`로 마지막 부분 구간도 발행할 수 있습니다.
 
 JSON에는 현재 방향 점수·진단 각도·`downward_status`·임시 추적 키를 넣지 않습니다.
@@ -193,15 +187,16 @@ JSON에는 현재 방향 점수·진단 각도·`downward_status`·임시 추적
 
 Gaussian은 이 상태 분류를 유지하며 별도 `downward_status`로 하향 불확실성을 표시합니다.
 
-- 상대 Pitch > 10°: `transition_uncertain`, 현재·런타임 집계 점수 보류.
+- 상대 Pitch > 10°이고 아래 보기 상태가 아직 아니면 `transition_uncertain`으로 점수를 보류합니다.
 - 기존 아래 보기 상태: `looking_down_uncertain`, 연속 +15° 이상 0.3초면 `looking_down_confirmed`.
+- 아래 보기 진입 전 유효한 집계 점수가 있으면 5초 유지하고, 이후 10초 동안 최대 20점을 선형 감점합니다. 유효한 기준 점수가 없으면 보류합니다.
 - 확인은 머리 방향의 확인이며 필기·참여·미참여의 확인이 아닙니다.
 - 전이 관측은 처음부터 점수화 시간에서 제외합니다. 관측 가능 시간에는 포함할 수 있습니다.
 - 미검출·보정 실패·시간/추적 연속성 문제는 사유와 함께 보류 또는 시간 상태 초기화합니다.
 - 정면 복귀의 첫 유효 관측부터 Gaussian 현재 점수를 재개합니다.
 
 필기·교재·휴대전화·손동작을 구분하는 기능은 없습니다.
-EAR·깜빡임·표정·상체 이동을 참여 점수나 필기 근거로 합산하지 않습니다.
+프런트는 EAR 기반 장시간 양안 감김 후보를 머리 점수와 결합합니다. 깜빡임 횟수·표정은 점수나 필기 근거로 합산하지 않습니다.
 
 ## 6. 실행 방법 및 테스트 명령어
 
@@ -211,7 +206,7 @@ EAR·깜빡임·표정·상체 이동을 참여 점수나 필기 근거로 합�
 추정합니다. 여러 화면 지점을 바라보는 보정은 없습니다. 카메라 기준 방향 후보이므로
 실제 모니터 주시·집중도·필기를 확정하지 않습니다. 단일 얼굴용이며 프런트와
 `video_recognition.webcam_test`/`webcam_test_mac`에는 연결하지 않았습니다.
-주 모델은 Gaussian 전용입니다. 비교 표시를 켜도 Legacy/Huang 정책은 바뀌지 않습니다.
+주 모델은 Gaussian 전용입니다.
 
 | 화면 표시 | 의미 |
 |---|---|
@@ -227,7 +222,7 @@ Gaussian에서 이 옵션을 켜면 머리만 숙인 경우에도 각도 점수�
 대기 상태는 `gaze_down_pending`입니다. 시선 불명확은 `gaze_unavailable`로 표시하며
 유효한 머리 각도가 있으면 각도 점수만 계산합니다. 얼굴 관측 불가는 기존 null 정책입니다.
 확인 전 관측은 계산하고 이미 계산한 구간을 소급해서 제외하지 않습니다.
-모든 임계값은 검증 전 실험값입니다. 기본 실행·Legacy·Huang의 보류 정책은 바뀌지 않습니다.
+모든 임계값은 검증 전 실험값입니다. `--gaze`를 사용하지 않으면 기본 Gaussian 하향 정책을 적용합니다.
 
 기존 얼굴 경계를 재사용하고 최대 약 3Hz로 시선만 추가 추론합니다.
 333ms 미만 동안 현재 얼굴 품질이 유효하면 직전 시선 결과를 사용하고,
@@ -260,9 +255,8 @@ video_recognition/.venv/Scripts/python.exe -m engagement_model.webcam_demo --gaz
 ```powershell
 # 기본 Gaussian 웹캠: 정면 준비 후 버튼 또는 C/Space로 수동 보정
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo
-# 상세 진단 / 선택 모델 단독 / 이전 Gaussian 입력 방식
+# 상세 진단 / 이전 Gaussian 입력 방식
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --debug
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --model huang --single-model
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --gaussian-angle-mode relative
 # 수동 보정 후 정면→왼쪽→정면→오른쪽→정면 자동 진단
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --yaw-diagnostic --single-model
@@ -282,15 +276,13 @@ collecting 동안 약 3초 정면 유지, D 상세 진단, V 오버레이, Q/Esc
 ```powershell
 # 카메라 없이 모델·시간 상태·계약·실행기 모의 검사
 video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s engagement_model/tests -v
-# 동일 합성 입력의 세 모델 비교: 실제 정확도 평가가 아님
-video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_huang --compare-all
 ```
 
 ## 7. 현재 구현 상태와 검증 중인 문제
 
 ### 코드로 확인한 구현
 
-구현: 세 모델 선택, 입력 검증, 상태·시간 관리, 하향 보류, Gaussian 현재/집계 분리,
+구현: Gaussian 전용 실행, 입력 검증, 상태·시간 관리, 하향 유예·감점, Gaussian 현재/집계 분리,
 독립 웹캠 자동 복귀·기본 얼굴 시각화, 수동 보정과 자동 구간 안내, publisher의 계약 발행입니다.
 시간 역전·관측 공백·트랙 변경·잘못된 입력에 대한 처리와 회귀 테스트가 있습니다.
 현재 CLI 기본값은 `webcam_demo.py::main()`, 프런트 기본값은 `LiveSession._start_model()`에서 확인합니다.
@@ -301,7 +293,7 @@ video_recognition/.venv/Scripts/python.exe -B -m engagement_model.tests.test_hua
 
 웹캠에서 큰 좌우 상대각 차이와 회전 중 Pitch/Roll 변동이 관찰됐지만 원인은 확정하지 못했습니다.
 보정·완화 산술의 일치가 원본 추정이나 보정 자세의 정확성을 증명하지는 않습니다.
-실제 좌우 회전량의 정답, solvePnP 깊이·재투영 오차, 실제 참여도 정확도는 현재 코드만으로 확인할 수 없습니다.
+실제 좌우 회전량의 정답과 실제 참여도 정확도는 현재 코드만으로 확인할 수 없습니다.
 A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기본 정책으로 구현하지 않았습니다.
 개별 계산은 임시 정면 보정을 사용하며 다인 경로는 ID별 계산을 분리합니다. 실제 참여도 정확도나 논문 성능을 달성했다고 주장하지 않습니다.
 
@@ -310,17 +302,23 @@ A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기
 1. 영상 담당자와 원본 회전·보정·추정 품질을 확인하고 좌우 비대칭 원인을 구분합니다.
 2. 동일 입력·보류 구간·사람 주석 기준을 고정한 뒤 sigma와 정책을 평가합니다.
 3. 추가 시선·필기 특징은 비전 담당자가 제공한 근거와 품질을 확인한 뒤 연결합니다.
-4. 프런트 모델 선택·현재 점수 전달은 기존 집계 의미와 공통 계약을 먼저 협의합니다.
-5. 다중 얼굴별 보정·연결·집계는 별도 설계·동의·검증이 필요한 미완료 범위로 둡니다.
+4. 다인 얼굴별 보정·연결·집계의 실제 수업 화면 성능을 추가 검증합니다.
 
 위 항목은 개발 계획이며 구현 완료나 성능 달성으로 해석하지 않습니다.
 
 ## 9. 참고 논문 및 자료
 
-- Huang, Z.; Zhuo, R.; Gao, F. (2024), *How attentive is a student in class? A concentration evaluation method based on head Euler angle*.
-  [DOI](https://doi.org/10.1016/j.heliyon.2024.e37365) · [원문](https://pmc.ncbi.nlm.nih.gov/articles/PMC11417239/)
 - Li, B.; Liu, P. (2024), *Online Learning State Evaluation Method Based on Face Detection and Head Pose Estimation*, Sensors 24(5), 1365.
   [DOI](https://doi.org/10.3390/s24051365)
 
 원식·온라인 변형·예외 정책의 구분은 [상세 수식](docs/model-formulas.md)에 정리했습니다.
-과거 실험 표는 [이력 문서](docs/implementation-history.md)의 당시 조건으로만 해석합니다.
+
+### 프런트 머리·눈 결합 점수
+
+프런트의 다인 경로는 Gaussian 머리 방향 점수를 익명 사람·시간 가중 점수로 발행합니다. 눈 점수는 별도 진단값이며 눈 관측이 부족해도 유효한 머리 점수는 집계합니다. 개발자 창의 구성 점수는 저장 구간 점수와 다를 수 있습니다.
+
+눈 점수는 양쪽 EAR이 기존 임계값 0.21 미만인 시간 중 2초를 넘긴 연속 구간만 최근 10초의 관측 가능 시간으로 나눠 `100 × (1 − 장시간 감김 시간 / 관측 가능 시간)`으로 계산하는 임시 후보입니다. 짧은 깜빡임은 감점하지 않습니다. 10초 중 유효 관측이 70% 미만이거나 프레임 공백이 0.3초를 넘는 구간은 관측으로 채우지 않습니다. 양쪽 EAR 또는 트랙을 얻지 못하면 눈 점수를 보류합니다. 아래 보기 중에도 양쪽 눈이 실제 관측되면 계산하며, 관측 불량은 감김으로 취급하지 않습니다. 개인별 초기 임계값 보정은 아직 없으며 `0.21`, 2초, 70%, 80/20은 검증 전 실험값입니다.
+
+다인 그룹 점수는 머리와 눈을 모두 관측한 사람·시간만 집계합니다. 따라서 전체 수강생의 평균이나 참여율이 아니며, 눈이 보이지 않는 얼굴은 집계에서 빠집니다. 이 점수는 눈 동작의 관찰 후보이며 졸음·집중도·이해도를 뜻하지 않습니다. 얼굴 크기·프레임 주기·안경·조명에 따른 성능과 사람 주석을 이용한 평가가 필요합니다. 얼굴별 눈 특징과 개인 점수는 최종 세션에 저장하지 않습니다. 결합된 그룹 구간 점수와 배점 설정만 저장합니다.
+
+재식별 없는 프런트는 단기 위치 트랙을 사용하며 0.3초 초과 누락·큰 이동 시 해당 기준을, 겹침·동시 교체·1초 초과 공백 시 모든 기준을 폐기하고 자동 재수집합니다. 재식별 다인 모드는 확인된 임시 ID별로 기준을 분리하고 3초를 초과한 관측 공백 뒤에 다시 수집합니다. 상세 제한은 [프런트 안내](../frontend/README.md#얼굴-누락-시-정면-기준-복구)를 참고하세요.

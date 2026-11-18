@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from frontend.live_session import LiveSession
-from engagement_model.gaussian import GaussianRuntime
+from engagement_model.position_tracks import PositionTrackGaussianRuntime
 from engagement_model.tests.test_runtime import feature_window
 from engagement_model.tests.test_multi_face import frame as multi_frame
 from video_recognition.window_capture import FrameNotAvailable
@@ -27,14 +27,34 @@ class MultiGaussianLiveTests(unittest.TestCase):
     def test_single_default_and_group_factory_are_gaussian(self):
         single = self.live()
         single._start_model()
-        self.assertIsInstance(single.model_runtime, GaussianRuntime)
+        self.assertIsInstance(single.model_runtime, PositionTrackGaussianRuntime)
         group = self.live(True)
         group._start_model()
         self.assertEqual(group.model_runtime.model_id, 'multi-face-gaussian')
         self.assertEqual(group.model_runtime.config.scoring_method, 'gaussian')
 
+    def test_selective_recalibration_preserves_other_person_and_publisher(self):
+        from engagement_model.tests.test_position_tracks import sample
+        live = self.live()
+        live._start_model()
+        for t in range(0, 15001, 100):
+            value = sample(t)
+            value['session_id'] = live.sid
+            live.service.elapsed_ms = Mock(return_value=t)
+            live._consume_frame(value)
+        publisher = live.window_publisher
+        with patch.object(live, 'is_running', return_value=True):
+            self.assertTrue(live.request_head_calibration('T1'))
+            self.assertFalse(live.request_head_calibration('unknown'))
+        live._recalibrate_pipeline(Mock(), 'T1')
+        rows = {row['id']: row for row in live.participant_snapshot()}
+        self.assertEqual(rows['T1']['calibration_status'], 'collecting')
+        self.assertEqual(rows['T2']['calibration_status'], 'ready')
+        self.assertIs(live.window_publisher, publisher)
+        self.assertIsNone(publisher._sample)
+
     def test_started_session_uses_matching_gaussian_metadata(self):
-        for enabled, expected in ((False,'gaussian-head-direction'),(True,'multi-face-gaussian')):
+        for enabled, expected in ((False,'position-track-gaussian'),(True,'multi-face-gaussian')):
             live = LiveSession(123,reidentification_enabled=enabled)
             with patch('frontend.live_session.threading.Thread'):
                 live.start('synthetic')
@@ -83,12 +103,13 @@ class MultiGaussianLiveTests(unittest.TestCase):
         live._active_face = Mock(last_face_boxes=[[.1,.1,.4,.9],[.6,.1,.9,.9]])
         live.reidentifier = Mock()
         live.reidentifier.identify.return_value = {0:'PRIVATE-A', 1:'PRIVATE-B'}
-        for ms in range(0,16001,100):
+        for ms in range(0,24001,100):
             live.service.elapsed_ms.return_value = ms
             feature = feature_window(ms, track_key=0)
             feature['session_id'] = live.sid
             face = feature['features']['faces'][0]
             face['head_angles_degrees'] = {'pitch':0.,'yaw':0.,'roll':0.}
+            face['eye_aspect_ratio_left'] = face['eye_aspect_ratio_right'] = 0.3
             face['head_angles_smoothed_degrees'] = dict(face['head_angles_degrees'])
             other = deepcopy(face)
             other['transient_track_key'] = 1
@@ -123,9 +144,9 @@ class MultiGaussianLiveTests(unittest.TestCase):
         live = self.live(True)
         live._start_model()
         live.model_runtime.update_identities({1:'A',2:'B'})
-        for ms in range(0,13101,100):
+        for ms in range(0,23101,100):
             live.service.elapsed_ms.return_value = ms
-            feature = multi_frame(ms, (0,) if ms <= 12000 else (0,20))
+            feature = multi_frame(ms, (0,) if ms <= 22000 else (0,20))
             feature['session_id'] = live.sid
             live._consume_model(feature)
         self.assertFalse(live._model_failed)
@@ -160,13 +181,13 @@ class MultiGaussianLiveTests(unittest.TestCase):
             process_id=1
             def read(self):
                 clock['ms']+=100
-                if clock['ms']==15000:
+                if clock['ms']==25000:
                     raise FrameNotAvailable('synthetic capture gap')
-                if clock['ms']==15100:
+                if clock['ms']==25100:
                     self_test.assertTrue(live._participant_rows)
                     self_test.assertTrue(all(row['current_direction_score'] is None
                                              for row in live._participant_rows))
-                if clock['ms']>=16000:
+                if clock['ms']>=26000:
                     live.stop_event.set()
                 return image
             close=Mock()
@@ -178,19 +199,16 @@ class MultiGaussianLiveTests(unittest.TestCase):
             def analyze(self, frame):
                 return [dict(quality={'status':'valid','reason_codes':[]},
                              head_angles_degrees={'pitch':0.,'yaw':yaw,'roll':0.},
-                             eye_openness=.3, head_position={'x':x,'y':.5})
+                             eye_openness=.3, eye_aspect_ratio_left=.3, eye_aspect_ratio_right=.3, head_position={'x':x,'y':.5})
                         for x,yaw in ((.25,0.),(.75,20.))]
             close=Mock()
 
         self_test=self
-        pose=Mock()
-        pose.analyze.return_value=[]
         reid=Mock()
         reid.identify.side_effect=lambda image,ms,faces,**kwargs: {
             face['transient_track_key']:f'P{index}' for index,face in enumerate(faces)}
         with patch('frontend.live_session.WindowCapture',return_value=Window()), \
              patch('frontend.live_session.FaceAnalyzer',return_value=Face()), \
-             patch('frontend.live_session.PoseAnalyzer',return_value=pose), \
              patch('frontend.live_session.FaceReidentifier',return_value=reid), \
              patch.object(live,'_close_developer_windows'):
             live._run_vision()

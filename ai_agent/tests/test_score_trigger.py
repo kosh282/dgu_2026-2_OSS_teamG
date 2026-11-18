@@ -20,6 +20,43 @@ class FakeExternal:
 
 
 class ScoreTriggerTests(unittest.TestCase):
+    def test_stopped_session_does_not_call_external_writer(self):
+        service, sid = new_session()
+        say(service, sid, 1000, 5000, '합성 전사')
+        score_window(service, sid)
+        service.stop_session(sid)
+        writer = FakeExternal()
+        self.assertIsNone(LiveAssistant(service, sid, MaterialIndex([]), writer).step())
+        self.assertEqual(writer.calls, 0)
+
+    def test_cancel_during_external_call_prevents_search_and_publication(self):
+        service, sid = new_session()
+        say(service, sid, 1000, 5000, '합성 전사')
+        score_window(service, sid)
+        writer = FakeExternal()
+        assistant = LiveAssistant(service, sid, MaterialIndex([]), writer,
+                                  searcher=lambda query: self.fail('종료 후 검색 호출'))
+        original = writer.suggest_teaching
+        def cancel(*args):
+            result = original(*args)
+            assistant.stop()
+            return result
+        writer.suggest_teaching = cancel
+        self.assertIsNone(assistant.step())
+        self.assertEqual(service.get_dashboard_snapshot(sid)['teaching_suggestions'], [])
+
+    def test_session_ending_during_external_call_does_not_create_post_session_suggestion(self):
+        service, sid = new_session()
+        say(service, sid, 1000, 5000, '합성 전사')
+        score_window(service, sid)
+        class Writer(FakeExternal):
+            def suggest_teaching(self, *args):
+                service.stop_session(sid)
+                return {'title': '예시', 'description': '설명', 'search_query': ''}
+        assistant = LiveAssistant(service, sid, MaterialIndex([]), Writer())
+        self.assertIsNone(assistant.step())
+        self.assertEqual(service.get_dashboard_snapshot(sid)['teaching_suggestions'], [])
+
     def test_no_materials_generates_one_ai_suggestion_with_both_evidence(self):
         service, sid = new_session()
         transcript = say(service, sid, 1000, 5000, '프로세스의 상태 전이를 설명합니다')

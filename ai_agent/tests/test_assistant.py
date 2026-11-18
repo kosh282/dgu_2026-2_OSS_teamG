@@ -259,8 +259,27 @@ def fake_client(*replies):
 
 
 class ClaudeWriterTests(unittest.TestCase):
+    def test_missing_sdk_falls_back_to_local(self):
+        import sys
+        from unittest.mock import patch
+        hits = MaterialIndex([LECTURE]).search('라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다')
+        writer = ClaudeWriter()
+        with patch.dict(sys.modules, {'anthropic': None}):
+            result = writer.suggest(['합성 전사'], hits)
+        self.assertTrue(result['fallback'])
+        self.assertIn('anthropic', writer.last_error)
+
+    def test_malformed_sdk_response_is_reported_without_crashing(self):
+        for reply in ([], {'title': 42, 'description': '설명', 'search_query': ''},
+                      {'title': '제안', 'description': '설명'}):
+            with self.subTest(reply=reply):
+                client, _ = fake_client(reply)
+                writer = ClaudeWriter(client=client)
+                self.assertIsNone(writer.suggest_teaching(['합성 전사']))
+                self.assertIsNotNone(writer.last_error)
+
     def test_suggestion_uses_claude_choice(self):
-        client, messages = fake_client({"choice": 0, "title": "라운드 로빈 슬라이드", "description": "타임 퀀텀 설명과 연결됩니다."})
+        client, messages = fake_client({"title": "라운드 로빈 슬라이드", "description": "타임 퀀텀 설명과 연결됩니다.", "search_query": ""})
         service, sid = new_session()
         say(service, sid, 1_000, 5_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
         score_window(service, sid)
@@ -278,7 +297,8 @@ class ClaudeWriterTests(unittest.TestCase):
         service, sid = new_session()
         say(service, sid, 1_000, 5_000, "라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
         score_window(service, sid)
-        self.assertIsNone(LiveAssistant(service, sid, MaterialIndex([LECTURE]), ClaudeWriter(client=client)).step())
+        hits = MaterialIndex([LECTURE]).search("라운드 로빈 스케줄링은 타임 퀀텀마다 프로세스를 바꿉니다")
+        self.assertIsNone(ClaudeWriter(client=client).suggest(["라운드 로빈 스케줄링"], hits))
 
     def test_failure_falls_back_to_local(self):
         import anthropic

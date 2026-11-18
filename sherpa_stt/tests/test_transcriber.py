@@ -105,7 +105,7 @@ class TranscriberTests(unittest.TestCase):
     def test_gap_finalizes_and_reports_audio_unavailable(self):
         t = self.make([("앞 발화", False), ("", False)])
         t.accept_chunk(chunk(self.sid, 0, 0, 100))
-        events = t.accept_chunk(chunk(self.sid, 1, 2000, 2100))
+        events = t.accept_chunk(chunk(self.sid, 19, 2000, 2100))  # 청크 1~18을 캡처가 버림
         self.assertEqual(events[0]["event_type"], "transcript_final")
         self.assertEqual(events[0]["end_ms"], 100)
         status = events[1]
@@ -113,6 +113,20 @@ class TranscriberTests(unittest.TestCase):
         self.assertEqual(status["payload"]["component"], "stt")
         self.assertEqual(status["quality"]["reason_codes"], ["audio_unavailable"])
         self.assertEqual((status["start_ms"], status["end_ms"]), (100, 2000))
+
+    def test_late_callback_with_contiguous_ids_keeps_utterance(self):
+        """콜백 지연으로 시각만 건너뛰면 발화를 끊거나 누락으로 보고하지 않는다(실측 회귀)."""
+        t = self.make([("지하철에서 다리", False), ("지하철에서 다리를 벌리고", False), ("지하철에서 다리를 벌리고", True)])
+        first = t.accept_chunk(chunk(self.sid, 0, 0, 100))
+        events = t.accept_chunk(chunk(self.sid, 1, 1500, 1600))  # 번호는 이어짐, 시각만 1.4초 건너뜀
+        events += t.accept_chunk(chunk(self.sid, 2, 1600, 1700))
+        self.assertEqual(self.engine.resets, 1)  # 마지막 엔드포인트에서만 초기화
+        kinds = [e["event_type"] for e in events]
+        self.assertNotIn("analysis_status", kinds)
+        finals = [e for e in events if e["event_type"] == "transcript_final"]
+        self.assertEqual([e["payload"]["text"] for e in finals], ["지하철에서 다리를 벌리고"])
+        self.assertEqual(finals[0]["payload"]["utterance_id"], first[0]["payload"]["utterance_id"])
+        self.assertEqual(finals[0]["start_ms"], 0)
 
     def test_finish_flushes_last_utterance(self):
         t = self.make([("마지막", False)])

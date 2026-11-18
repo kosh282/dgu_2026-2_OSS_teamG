@@ -2,13 +2,23 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, overlap, score, suggestion_phase,
+from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_score_unavailable_reason, overlap, score, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
 SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
 
 class DashboardTests(unittest.TestCase):
+    def test_live_score_reason_prioritizes_failure_and_explains_observation(self):
+        rows = [{'calibration_status': 'collecting', 'reason_codes': ['eye_observation_unavailable']}]
+        self.assertEqual(live_score_unavailable_reason('unavailable', True, True, rows, None, '입력 오류'), '입력 오류')
+        self.assertIn('5초', live_score_unavailable_reason('running', True, True, rows, None))
+        self.assertIn('정면 기준', live_score_unavailable_reason('running', True, False, rows, None))
+        self.assertIn('눈 관측', live_score_unavailable_reason('running', True, False, [{'reason_codes': ['eye_observation_unavailable']}], None))
+        window = {'quality': {'reason_codes': ['insufficient_observation']}}
+        self.assertIn('얼굴 관측 시간', live_score_unavailable_reason('running', True, False, [], window))
+        self.assertIn('꺼져', live_score_unavailable_reason('stopped', False, False, [], None))
+
     def setUp(self):
         self.directory=tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -25,6 +35,25 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(list(fig.data[0].y),[70,None])
         self.assertEqual(fig.layout.xaxis.range[1],7200)
 
+    def test_delete_removes_both_saved_record_and_recovery(self):
+        files = SessionFiles(self.directory.name)
+        service, sid = files.load(SAMPLE)
+        files.save(service, sid)
+        service.save_session(sid, files.recovery_path(sid))
+        files.delete(sid)
+        self.assertFalse(files.path(sid).exists())
+        self.assertFalse(files.recovery_path(sid).exists())
+        files.delete(sid)
+
+    def test_failed_recovery_delete_preserves_saved_record(self):
+        files = SessionFiles(self.directory.name)
+        service, sid = files.load(SAMPLE)
+        files.save(service, sid)
+        with patch.object(files, 'clear_recovery', side_effect=PermissionError('locked')):
+            with self.assertRaises(PermissionError):
+                files.delete(sid)
+        self.assertTrue(files.path(sid).exists())
+
     def test_unknown_score_is_not_zero(self):
         for value in [None,True,float('nan'),101,-1,'70']:
             self.assertIsNone(score({'payload':{'score':value},'quality':{'status':'valid'}}))
@@ -32,6 +61,21 @@ class DashboardTests(unittest.TestCase):
     def test_contract_model_output_value(self):
         event = {'payload': {'model_output': {'kind': 'continuous', 'value': 73.5}}, 'quality': {'status': 'valid'}}
         self.assertEqual(score(event), 73.5)
+
+    def test_transcript_uses_completed_score_without_crossing_missing_or_future_windows(self):
+        def window(end, value):
+            return {'start_ms': max(0, end - 10000), 'end_ms': end,
+                    'payload': {'model_output': {'value': value} if value is not None else None},
+                    'quality': {'status': 'valid' if value is not None else 'not_observable'}}
+        windows = [window(10000, 80), window(12000, 70), window(14000, None), window(16000, 60)]
+        link = transcript_score_link({'end_ms': 13000}, windows)
+        self.assertEqual((link['value'], link['delta']), (70, -10))
+        link = transcript_score_link({'end_ms': 15000}, windows)
+        self.assertIsNone(link['value'])
+        self.assertEqual(link['reason'], '점수 보류')
+        self.assertIsNone(transcript_score_link({'end_ms': 16000}, windows)['delta'])
+        self.assertEqual(transcript_score_link({'end_ms': 22000}, windows)['reason'], '최근 점수 구간 없음')
+        self.assertEqual(transcript_score_link({'end_ms': 9000}, windows)['reason'], '점수 구간 대기')
 
     def test_chart_does_not_join_missing_interval(self):
         def event(start, end, eid):
@@ -55,6 +99,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(data[data['kind'] == 'bound']['time'].tolist(), [0, 7200])
         self.assertEqual(data[data['kind'] == 'note']['text'].tolist(), ['확인할 내용'])
         self.assertEqual(len(chart(windows, notes, 7200000).layout.shapes), 1)
+
+    def test_live_chart_clips_range_without_changing_records(self):
+        windows = [dict(event_id='a', start_ms=0, end_ms=10000,
+                        payload={'model_output': None}, quality={'status': 'not_observable'}),
+                   dict(event_id='b', start_ms=5000, end_ms=15000,
+                        payload={'model_output': {'value': 80}}, quality={'status': 'valid'})]
+        data = live_chart_data(windows, [], 20000, start_ms=8000)
+        self.assertEqual(data[data['kind'] == 'bound']['time'].tolist(), [8, 20])
+        missing = data[data['kind'] == 'unobservable'].iloc[0]
+        self.assertEqual((missing['time'], missing['end']), (8, 10))
+        self.assertEqual(windows[0]['start_ms'], 0)
 
     def test_overlap_includes_crossing_transcript(self):
         self.assertTrue(overlap({'start_ms':100,'end_ms':500},200,300))
@@ -130,6 +185,15 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(next(m for m in app.metric if m.label=='최근 실험 구간 점수').value,'측정 불가')
             self.assertTrue(any('수업 종료 · 진행 시간' in caption.value for caption in app.caption))
+            elements=list(app)
+            score_index=next(i for i, element in enumerate(elements) if element.type=='metric' and element.label=='최근 실험 구간 점수')
+            timeline_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and '공통 타임라인' in element.value)
+            note_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='교수자 메모')
+            transcript_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='실시간 전사 · 분석 상태')
+            self.assertLess(score_index, timeline_index)
+            # 두 번째 행은 타임라인·전사, 세 번째 행은 메모·조교 카드다.
+            self.assertLess(timeline_index, transcript_index)
+            self.assertLess(transcript_index, note_index)
             next(t for t in app.text_input if t.label=='메모 입력').set_value('라이브 메모')
             next(b for b in app.button if b.label=='메모 저장').click().run()
             self.assertFalse(app.exception)
@@ -141,6 +205,7 @@ class DashboardTests(unittest.TestCase):
             stop_index=next(i for i, element in enumerate(elements) if element.type=='button' and element.label=='수업 종료')
             warning_index=next(i for i, element in enumerate(elements) if element.type=='warning' and '음성 입력 누락 가능' in element.value)
             self.assertLess(stop_index, warning_index)
+            self.assertTrue(any('점수 상태:' in c.value for c in app.caption))
             app.session_state['live'].video_enabled=True
             app.session_state['live'].model_enabled=True
             app.run()
@@ -156,7 +221,7 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(app.exception)
         next(b for b in app.button if b.label=='공통 계약 예제로 확인').click().run()
         self.assertFalse(app.exception)
-        self.assertEqual(app.metric[0].value,'측정 불가')
+        self.assertEqual(app.metric[0].value,'점수 없음')
         app.text_input[0].set_value('없는문장검색어').run()
         self.assertFalse(app.exception)
 
@@ -165,6 +230,7 @@ class DashboardTests(unittest.TestCase):
         app=AppTest.from_file(str(ROOT/'frontend'/'app.py'),default_timeout=20).run()
         next(c for c in app.checkbox if c.label=='영상 분석 사용').uncheck().run()
         next(c for c in app.checkbox if c.label=='실시간 음성 전사 사용').check().run()
+        next(s for s in app.selectbox if s.label=='음성 입력 방식').select('microphone').run()
         next(t for t in app.text_input if t.label=='수업 제목').set_value('음성 수업').run()
         next(c for c in app.checkbox if c.label.startswith('수업 영상·음성')).check().run()
         next(c for c in app.checkbox if c.label.startswith('전사·메모')).check().run()

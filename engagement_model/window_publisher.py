@@ -2,15 +2,13 @@
 
 from collections import deque
 
-from .runtime import MODEL_ID, MODEL_VERSION
-from .scoring import huang_window_score
 from .gaussian import gaussian_window_score
 
 
 class WindowPublisher:
     """관측이 끊긴 시간은 결측으로 두고 시간 가중 구간 점수를 발행한다.
 
-    Huang 모드의 최소 각도만 이동 구간 동안 메모리에 유지하고 저장하지 않는다.
+    Gaussian 계산에 필요한 값만 이동 구간 동안 메모리에 유지하고 저장하지 않는다.
     임시 추적 정보는 보관하지 않는다. 각 시점의 점수는 다음 관측이나
     최대 관측 유지 시간까지만 유효하며, 이후는 관측 불가로 처리한다.
     """
@@ -20,8 +18,8 @@ class WindowPublisher:
         self.session_id = session_id
         self.runtime = runtime
         self.config = runtime.config
-        self.model_id = getattr(runtime, 'model_id', MODEL_ID)
-        self.model_version = getattr(runtime, 'model_version', MODEL_VERSION)
+        self.model_id = runtime.model_id
+        self.model_version = runtime.model_version
         self.window_ms = round(self.config.window_seconds * 1000)
         self.interval_ms = round(self.config.output_interval_seconds * 1000)
         self.hold_ms = round(self.config.max_observation_hold_seconds * 1000)
@@ -41,13 +39,12 @@ class WindowPublisher:
         reset_reasons = {'tracking_key_changed', 'baseline_unavailable', 'non_monotonic_timestamp'}
         single_reset = (not callable(getattr(self.runtime, 'aggregate_window', None))
                         and bool(set(result.get('reason_codes', ())) & reset_reasons))
-        if self.config.scoring_method in {'huang', 'gaussian'} and (
-                result.get('status') == 'input_error' or single_reset):
+        if (result.get('status') == 'input_error' or single_reset
+                or 'position_association_reset' in result.get('reason_codes', ())):
             # 재보정/대상 변경 전후의 상대각을 같은 통계에 섞지 않는다.
             self._segments.clear()
         self._sample = (timestamp, result.get('angles') is not None, result.get('score'),
-                        result.get('gaussian_observation') if self.config.scoring_method == 'gaussian'
-                        else result.get('huang_observation'))
+                        result.get('gaussian_observation'))
         return result
 
     def _extend(self, end):
@@ -78,51 +75,23 @@ class WindowPublisher:
         if now_ms > self._last_end:
             self._publish(now_ms, partial=now_ms - self._start_ms < self.window_ms)
 
+    def interrupt_sample(self, now_ms):
+        """보정 요청 이후 이전 관측을 새 구간으로 연장하지 않는다."""
+        self.advance(now_ms)
+        self._sample = None
+
     def _publish(self, end, partial):
         start = max(self._start_ms, end - self.window_ms)
         duration = end - start
-        observable_ms = scoreable_ms = weighted = 0
-        for left, right, observable, score, _ in self._segments:
-            elapsed = max(0, min(end, right) - max(start, left))
-            if observable:
-                observable_ms += elapsed
-            if score is not None:
-                scoreable_ms += elapsed
-                weighted += elapsed * score
+        aggregate = getattr(self.runtime, 'aggregate_window', None)
+        # 개인별 집계 또는 단일 Gaussian 적분을 한 번만 수행한다.
+        summary = (aggregate(self._segments, start, end) if callable(aggregate) else
+                   gaussian_window_score(self._segments, start, end, self.config))
+        observable_ms = summary['observable_duration_ms']
+        scoreable_ms = summary['scoreable_duration_ms']
         observable_ratio = observable_ms / duration
         scoreable_ratio = scoreable_ms / duration
-        reasons = []
-        if observable_ratio < self.config.min_observable_ratio:
-            reasons.append('insufficient_observation')
-        if scoreable_ratio < self.config.min_scoreable_ratio:
-            reasons.append('insufficient_scoreable_time')
-        if not scoreable_ms:
-            reasons.append('no_scoreable_time')
-        value = round(weighted / scoreable_ms, 1) if not reasons else None
-        aggregate = getattr(self.runtime, 'aggregate_window', None)
-        if callable(aggregate):
-            summary = aggregate(self._segments, start, end)
-            observable_ms = summary['observable_duration_ms']
-            scoreable_ms = summary['scoreable_duration_ms']
-            observable_ratio = observable_ms / duration
-            scoreable_ratio = scoreable_ms / duration
-            value, reasons = summary['score'], summary['reason_codes']
-        elif self.config.scoring_method == 'huang':
-            # 이미 계산된 이동 점수를 다시 평균하지 않고 같은 구간의 P/Y를 결합한다.
-            summary = huang_window_score(self._segments, start, end, self.config)
-            observable_ms = summary['observable_duration_ms']
-            scoreable_ms = summary['scoreable_duration_ms']
-            observable_ratio = observable_ms / duration
-            scoreable_ratio = scoreable_ms / duration
-            value, reasons = summary['score'], summary['reason_codes']
-        elif self.config.scoring_method == 'gaussian':
-            # 실제 시간과 원시 상대각으로 한 번만 집계하고 runtime의 평균은 재평균하지 않는다.
-            summary = gaussian_window_score(self._segments, start, end, self.config)
-            observable_ms = summary['observable_duration_ms']
-            scoreable_ms = summary['scoreable_duration_ms']
-            observable_ratio = observable_ms / duration
-            scoreable_ratio = scoreable_ms / duration
-            value, reasons = summary['score'], summary['reason_codes']
+        value, reasons = summary['score'], summary['reason_codes']
         quality = 'not_observable' if value is None else ('partial' if partial or scoreable_ms < duration else 'valid')
         payload = {
             'model_output': None if value is None else {
@@ -143,7 +112,7 @@ class WindowPublisher:
         }
         if self.config.scoring_method == 'gaussian':
             payload['model_extensions'][self.model_id].update({
-                'version': 'angle-time-window-3' if self.config.gaussian_angle_mode == 'softened' else 'angle-time-window-2',
+                'version': 'angle-time-window-4',
                 'angle_mode': self.config.gaussian_angle_mode,
                 'pitch_deadband_degrees': self.config.gaussian_pitch_deadband_degrees,
                 'pitch_small_angle_scale': self.config.gaussian_pitch_small_angle_scale,
@@ -155,6 +124,9 @@ class WindowPublisher:
                 'sigma_yaw_degrees': self.config.gaussian_sigma_yaw_degrees,
                 'down_transition_pitch_degrees': self.config.gaussian_down_transition_pitch_degrees,
                 'down_confirm_seconds': self.config.gaussian_down_confirm_seconds,
+                'down_grace_seconds': self.config.down_grace_seconds,
+                'down_decay_seconds': self.config.down_decay_seconds,
+                'down_penalty': self.config.down_penalty,
                 'window_seconds': self.config.window_seconds,
                 'temporal_weighting': 'linear-time-integral',
                 'max_observation_hold_seconds': self.config.max_observation_hold_seconds,
@@ -163,9 +135,24 @@ class WindowPublisher:
             })
         if callable(aggregate):
             payload['model_extensions'][self.model_id].update({
-                'aggregation': 'reidentified-person-time-weighted-gaussian',
+                'aggregation': getattr(self.runtime, 'aggregation_label', 'reidentified-person-time-weighted-gaussian'),
                 'scoreable_person_duration_ms': summary['scoreable_person_duration_ms'],
             })
+        if getattr(self.runtime, 'eye_fusion', False):
+            payload['model_extensions'][self.model_id].update({
+                'version': 'head-eye-time-window-1',
+                'head_weight': 0.8, 'eye_weight': 0.2,
+                'eye_window_seconds': 10, 'eye_min_coverage': 0.7,
+                'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
+                'eye_score_policy': 'prolonged_bilateral_closure_observable_ratio',
+            })
+            if getattr(self.runtime, 'eye_fusion', False):
+                payload['model_extensions'][self.model_id].update({
+                    'head_weight': 0.8, 'eye_weight': 0.2,
+                    'eye_window_seconds': 10, 'eye_min_coverage': 0.7,
+                    'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
+                    'eye_score_policy': 'prolonged_bilateral_closure_observable_ratio',
+                })
         event = self.service.make_event(
             self.session_id, 'engagement_window', payload, start, end, 'model',
             quality_status=quality, reason_codes=reasons,

@@ -7,7 +7,7 @@
 ## 처리 흐름
 
 ```text
-LoopbackCapture (SoundCard WASAPI 루프백: 스피커로 재생되는 소리)   ┐ 100ms 청크
+LoopbackCapture (선택 앱 프로세스 트리 WASAPI 루프백)             ┐ 100ms 청크
 MicrophoneCapture (sounddevice: 마이크)                            ┘ 둘 중 하나 선택
   ↓ AudioChunk (메모리 전용) + ChunkClock: 세션 공통 시계 기준 start_ms/end_ms
 SherpaTranscriber
@@ -15,7 +15,8 @@ SherpaTranscriber
   ├─ 텍스트 변경 시 transcript_partial (revision 증가)
   ├─ 엔드포인트 감지 시 transcript_final (is_edited: false)
   │    구간 = 토큰 타임스탬프를 세션 시각으로 변환한 추정값
-  └─ 청크 공백 > max_gap_ms 이면 현재 발화 확정 + analysis_status(audio_unavailable)
+  └─ 청크 번호가 빠지면(캡처가 청크를 버림) 현재 발화 확정 + analysis_status(audio_unavailable)
+     번호가 이어지면 시각이 건너뛰어도(콜백 지연) 같은 발화로 이어서 인식
   ↓ service.make_event() → service.receive_event()
 IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON에 저장)
 ```
@@ -24,12 +25,13 @@ IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON�
 
 | 파일 | 내용 |
 |---|---|
-| [config.py](config.py) | `SttConfig`: 모델 경로·ID·버전, 샘플레이트, 엔드포인트 규칙, 공백 허용치. `public_info()`는 로컬 경로를 뺀 공개 설정 |
+| [config.py](config.py) | `SttConfig`: 모델 경로·ID·버전, 샘플레이트, 엔드포인트 규칙, 과거 시각 허용치, 자동 음량 조절. `public_info()`는 로컬 경로를 뺀 공개 설정 |
 | [audio.py](audio.py) | 계약 5절 `AudioChunk`, mono float32 변환, 세션 시계 기준 청크 시각 `ChunkClock` |
 | [engine.py](engine.py) | `SherpaEngine`: 모델 파일 탐색, 인식기 생성, 토큰 기반 한국어 띄어쓰기 복원과 토큰 구간 |
 | [download_model.py](download_model.py) | 기본 한국어 모델을 `sherpa_stt/models/`에 내려받기 |
 | [transcriber.py](transcriber.py) | `SherpaTranscriber`: 청크 → 전사 이벤트, 상태 이벤트 |
-| [loopback.py](loopback.py) | `LoopbackCapture`: 출력 장치 루프백 → `AudioChunk` 큐 |
+| [loopback.py](loopback.py) | `LoopbackCapture`: 선택 프로세스 또는 출력 장치 루프백 → `AudioChunk` 큐 |
+| [native/process_loopback.cpp](native/process_loopback.cpp) | Windows WASAPI 프로세스 트리 루프백 도우미. PCM은 stdout으로만 전달하고 파일로 쓰지 않음 |
 | [microphone.py](microphone.py) | `MicrophoneCapture`: 마이크 → `AudioChunk` 큐 |
 | [runner.py](runner.py) | `LiveTranscription`: 입력·전사 스레드 실행, 시작/종료 상태 이벤트, 실시간 계측 `stats()` |
 | [demo.py](demo.py) | 콘솔 데모(루프백·마이크·WAV) |
@@ -46,7 +48,7 @@ IntegrationService (부분 전사는 메모리만, 확정 전사는 세션 JSON�
 
 - `provenance.module`은 `speech`, `model_id`/`model_version`은 `SttConfig` 값입니다.
 - `analysis_status.payload.component`는 `stt`입니다. 모델 로드 실패는 `unavailable` + `model_not_configured`, 입력 장치 실패·중단이나 청크 공백은 `audio_unavailable`로 알립니다.
-- 청크 번호가 건너뛰면 500ms보다 짧은 누락도 기존 발화를 마감하고 상태 이벤트로 알립니다. 드라이버 오버플로 또는 불연속 경고도 상태 이벤트로 남깁니다. 청크 처리 지연이 2초를 넘거나 다시 해소되면 상태 이벤트를 생성합니다. 길이와 구간을 알 수 없는 장치 내부 누락까지 정확히 복원할 수는 없습니다.
+- 청크 번호가 건너뛰면 짧은 누락도 기존 발화를 마감하고 상태 이벤트로 알립니다. 번호가 이어지는 청크는 시각만 건너뛰어도 누락으로 보지 않습니다. 영상 분석 부하로 오디오 콜백이 늦게·몰려서 오면 시각이 건너뛰는데, 이를 누락으로 보고 발화를 끊으면 "지하철에서 다리" / "를 벌리고"처럼 문장이 조각났습니다(지연 0.8초 이상에서 5회 중 3~5회, 시뮬레이션 실측). 드라이버 오버플로 또는 불연속 경고도 상태 이벤트로 남깁니다. 청크 처리 지연이 2초를 넘거나 다시 해소되면 상태 이벤트를 생성합니다. 길이와 구간을 알 수 없는 장치 내부 누락까지 정확히 복원할 수는 없습니다.
 - 루프백은 재생되는 소리가 없을 때도 0으로 채운 블록이 연속으로 들어옵니다(실측). 이것은 실제 출력이 무음인 상태입니다. 장치 누락을 무음으로 위장하는 것이 아닙니다.
 - 전사 텍스트는 sherpa-onnx 결과의 `text`가 아니라 토큰을 이어 붙여 만듭니다. `text`는 한글 사이 공백을 지우기 때문입니다(`주민등록증을보여주시겠어요?` → `주민등록증을 보여 주시겠어요?`). 직전 발화에서 넘어온 앞쪽 구두점 토큰은 버립니다.
 - 확정 전사의 `revision`은 같은 발화의 마지막 부분 전사 `revision`과 같습니다.
@@ -85,6 +87,22 @@ sherpa_stt/models/sherpa-onnx-streaming-zipformer-korean-2024-06-16/
 
 저장소 루트에서 실행합니다.
 
+### 기본 입력·모델 분리 테스트
+
+전사만 표시하는 최소 데모는 `video_recognition/.venv/Scripts/python.exe -m sherpa_stt.simple_demo --source loopback`으로 실행합니다. 마이크는 `--source microphone`입니다. 자동 음량 조절과 통합 이벤트 없이 입력을 모델에 전달하며 모델 원본 텍스트와 엔드포인트 결과를 콘솔에 표시합니다. 캡처 누락을 피하기 위해 큐를 사용하고 큐 손실이 있으면 인식을 리셋합니다. 종료 시 남은 큐는 처리하지 않습니다.
+
+`basic_demo`는 기존 STT의 청크 큐, 자동 음량 조절, 통합 이벤트·토큰 재조합을 우회하여 입력을 sherpa 모델로 전달하는 독립 진단입니다. 마이크는 sounddevice, 출력 루프백은 SoundCard를 사용합니다. 스테레오는 모노 평균으로 변환하며 장치에서 16kHz를 요청합니다. WAV는 16비트 PCM을 float로 변환하고 다른 샘플레이트는 sherpa가 내부 변환합니다. 모델 원본 `text`는 한국어 띄어쓰기가 부족할 수 있습니다.
+
+```powershell
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.basic_demo --source microphone
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.basic_demo --source loopback
+video_recognition/.venv/Scripts/python.exe -m sherpa_stt.basic_demo --wav sherpa_stt/models/sherpa-onnx-streaming-zipformer-korean-2024-06-16/test_wavs/0.wav
+```
+
+실시간 입력에서는 캡처와 추론을 별도 스레드로 실행하며 최대 10초의 메모리 큐를 사용합니다. 2초마다 해당 시점 오디오 블록의 RMS와 큐 길이, 캡처 후 대기 시간, 평균 처리 RTF, 버린 블록, 장치 불연속 횟수를 출력합니다. RTF는 모델 입력·디코딩·결과 조회 시간 / 처리한 음성 길이이며 전체 지연은 아닙니다. RMS가 계속 0에 가까우면 입력 경로 또는 음량을 확인하되, RMS만으로 무음과 수신 실패를 확정할 수는 없습니다. 큐가 가득 차면 새 블록을 버리고 누락이 확인된 다음 구간부터 모델을 리셋합니다. 장치 불연속은 별도로 표시하지만 해당 오디오를 복구하지는 못합니다. 종료는 Ctrl+C이며 전사는 콘솔에만 표시하고 종료 시 큐에 남은 블록은 처리하지 않습니다. 운영용이 아닌 진단 데모입니다.
+
+### 기존 통합 경로 데모
+
 ```powershell
 # 출력 장치(루프백) 목록 / 마이크 목록
 video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo --list-devices
@@ -99,17 +117,22 @@ video_recognition/.venv/Scripts/python.exe -m sherpa_stt.demo --wav sherpa_stt/m
 
 종료하면 실시간 계측(`rtf`, 청크 처리 지연 `lag_ms_*`)을 출력합니다. 이 값은 세션 JSON에 저장하지 않습니다.
 
+콘솔에는 갱신되는 `[인식 중]` 부분 전사와 발화 종료 시 `[확정 전사]`를 별도 줄로 표시하고, 확정된 발화만 `[확정 전체 전사]`에 이어 붙입니다. 부분 전사는 같은 발화가 여러 번 표시될 수 있습니다. 이는 sherpa 자체 발화 종료 기준을 사용하는 별도 데모이며 faster-whisper의 롤링 창 후처리와 다릅니다. 기본적으로 전사 텍스트를 파일에 저장하지 않습니다.
+
 영상 분석과 같은 세션에 붙이는 코드:
 
 ```python
 from sherpa_stt.config import SttConfig
 from sherpa_stt.engine import SherpaEngine
 from sherpa_stt.runner import LiveTranscription
+from video_recognition.window_capture import get_window_process_id
 
 config = SttConfig()                 # 기본: sherpa_stt/models/ 아래 한국어 모델
 engine = SherpaEngine(config)        # 약 5초. 세션 시작 전에 불러 둔다
 # service, sid = 영상 분석이 쓰는 IntegrationService와 세션 ID
-live = LiveTranscription(service, sid, config, source="loopback", engine=engine)
+pid = get_window_process_id(hwnd)    # 선택한 Windows 창 핸들
+live = LiveTranscription(service, sid, config, source="loopback", engine=engine,
+                         target_process_id=pid)
 live.start()
 ...
 live.stop()                          # 반드시 service.stop_session(sid) 보다 먼저
@@ -142,10 +165,17 @@ service.stop_session(sid)
 - 확정 이벤트 생성 시각(`created_ms`)은 재생 종료 후 약 1.2~2.0초입니다. 대부분 엔드포인트 무음 대기(1.2초)입니다.
 - 루프백 시험 4회 중 1회는 시작 직후 STT가 `unavailable`로 멈췄습니다. 이후 재현되지 않았고 원인은 확인하지 못했습니다.
 
+**3) 프로세스 루프백 개발 확인**: 2026-11-13, Windows 11 build 26300에서 MSVC로 도우미를 빌드하고 테스트 음성을 재생한 Python 프로세스 PID만 지정했습니다. 3초 캡처에서 48,000 샘플, 입력 RMS -11.4 dBFS, 불연속 0회를 확인했습니다. STT 연결 실행은 RTF 0.065, 처리 지연 p95 172ms, 버린 청크 0개였고 전사 결과는 `배는 괜찮은 척할이라고? 에쓰는 것 같았다`였습니다. **프로세스 필터링과 STT 연결은 동작했지만 이 샘플의 전사 품질은 좋지 않았습니다.** 실제 Zoom 창과 오디오를 내는 브라우저 자식 프로세스는 별도 확인이 필요합니다.
+
+## 프로세스 오디오 입력 실험
+
+- 프런트엔드는 기본 출력 장치 전체를 받습니다. 아래 프로세스 루프백은 별도 코드·콘솔 실험에만 남아 있으며 프런트에서는 사용하지 않습니다.
+- Windows 오디오 API는 창 핸들이 아니라 프로세스 ID를 필터링합니다. 같은 앱 프로세스 안의 다른 창 소리도 함께 들어올 수 있고, 브라우저처럼 오디오를 별도 프로세스에서 내보내는 앱은 자식 프로세스 트리에 포함되는지에 따라 결과가 달라질 수 있습니다. 대상 프로세스에서 출력 중인 오디오 스트림이 없으면 무음이 들어옵니다.
+- 이 기능에는 Windows 10 build 20348 이상과 MSVC x64 빌드 도구가 필요합니다. 최초 한 번 `powershell -ExecutionPolicy Bypass -File sherpa_stt/native/build_process_loopback.ps1`을 실행해 도우미를 빌드합니다. 기본 출력 장치 루프백을 사용하는 콘솔 데모에는 기존 SoundCard 경로를 유지합니다.
+- 루프백은 선택 앱이 재생하는 소리만 받으므로 교수자 마이크는 포함하지 않습니다. 교수자 발화를 전사하려면 마이크 입력을 선택해야 합니다.
+
 ## 한계
 
-- **선택한 창의 소리만 분리하지 않습니다.** 루프백은 선택한 출력 장치로 나가는 모든 소리(알림음, 다른 앱 소리 포함)를 받습니다. 창 단위 분리에는 Windows 프로세스 루프백 API가 필요합니다.
-- 루프백은 스피커로 재생되는 소리만 받습니다. 교수자 본인의 목소리는 수업 프로그램이 되돌려 재생하지 않으므로 대개 루프백에 들어가지 않습니다. 교수자 발화를 전사하려면 `source="microphone"`을 쓰거나 두 입력을 함께 쓰는 방식을 정해야 합니다.
 - 실제 수업 프로그램(Zoom 등) 음성, 장시간(10분 이상) 동작, 출력 장치 변경·블루투스 전환은 확인하지 않았습니다.
 
 ## 테스트

@@ -12,7 +12,7 @@ SOURCES = {"loopback", "microphone"}
 class LiveTranscription:
     """세션 하나의 실시간 전사를 별도 스레드에서 실행한다.
 
-    - `source="loopback"`: 출력 장치로 재생되는 소리(수업 프로그램·영상 음성)
+    - `source="loopback"`: `target_process_id`가 있으면 해당 프로세스 트리, 없으면 기본 출력 장치 소리
     - `source="microphone"`: 마이크 입력
     청크 시각은 영상 분석과 같은 `service.elapsed_ms(session_id)` 기준이다.
 
@@ -20,7 +20,8 @@ class LiveTranscription:
     `stop()`이 마지막 발화를 확정하므로 세션 종료보다 먼저 호출한다.
     """
 
-    def __init__(self, service, session_id, config, source="loopback", device=None, engine=None, capture=None):
+    def __init__(self, service, session_id, config, source="loopback", device=None, engine=None,
+                 capture=None, target_process_id=None):
         if source not in SOURCES:
             raise ValueError(f"source는 {sorted(SOURCES)} 중 하나여야 합니다")
         self._service = service
@@ -28,6 +29,7 @@ class LiveTranscription:
         self._config = config
         self.source = source
         self._device = device
+        self._target_process_id = target_process_id
         self._engine = engine
         self._capture = capture
         self._transcriber = None
@@ -67,7 +69,9 @@ class LiveTranscription:
         def pct(p):
             return lags[min(len(lags) - 1, int(len(lags) * p))] if lags else None
         reader = getattr(self._transcriber, "level_info", None)
-        level = reader() if reader is not None else {"input_level_dbfs": None, "gain_db": None}
+        level = reader() if reader is not None else {
+            "input_level_dbfs": None, "capture_level_dbfs": None, "gain_db": None,
+        }
         return {
             # 최근 말소리 크기(원본)와 자동 음량 조절 이득. 약 -40 dBFS보다 작으면 원본만으로는 인식이 어렵다.
             **level,
@@ -90,7 +94,8 @@ class LiveTranscription:
         if self.source == "loopback":
             from .loopback import LoopbackCapture
             return LoopbackCapture(self._service, self._session_id, self._config.sample_rate_hz,
-                                   self._config.chunk_ms, speaker=self._device)
+                                   self._config.chunk_ms, speaker=self._device,
+                                   process_id=self._target_process_id)
         from .microphone import MicrophoneCapture
         return MicrophoneCapture(self._service, self._session_id, self._config.sample_rate_hz,
                                  self._config.chunk_ms, self._device)

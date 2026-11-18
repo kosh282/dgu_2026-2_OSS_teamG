@@ -24,9 +24,9 @@
 - `frontend/app.py`: Streamlit 화면과 사용자 동작
 - `frontend/live_session.py`: 선택 창, 수업 세션, 분석 스레드와 개발자 프리뷰 연결
 - `video_recognition/window_capture.py`: Windows 창 캡처
-- `video_recognition/integrated_analysis.py`: 프레임 샘플링, 얼굴·상체 분석, 후처리, `FeatureWindow` 생성
-- `video_recognition/face_analysis.py`, `pose_analysis.py`, `face_postprocessing.py`, `head_calibration.py`: 영상 특징과 임시 보정 상태
-- `engagement_model/`: 특징 어댑터, 규칙 기반 실험 점수와 상태 런타임
+- `video_recognition/integrated_analysis.py`: 프레임 샘플링, 얼굴 분석, 후처리, `FeatureWindow` 생성
+- `video_recognition/face_analysis.py`, `face_postprocessing.py`, `head_calibration.py`: 영상 특징과 임시 보정 상태
+- `engagement_model/`: 특징 어댑터, Gaussian 실험 점수와 상태 런타임
 - `integration/contracts.py`, `integration/service.py`: 이벤트 계약 검증, 공통 세션 시계, 이벤트와 세션 JSON 관리
 - `video_recognition/webcam_test.py`: 웹캠 데모 및 프런트 개발자 모드가 공유하는 출력기
 

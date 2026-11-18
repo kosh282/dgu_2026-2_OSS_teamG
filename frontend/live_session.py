@@ -3,20 +3,17 @@ import threading
 import time
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
 import cv2
 from integration import IntegrationService
-from engagement_model.gaussian import GaussianRuntime
 from engagement_model.config import ModelConfig
-from engagement_model.multi_face import MultiFaceGaussianRuntime
 from engagement_model.window_publisher import WindowPublisher
 from video_recognition.integrated_analysis import VisionPipeline
 from video_recognition.window_capture import WindowCapture, FrameNotAvailable
 from video_recognition.face_analysis import FaceAnalyzer
-from video_recognition.pose_analysis import PoseAnalyzer
 from video_recognition.face_reidentification import FaceReidentifier
 from video_recognition.preview import PreviewCapture, LandmarkOverlaySmoother
-from engagement_model.webcam_demo import PoseInputDiagnostics, render_panel
+from engagement_model.webcam_demo import PoseInputDiagnostics
+from video_recognition.group_developer_view import group_model_identity, make_group_runtime, render_group_panel
 
 
 # 별도 웹캠을 열지 않고, 실제 분석기에 전달한 프레임을 그대로 보여 주는 창 이름이다.
@@ -37,8 +34,12 @@ def _load_stt_engine(config):
     with _stt_engine_lock:
         engine = _stt_engines.get(config)
         if engine is None:
-            from sherpa_stt.engine import SherpaEngine
-            engine = _stt_engines[config] = SherpaEngine(config)
+            from faster_whisper_stt.runner import WhisperConfig, load_whisper
+            if isinstance(config, WhisperConfig):
+                engine = _stt_engines[config] = load_whisper(config)
+            else:
+                from sherpa_stt.engine import SherpaEngine
+                engine = _stt_engines[config] = SherpaEngine(config)
         return engine
 
 
@@ -46,7 +47,7 @@ class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
     def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True,
-                 reidentification_enabled=False, recovery_root=None):
+                 reidentification_enabled=False, recovery_root=None, stt_model='sherpa', stt_hint_terms=()):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
@@ -62,6 +63,11 @@ class LiveSession:
         if self.video_enabled and hwnd is None:
             raise ValueError('영상 분석을 사용하려면 수업 창을 선택하세요.')
         self.audio_source = audio_source
+        if stt_model not in ('sherpa', 'whisper-base', 'whisper-small'):
+            raise ValueError('지원하지 않는 전사 모델입니다.')
+        self.stt_model = stt_model
+        # 강의 자료에서 고른 용어. faster-whisper 전사 힌트로만 쓰고 세션 JSON에는 넣지 않는다.
+        self.stt_hint_terms = tuple(stt_hint_terms or ())
         self.transcription = None
         self._stt_engine = None
         self._stt_startup_error = None
@@ -91,6 +97,7 @@ class LiveSession:
         self._model_retry_count = 0
         self._model_retry_at = None
         self._calibration_request = threading.Event()
+        self._calibration_target = None
         self._calibration_blocked = False
         self._calibration_window_start = None
         self.performance_monitor = None
@@ -106,8 +113,12 @@ class LiveSession:
         self._stt_engine = None
         if self.audio_source is not None:
             try:
-                from sherpa_stt.config import SttConfig
-                stt_config = SttConfig()
+                if self.stt_model == 'sherpa':
+                    from sherpa_stt.config import SttConfig
+                    stt_config = SttConfig()
+                else:
+                    from faster_whisper_stt.runner import WhisperConfig
+                    stt_config = WhisperConfig(model=self.stt_model.removeprefix('whisper-'))
                 # 수업 시계가 시작되기 전에 모델을 불러, 로드 시간 동안 수업 앞부분 음성을 놓치지 않게 한다.
                 # 실패하면 기존처럼 STT 작업이 스스로 로드를 시도하고 unavailable/재시작을 알린다.
                 self._stt_engine = _load_stt_engine(stt_config)
@@ -221,10 +232,13 @@ class LiveSession:
                         'stt': self.audio_source is not None, 'preview': preview},
             'components': {key: snapshot['status'].get(key) for key in ('vision', 'model', 'stt', 'assistant')},
             'video': {'result_age_ms': max(0, now-latest['start_ms']) if latest else None,
-                      'face_hz': sampling.get('actual_face_hz'), 'pose_hz': sampling.get('actual_pose_hz'),
+                      'face_hz': sampling.get('actual_face_hz'),
+                      'last_face_interval_ms': sampling.get('last_face_interval_ms'),
+                      'face_gap_over_300ms': sampling.get('face_gap_over_300ms'),
                       'source_size': sampling.get('source_size'), 'analysis_size': sampling.get('analysis_size')},
             'stt': {key: stats.get(key) for key in ('source', 'rtf', 'lag_ms_latest', 'lag_ms_p50',
-                'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities')},
+                'lag_ms_p95', 'lag_ms_max', 'queue_size', 'dropped_chunks', 'input_overflows', 'discontinuities',
+                'capture_level_dbfs', 'processed_windows', 'empty_windows')},
             'transcript': {'final_count': len(snapshot['transcripts']),
                            'partial_count': len(snapshot['partial_transcripts']),
                            'last_final_event_age_ms': event_age(snapshot['transcripts']),
@@ -276,17 +290,26 @@ class LiveSession:
             runner = None
             try:
                 if self._stt_config is None:
-                    from sherpa_stt.config import SttConfig
-                    self._stt_config = SttConfig()
-                from sherpa_stt.runner import LiveTranscription
+                    if self.stt_model == 'sherpa':
+                        from sherpa_stt.config import SttConfig
+                        self._stt_config = SttConfig()
+                    else:
+                        from faster_whisper_stt.runner import WhisperConfig
+                        self._stt_config = WhisperConfig(model=self.stt_model.removeprefix('whisper-'))
+                if self.stt_model == 'sherpa':
+                    from sherpa_stt.runner import LiveTranscription
+                else:
+                    from faster_whisper_stt.runner import WhisperLiveTranscription as LiveTranscription
                 if self._stt_engine is None:
                     # 시작 전 로드에 실패했으면 재시도마다 다시 불러 본다.
                     try:
                         self._stt_engine = _load_stt_engine(self._stt_config)
                     except Exception:
                         pass  # 아래 runner.start()가 같은 오류를 unavailable로 알린다.
+                # 오디오는 선택한 영상 창과 무관하게 기본 출력 장치 전체를 받는다.
+                extra = {} if self.stt_model == 'sherpa' else {'hint_terms': self.stt_hint_terms}
                 runner = LiveTranscription(self.service, self.sid, self._stt_config,
-                                           source=self.audio_source, engine=self._stt_engine)
+                                           source=self.audio_source, engine=self._stt_engine, **extra)
                 with self.lock:
                     self.transcription = runner
                 if not runner.start():
@@ -319,11 +342,10 @@ class LiveSession:
                 return
 
     def _run_vision(self):
-        face = pose = window = capture = pipeline = None
+        face = window = capture = pipeline = None
         try:
             # 좌표는 개발자 창을 위해서만 메모리에 유지하며 JSON 이벤트나 최종 세션에는 넣지 않는다.
-            face = FaceAnalyzer(show_landmarks=True)
-            pose = PoseAnalyzer(show_landmarks=True)
+            face = FaceAnalyzer(show_landmarks=True, pose_source='face-transform')
             window = WindowCapture(self.hwnd, expected_process_id=self._window_process_id)
             if self._window_process_id is None:
                 self._window_process_id = getattr(window, 'process_id', None)
@@ -339,21 +361,16 @@ class LiveSession:
                 self._start_model()
             pipeline = VisionPipeline(
                 self.service, self.sid, capture, face,
-                model_consumer=(self._consume_frame if self.reidentification_enabled else self._consume_model)
-                    if self.model_enabled or self.reidentification_enabled else None, pose_analyzer=pose,
+                model_consumer=self._consume_frame if self.model_enabled or self.reidentification_enabled else None,
             )
-            if self.model_enabled and not self.reidentification_enabled:
-                # 초기 기준은 첫 유효 얼굴을 기다려 수집한다. 정면 여부 자체는 확인할 수 없다.
-                pipeline.head_calibration.start()
-                if not self._model_failed:
-                    self._calibration_blocked = True
-                    self._calibration_window_start = None
-                    self._model_status('unavailable', '정면 기준을 자동 수집합니다.', ['baseline_unavailable'])
             while not self.stop_event.is_set():
                 self._maybe_restart_model()
                 if self._calibration_request.is_set():
-                    self._calibration_request.clear()
-                    self._recalibrate_pipeline(pipeline)
+                    with self.lock:
+                        target = self._calibration_target
+                        self._calibration_target = None
+                        self._calibration_request.clear()
+                    self._recalibrate_pipeline(pipeline, target)
                 with self.lock:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
@@ -361,7 +378,6 @@ class LiveSession:
                 capture.keep_frame = preview_enabled or self.reidentification_enabled
                 # 오버레이를 숨겨도 자세 입력 품질 진단에는 기준점이 필요하다.
                 face.show_landmarks = preview_enabled
-                pose.show_landmarks = preview_enabled and show_landmarks
                 try:
                     result = pipeline.process_one()
                 except FrameNotAvailable:
@@ -381,7 +397,7 @@ class LiveSession:
                     preview_enabled = self.developer_preview
                     show_landmarks = self._show_landmarks
                 if preview_enabled and capture.last_frame is not None:
-                    if self._render_developer_preview(capture.last_frame, result, face, pose, show_landmarks):
+                    if self._render_developer_preview(capture.last_frame, result, face, show_landmarks):
                         # 키 입력도 분석기와 같은 스레드에서 처리해 보정 상태를 안전하게 바꾼다.
                         self._recalibrate_pipeline(pipeline)
                 else:
@@ -396,7 +412,7 @@ class LiveSession:
                 if pipeline:
                     pipeline.close()
                 else:
-                    for resource in (capture or window, pose, face):
+                    for resource in (capture or window, face):
                         if resource:
                             resource.close()
             except Exception as exc:
@@ -421,21 +437,18 @@ class LiveSession:
                         self.reidentifier.close()
                 finally:
                     self.reidentifier = None
-                    if self.reidentification_enabled and self.model_runtime is not None:
+                    if self.model_runtime is not None:
                         self.model_runtime.reset()
                     with self.lock:
                         self._participant_rows = []
-                        if self.reidentification_enabled:
-                            self.model_latest = {}
+                        self.model_latest = {}
                     self._active_capture = self._active_face = None
 
     def _model_identity(self):
-        return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.1'}
-                if self.reidentification_enabled else
-                {'model_id': 'gaussian-head-direction', 'model_version': 'angle-time-0.3'})
+        return group_model_identity(self.reidentification_enabled)
 
     def _make_model(self):
-        return MultiFaceGaussianRuntime() if self.reidentification_enabled else GaussianRuntime()
+        return make_group_runtime(self.reidentification_enabled)
 
     def _consume_frame(self, feature):
         """같은 분석 프레임에서 ID를 갱신한 뒤 점수화한다. ID는 특징에 넣지 않는다."""
@@ -450,7 +463,8 @@ class LiveSession:
                 self.reidentifier.close()
                 self.reidentifier = None
         if self.model_enabled and self.model_runtime is not None:
-            self.model_runtime.update_identities(identities)
+            if self.reidentification_enabled:
+                self.model_runtime.update_identities(identities)
             self._consume_model(feature)
             if not self._model_failed:
                 with self.lock:
@@ -459,9 +473,17 @@ class LiveSession:
             if self.reidentification_error:
                 self._model_status('unavailable', self.reidentification_error, ['reidentification_unavailable'])
 
-    def _recalibrate_pipeline(self, pipeline):
-        if self.reidentification_enabled and self.model_runtime is not None:
+    def _recalibrate_pipeline(self, pipeline, identity=None):
+        if self.model_runtime is not None and callable(getattr(self.model_runtime, 'aggregate_window', None)):
             now = self.service.elapsed_ms(self.sid)
+            if identity is not None:
+                if self.model_runtime.recalibrate(identity):
+                    if self.window_publisher is not None:
+                        self.window_publisher.interrupt_sample(now)
+                    with self.lock:
+                        self._participant_rows = self.model_runtime.participants()
+                        self.model_latest = dict(self.model_runtime.latest)
+                return
             if self.window_publisher is not None:
                 self.window_publisher.finish(now)
             self.model_runtime.recalibrate()
@@ -477,7 +499,7 @@ class LiveSession:
         if self._model_failed:
             return
         try:
-            if self.reidentification_enabled:
+            if callable(getattr(self.model_runtime, 'aggregate_window', None)):
                 self.window_publisher(feature)
                 self._finish_calibration_window()
                 return
@@ -543,7 +565,7 @@ class LiveSession:
             self._calibration_blocked = False
             self._calibration_window_start = None
             self._model_status('running', 'ID별 Gaussian 실험 모델이 실행 중입니다.'
-                               if self.reidentification_enabled else '단일 얼굴 Gaussian 실험 모델이 실행 중입니다.')
+                               if self.reidentification_enabled else '임시 위치 트랙별 Gaussian 실험 모델이 실행 중입니다.')
         except Exception as exc:
             self._fail_model(exc)
 
@@ -578,14 +600,23 @@ class LiveSession:
         if self.thread.is_alive():
             raise RuntimeError('분석 작업을 종료하는 중입니다. 잠시 후 다시 시도하세요.')
 
-    def request_head_calibration(self):
+    def request_head_calibration(self, identity=None):
         """UI에서는 요청만 전달하고 실제 보정 객체는 영상 스레드에서 변경한다."""
         if not self.model_enabled or not self.is_running():
             return False
         with self.lock:
-            self.latest = None
+            if self._calibration_request.is_set():
+                return False
+            if identity is not None and not any(
+                    row.get('id') == identity and row.get('status') not in {'missing', 'not_observable', 'unavailable'}
+                    for row in self._participant_rows):
+                return False
+            self._calibration_target = identity
+            if identity is None:
+                self.latest = None
             self._calibration_request.set()
-        self._model_status('unavailable', '정면 기준 재보정 요청을 처리합니다.', ['baseline_unavailable'])
+        if identity is None:
+            self._model_status('unavailable', '정면 기준 재보정 요청을 처리합니다.', ['baseline_unavailable'])
         return True
 
     def calibration_state(self):
@@ -594,12 +625,12 @@ class LiveSession:
                 return {'status': 'collecting', 'last_reason_code': None, 'progress': 0.0}
             if not self.latest:
                 return {'status': 'starting', 'last_reason_code': None, 'progress': 0.0}
-            if self.reidentification_enabled:
-                rows = self._participant_rows
-                ready = sum(row.get('calibration_status') == 'ready' for row in rows
-                            if row.get('status') not in {'missing', 'not_observable', 'unavailable'})
-                return {'status': 'ready' if ready else 'collecting', 'last_reason_code': None,
-                        'progress': ready / len(rows) if rows else 0.0}
+            if self.model_enabled:
+                rows = [row for row in self._participant_rows
+                        if row.get('status') not in {'missing', 'not_observable', 'unavailable'}]
+                ready = sum(row.get('calibration_status') == 'ready' for row in rows)
+                return {'status': 'ready' if rows and ready == len(rows) else 'collecting',
+                        'last_reason_code': None, 'progress': ready / len(rows) if rows else 0.0}
             return dict(self.latest.get('features', {}).get('head_calibration_diagnostics') or {})
 
     def set_developer_preview(self, enabled):
@@ -625,7 +656,7 @@ class LiveSession:
         self._developer_windows_ready = False
         self._pose_input_diagnostics.reset()
 
-    def _render_developer_preview(self, image, result, face, pose, show_landmarks):
+    def _render_developer_preview(self, image, result, face, show_landmarks):
         """웹캠 모델 데모와 같은 패널에 현재 수업 프레임과 실제 모델 결과를 표시한다."""
         if image is None:
             return False
@@ -637,37 +668,13 @@ class LiveSession:
             runtime = (self.model_runtime if self.model_enabled and not self._model_failed
                        and not self._calibration_blocked else None)
             page = self._debug_face_page
-        # 모델이 비활성/오류이거나 다인 모드일 때 가짜 단일 얼굴 점수를 만들지 않는다.
-        latest = dict(runtime.latest) if runtime is not None else {
-            'score': None, 'current_direction_score': None,
-            'orientation_state': 'not_observable', 'status': 'unavailable',
-            'reason_codes': ['model_unavailable'],
-        }
-        config = runtime.config if runtime is not None else ModelConfig.gaussian()
-        sampler = getattr(runtime, 'sampling_diagnostics', None)
-        model = SimpleNamespace(latest=latest, config=config,
-            display_group=self.reidentification_enabled,
-            sampling_diagnostics=sampler if callable(sampler) else lambda: {
-                'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
-        quality = self._pose_input_diagnostics.observe(face.last_landmarks, image)
-        lines = ['POSE INPUT QUALITY (single face only)']
-        for key, value in quality.items():
-            lines.append(f'{key}: {value:.4f}' if value is not None else f'{key}: unavailable')
-        for index, item in enumerate(result.get('features', {}).get('faces', []), 1):
-            lines.append(f'FACE {index}:')
-            for label, field in [('raw', 'head_angles_degrees'),
-                                 ('smoothed', 'head_angles_smoothed_degrees'),
-                                 ('relative', 'head_angles_relative_degrees')]:
-                lines.append(f'{label} P/Y/R: {item.get(field) or "unavailable"}')
-        if self.reidentification_enabled:
-            lines.append('MULTI-FACE: aggregate score; angles are per detected face')
-        diagnostics = SimpleNamespace(lines=lines)
         frame = (self.reidentifier.render(image.copy(), result['features'].get('faces', []),
                  boxes=face.last_face_boxes) if self.reidentifier is not None else image)
-        panel = render_panel(frame, result, {'gaussian': model},
-            overlay_smoother=self._landmark_overlay_smoother, face=face, pose=pose,
-            show_overlay=show_landmarks, primary='gaussian', debug=True,
-            diagnostics=diagnostics, debug_page=page, live=True)
+        # 전체 파이프라인의 단일 얼굴 보정 상태 대신 실제 다인 런타임의 보정 상태를 표시한다.
+        calibration = self.calibration_state() if self.model_enabled else {}
+        panel = render_group_panel(frame, result, face, runtime, self._pose_input_diagnostics,
+            self._landmark_overlay_smoother, show_overlay=show_landmarks, page=page,
+            calibration=calibration, model_enabled=self.model_enabled)
         cv2.imshow(DEBUG_INFO_WINDOW, panel)
         key = cv2.waitKey(1) & 0xFF
         with self.lock:
