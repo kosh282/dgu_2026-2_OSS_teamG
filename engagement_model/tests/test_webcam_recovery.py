@@ -193,18 +193,16 @@ class WebcamRecoveryTests(unittest.TestCase):
         np.testing.assert_array_equal(first, returned)
         self.assertFalse(np.any(frame))
 
-    def test_collecting_gap_still_restarts_and_team_calibration_is_unchanged(self):
-        calibration = WebcamHeadCalibration()
-        calibration.start()
-        calibration.update([face()], 0)
-        calibration.update([], 100)
-        self.assertEqual(calibration.samples, [])
-        original = HeadCalibration(duration_ms=100, min_samples=2)
-        original.start()
-        original.update([face()], 0)
-        original.update([face()], 100)
-        original.update([], 200)
-        self.assertIsNone(original.baseline)
+    def test_collecting_keeps_samples_for_brief_loss_but_restarts_after_long_gap(self):
+        for calibration in (WebcamHeadCalibration(duration_ms=300, min_samples=4),
+                            HeadCalibration(duration_ms=300, min_samples=4)):
+            calibration.start()
+            calibration.update([face()], 0)
+            calibration.update([], 100)
+            self.assertEqual(len(calibration.samples), 1)
+            calibration.update([face()], 1200)
+            self.assertEqual(len(calibration.samples), 1)
+            self.assertEqual(calibration.last_reason_code, 'calibration_frame_gap')
 
     def test_normal_panel_explains_recalibration(self):
         feature = {'features': {'head_calibration_status': 'waiting',

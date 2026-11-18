@@ -10,7 +10,7 @@ def group_model_identity(reidentification_enabled=False):
     """실제 생성 모델과 세션 설정·상태 이벤트가 같은 버전을 사용한다."""
     return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.5-head'}
             if reidentification_enabled else
-            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.5-head'})
+            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.6-head'})
 
 
 def make_group_runtime(reidentification_enabled=False):

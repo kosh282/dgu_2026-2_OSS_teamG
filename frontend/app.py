@@ -633,7 +633,8 @@ def live_page():
                             'ready':'정면 기준 수집 완료'}.get(state,'정면 기준 확인 중')
                         st.caption(calibration_text,help='정면을 약 3초 유지해 주세요.' if state!='ready' else None,
                                    **caption_options)
-                        st.button('정면 기준 재보정',disabled=not running,key='recalibrate-head',on_click=calibrate)
+                        st.button('정면 기준 재보정',disabled=not running,key='recalibrate-head',on_click=calibrate,
+                                  help='모든 대상의 기준과 새 점수 구간을 다시 수집합니다. 한 명만 문제라면 분석 상세 상태에서 해당 대상만 재보정하세요.')
                     else:
                         st.caption('영상·실험 점수 사용 안 함',**caption_options)
                 if value is None:

@@ -96,8 +96,11 @@ class HeadCalibration:
             if self.status == "ready":
                 self.invalidate(reason)
             elif self.status == "collecting":
-                self.samples = []
-                self._first_sample_ms = None
+                # 여러 얼굴은 기준 대상이 바뀌었을 수 있어 표본을 폐기한다.
+                # 그 외 일시적 품질 저하는 다음 유효 표본이 1초 이상 늦을 때만 초기화한다.
+                if reason == "multiple_faces_detected":
+                    self.samples = []
+                    self._first_sample_ms = None
                 self.last_reason_code = reason
             return self.status
 
@@ -119,6 +122,8 @@ class HeadCalibration:
                     self.samples = []
                     self._first_sample_ms = None
                     self.last_reason_code = reset_reason
+            if not reset_reason:
+                self.last_reason_code = None
 
             if not self.samples:
                 self._first_sample_ms = capture_ms
