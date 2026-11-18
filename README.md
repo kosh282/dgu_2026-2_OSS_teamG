@@ -6,8 +6,8 @@
 
 - 프런트는 Streamlit 기반이며 수업 제목 입력, 창 연결, 수업 시작·종료, 메모, 세션 JSON 내보내기 기능을 제공합니다.
 - 영상 분석은 MediaPipe로 얼굴 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 실험 점수를 확인할 수 있습니다.
-- 머리 방향 Gaussian 실험 점수는 통합부의 구간 이벤트로 전달되며, 눈 관측 점수는 별도 참고값입니다. 재식별을 켜면 ID별, 끄면 단기 위치 트랙별 점수를 익명으로 집계합니다. 실제 다인 화면의 정확도는 검증 전이며 실험 점수는 최종 참여도 판단이 아닙니다.
-- sherpa-onnx 한국어 스트리밍 전사는 프런트에서 선택적으로 사용할 수 있습니다. 강의 조교(`ai_agent/`)는 낮은 실험 점수와 확정 전사를 바탕으로 실시간 제안을 만들며 PDF·PPTX 자료는 선택 사항입니다. 개인 API 키로 OpenAI·Gemini·Claude를 선택하면 자료 유무와 무관하게 AI를 활용하고, AI 검색어가 있으면 한국어 위키백과에서 제목과 링크를 검색합니다. 검색 결과의 내용과 정확성은 사용자가 확인해야 합니다. 실제 API 호출과 수업 자료에서의 정확도는 아직 검증하지 않았습니다. 자세한 내용은 [강의 조교 안내](ai_agent/README.md)를 참고하세요.
+- 머리 방향 80%와 눈 감김 20%를 결합한 실험 점수를 통합부 구간 이벤트로 전달합니다. 재식별을 켜면 ID별, 끄면 단기 위치 트랙별 점수를 익명으로 집계합니다. 관측 불가를 0점으로 처리하지 않으며 집중도·이해도 측정값으로 검증된 것은 아닙니다.
+- 프런트에서 sherpa-onnx 또는 faster-whisper 전사를 선택할 수 있습니다. 강의 조교는 확정 전사와 유효 점수를 바탕으로 제안하며 PDF·PPTX 자료와 개인 API 사용은 선택 사항입니다. 출처 내용과 제안의 적합성은 교수자가 확인합니다. 실제 수업 자료에서의 정확도는 평가가 필요합니다. 자세한 내용은 [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 - 창 단위 캡처는 현재 Windows용입니다. macOS에서는 창 선택·캡처 기능을 사용할 수 없습니다.
 
 ## 설치
@@ -23,6 +23,7 @@ video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/r
 video_recognition/.venv/Scripts/python.exe -m pip install -r frontend/requirements.txt
 video_recognition/.venv/Scripts/python.exe -m pip install -r sherpa_stt/requirements.txt
 video_recognition/.venv/Scripts/python.exe -m sherpa_stt.download_model
+video_recognition/.venv/Scripts/python.exe -m pip install -r faster_whisper_stt/requirements.txt
 # 강의 조교 자료 읽기
 video_recognition/.venv/Scripts/python.exe -m pip install -r ai_agent/requirements.txt
 ```
@@ -73,7 +74,7 @@ video_recognition/.venv/Scripts/python.exe -m streamlit run frontend/app.py
 video_recognition/.venv/Scripts/python.exe -B -m engagement_model.webcam_demo --single-model --debug
 ```
 
-카메라를 정면으로 보고 `C` 또는 화면의 보정 버튼을 누릅니다. `V`는 오버레이, `D`는 상세 진단, `[`·`]`는 페이지 전환, `Q`는 종료입니다. 현재 방향 점수와 10초 집계는 실험값입니다.
+카메라를 정면으로 보고 `C` 또는 화면의 보정 버튼을 누릅니다. `V`는 오버레이, `D`는 상세 진단, `[`·`]`는 페이지 전환, `Q`는 종료입니다. 현재 방향 점수와 5초 집계는 실험값입니다.
 
 좌우 비대칭을 조사하려면 아래 명령을 사용합니다. 정면을 보고 `C`를 누른 뒤 정면·왼쪽·정면·오른쪽·정면 순서로 화면의 이동 및 유지 안내를 따릅니다.
 

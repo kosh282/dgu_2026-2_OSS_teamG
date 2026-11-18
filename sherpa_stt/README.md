@@ -1,5 +1,7 @@
 # sherpa_stt — 한국어 스트리밍 STT (초기 구현)
 
+프런트에서 선택할 수 있는 로컬 스트리밍 전사입니다. 오디오 청크를 처리해 부분·확정 전사를 공통 세션으로 전달합니다. 한국어 모델 다운로드와 입력 장치가 필요하며 실제 수업 음성의 정확도·지연은 별도 평가해야 합니다. 전체 실행은 [루트 안내](../README.md)를 참고하세요.
+
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)의 스트리밍 transducer 모델로 수업 음성을 실시간 전사하고, 팀 데이터 계약 v0.1.0의 `transcript_partial`/`transcript_final` 이벤트를 [통합 서비스](../integration/service.py)에 발행하는 모듈입니다. 청크 시각은 영상 분석과 같은 세션 공통 시계(`service.elapsed_ms(session_id)`)를 사용합니다.
 
 > 상태: 프런트에서 선택적으로 연결할 수 있습니다. 라이브 세션은 출력 루프백 또는 마이크 중 하나를 선택해 같은 `IntegrationService`로 전사 이벤트를 전달합니다. 아래 "확인 결과"는 한 대의 Windows 11 PC, Python 3.13 임시 환경에서 확인한 것이며 저장소 기준 Python 3.14 환경과 실제 Zoom 수업에서의 검증은 별도입니다.
