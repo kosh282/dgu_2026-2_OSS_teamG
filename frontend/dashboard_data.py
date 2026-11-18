@@ -34,11 +34,33 @@ def live_score_unavailable_reason(model_status, model_enabled, stale, rows, late
 
 def score(event):
     payload = event['payload']
-    output = payload.get('model_output') or {}
-    value = payload.get('score', payload.get('engagement_score', output.get('value', output.get('score', output.get('engagement_score')))))
+    if 'model_output' in payload:
+        output = payload.get('model_output') or {}
+        value = output.get('value', output.get('score', output.get('engagement_score')))
+    else:
+        value = payload.get('score', payload.get('engagement_score'))
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
     return value if 0 <= value <= 100 and event['quality']['status'] != 'not_observable' else None
+
+
+def live_score_display(windows, now_ms, *, running, model_enabled, model_status, hold_ms=15000):
+    """관측 구간은 유지하고 최근 유효값만 제한 시간 동안 화면에 표시한다."""
+    if not windows:
+        return {'state': 'waiting', 'value': None, 'window': None, 'age_ms': None}
+    ordered = sorted(windows, key=lambda e: (e['end_ms'], e.get('created_ms') or 0, e.get('event_id', '')))
+    latest = ordered[-1]
+    age = now_ms - latest['end_ms']
+    current = score(latest)
+    if current is not None and 0 <= age <= 5000 and model_status not in ('unavailable', 'stopped') and running and model_enabled:
+        return {'state': 'current', 'value': current, 'window': latest, 'age_ms': age}
+    if running and model_enabled and model_status not in ('unavailable', 'stopped'):
+        for event in reversed(ordered):
+            value = score(event)
+            age = now_ms - event['end_ms']
+            if value is not None and 0 <= age <= hold_ms:
+                return {'state': 'held', 'value': value, 'window': event, 'age_ms': age}
+    return {'state': 'unavailable', 'value': None, 'window': latest, 'age_ms': None}
 
 
 def transcript_score_link(transcript, windows, *, max_age_ms=5000):
@@ -101,13 +123,13 @@ def unobservable_intervals(windows):
     return merged
 
 
-def live_chart_data(windows, notes, duration, *, start_ms=0):
+def live_chart_data(windows, notes, duration, *, start_ms=0, display_score=None):
     """실시간 차트의 시간 경계, 점수, 관측 불가 구간과 메모를 만든다."""
     start_ms = max(0, min(start_ms, duration))
     rows = [{'kind': 'bound', 'time': start_ms / 1000},
             {'kind': 'bound', 'time': max(duration / 1000, 1)}]
     ordered = sorted((e for e in windows if start_ms <= e['end_ms'] <= duration),
-                     key=lambda e: (e['start_ms'], e['end_ms'], e['event_id']))
+                     key=lambda e: (e['end_ms'], e.get('created_ms') or 0, e['event_id']))
     previous_end = None
     sequence = 0
     for event in ordered:
@@ -128,6 +150,13 @@ def live_chart_data(windows, notes, duration, *, start_ms=0):
         if start_ms <= event['start_ms'] <= duration:
             rows.append({'kind': 'note', 'time': event['start_ms'] / 1000, 'value': -12,
                          'time_label': clock(event['start_ms']), 'text': event['payload']['text']})
+    if display_score and display_score.get('state') == 'held' and display_score.get('value') is not None:
+        rows.append({'kind': 'held', 'time': duration / 1000, 'value': display_score['value'],
+                     'time_label': clock(duration),
+                     'text': f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전 측정"})
+    elif display_score and display_score.get('state') == 'current' and display_score.get('value') is not None:
+        rows.append({'kind': 'current', 'time': duration / 1000, 'value': display_score['value'],
+                     'time_label': clock(duration), 'text': '점수 카드와 같은 최신 구간 점수'})
     return pd.DataFrame(rows, columns=['kind', 'time', 'end', 'value', 'sequence', 'time_label', 'text'])
 
 
@@ -154,6 +183,18 @@ def live_chart_spec():
              'encoding': {'x': x, 'y': y, 'order': {'field': 'sequence', 'type': 'quantitative'},
                           'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
                                       {'field': 'value', 'type': 'quantitative', 'title': '실험 점수'}]}},
+            {'transform': [{'filter': "datum.kind === 'current'"}],
+             'mark': {'type': 'point', 'filled': True, 'color': '#2457d6', 'size': 90},
+             'encoding': {'x': x, 'y': y,
+                          'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '표시 시각'},
+                                      {'field': 'value', 'type': 'quantitative', 'title': '현재 표시 점수'},
+                                      {'field': 'text', 'type': 'nominal', 'title': '상태'}]}},
+            {'transform': [{'filter': "datum.kind === 'held'"}],
+             'mark': {'type': 'point', 'shape': 'diamond', 'filled': True, 'color': '#b26a00', 'size': 90},
+             'encoding': {'x': x, 'y': y,
+                          'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '표시 시각'},
+                                      {'field': 'value', 'type': 'quantitative', 'title': '이전 점수'},
+                                      {'field': 'text', 'type': 'nominal', 'title': '상태'}]}},
             {'transform': [{'filter': "datum.kind === 'note'"}],
              'mark': {'type': 'point', 'filled': True, 'color': '#1f2328', 'size': 49},
              'encoding': {'x': x, 'y': y,

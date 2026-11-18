@@ -39,6 +39,6 @@ class FrontendFaceTransformTests(unittest.TestCase):
             self.assertEqual(runtime.model_version, live._model_identity()['model_version'])
             self.assertEqual(runtime.model_id, live._model_identity()['model_id'])
             self.assertEqual(runtime.latest['model_version'], runtime.model_version)
-            self.assertFalse(runtime.eye_fusion)
+            self.assertTrue(runtime.eye_fusion)
 
 if __name__ == '__main__': unittest.main()

@@ -384,6 +384,7 @@ class LiveSession:
                     with self.lock:
                         for row in self._participant_rows:
                             row.update(status='not_observable', current_direction_score=None, score=None,
+                                       current_head_score=None, current_eye_score=None,
                                        reason_codes=['capture_unavailable'])
                     self._advance_model()
                     continue
@@ -707,6 +708,7 @@ class LiveSession:
         if stale:
             for row in rows:
                 row.update(status='not_observable', current_direction_score=None, score=None,
+                           current_head_score=None, current_eye_score=None,
                            reason_codes=['observation_unavailable'])
         return rows
 
