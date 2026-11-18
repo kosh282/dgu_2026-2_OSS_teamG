@@ -165,13 +165,15 @@ class ClaudeUnavailable(RuntimeError):
 
 def _safe_error_token(value):
     """제공자 오류의 짧은 식별자만 노출하고 임의의 응답 문구는 버린다."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
     if not isinstance(value, str):
         return None
     value = value.strip()
     return value[:80] if value and re.fullmatch(r'[A-Za-z0-9_.:/-]+', value) else None
 
 
-def _http_error_summary(provider, error):
+def _http_error_summary(provider, error, *, operation=None):
     details = []
     try:
         body = json.loads(error.read().decode('utf-8', errors='replace'))
@@ -192,8 +194,19 @@ def _http_error_summary(provider, error):
     if retry_after and retry_after.isdigit():
         details.append(f'{retry_after}초 후 재시도 안내')
     suffix = '; ' + ', '.join(details) if details else ''
-    return (f'{provider} API 요청 실패 (HTTP {error.code}{suffix}). '
-            '비밀 키와 응답 본문은 표시하지 않았습니다. 키 권한, 모델 접근, 결제·사용량 한도를 확인하세요.')
+    if error.code == 404:
+        action = '모델 ID와 해당 모델의 API 메서드 지원 여부를 확인하세요.'
+    elif error.code in {401, 403}:
+        action = '키 유효성, 프로젝트 및 키의 API 접근 권한을 확인하세요.'
+    elif error.code == 429:
+        action = '요청 제한 또는 프로젝트 할당량을 확인하세요.'
+    elif error.code == 400:
+        action = '요청 형식과 모델이 지원하는 기능을 확인하세요.'
+    else:
+        action = '제공자 API 상태와 오류 코드를 확인하세요.'
+    phase = f'{operation} ' if operation else ''
+    return (f'{provider} API {phase}실패 (HTTP {error.code}{suffix}). '
+            f'비밀 키와 응답 본문은 표시하지 않았습니다. {action}')
 
 
 def _connection_error_summary(provider, error):
@@ -356,7 +369,7 @@ class ClaudeWriter:
 
 PROVIDER_DEFAULT_MODELS = {
     'openai': 'gpt-5.4-nano',
-    'gemini': 'gemini-2.5-flash',
+    'gemini': 'gemini-3.5-flash-lite',
     'claude': CLAUDE_MODEL,
 }
 
@@ -380,9 +393,32 @@ class PersonalAPIWriter(ClaudeWriter):
 
     def check_connection(self):
         """수업 내용 없이 선택한 모델의 구조화 응답을 확인한다."""
+        if self.provider == 'gemini':
+            self._check_gemini_model()
         self._ask('Return a JSON object matching the requested schema.',
                   'Connection check only. Set choice to -1 and use empty strings.',
                   _SUGGEST_SCHEMA, 'low')
+
+    def _check_gemini_model(self):
+        """생성 호출 전에 선택 모델의 존재와 generateContent 지원을 확인한다."""
+        endpoint = ('https://generativelanguage.googleapis.com/v1beta/models/'
+                    + parse.quote(self._model, safe=''))
+        req = request.Request(endpoint, headers={'x-goog-api-key': self._api_key}, method='GET')
+        try:
+            with request.urlopen(req, timeout=30) as response:
+                model_info = json.loads(response.read().decode('utf-8'))
+        except urlerror.HTTPError as exc:
+            raise ClaudeUnavailable(_http_error_summary(self.provider, exc, operation='모델 조회')) from None
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise ClaudeUnavailable(_connection_error_summary(self.provider, exc)) from None
+        except (ValueError, TypeError, AttributeError):
+            raise ClaudeUnavailable('Gemini 모델 조회 응답을 해석할 수 없습니다.') from None
+        methods = model_info.get('supportedGenerationMethods') if isinstance(model_info, dict) else None
+        if isinstance(methods, list) and 'generateContent' not in methods:
+            listed = ', '.join(_safe_error_token(method) or 'unknown' for method in methods[:8]) or '없음'
+            raise ClaudeUnavailable(
+                f"Gemini 모델 '{self._model}'은 존재하지만 generateContent를 지원하지 않습니다 "
+                f'(지원 메서드: {listed}).')
 
     def _ask(self, system, content, schema, effort):
         headers = {'Content-Type': 'application/json'}
@@ -430,7 +466,8 @@ class PersonalAPIWriter(ClaudeWriter):
             _validate_response(data, schema)
             return data
         except urlerror.HTTPError as exc:
-            raise ClaudeUnavailable(_http_error_summary(self.provider, exc)) from None
+            operation = 'generateContent 요청' if self.provider == 'gemini' else None
+            raise ClaudeUnavailable(_http_error_summary(self.provider, exc, operation=operation)) from None
         except (urlerror.URLError, TimeoutError, OSError) as exc:
             raise ClaudeUnavailable(_connection_error_summary(self.provider, exc)) from None
         except (ValueError, TypeError, KeyError, AttributeError):
