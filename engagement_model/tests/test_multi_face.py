@@ -4,6 +4,7 @@ import math
 import unittest
 
 from engagement_model.multi_face import MultiFaceGaussianRuntime
+from engagement_model.config import ModelConfig
 from engagement_model.tests.test_runtime import feature_window
 
 
@@ -112,7 +113,7 @@ class MultiFaceTests(unittest.TestCase):
         self.assertLessEqual(len(runtime.participants()), 32)
 
     def test_anonymous_person_time_weighting_and_null(self):
-        runtime = MultiFaceGaussianRuntime()
+        runtime = MultiFaceGaussianRuntime(ModelConfig.gaussian(window_seconds=10))
         segments = [(0, 5000, True, 99, [(0, 0), (0, 60)]),
                     (5000, 10000, True, 0, [(0, 60)])]
         summary = runtime.aggregate_window(segments, 0, 10000)

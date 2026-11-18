@@ -9,7 +9,7 @@ import threading
 import time
 from uuid import uuid4, UUID
 
-from .contracts import SCHEMA_VERSION, EventValidationError, validate_event, _check_forbidden
+from .contracts import SCHEMA_VERSION, EventValidationError, validate_event, _check_forbidden, _utc
 
 
 class IntegrationError(Exception):
@@ -254,9 +254,10 @@ class IntegrationService:
             duration = session["duration_ms"]
             if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
                 raise ValueError
-            if not isinstance(session["title"], str) or not isinstance(session["started_at_utc"], str):
+            if not isinstance(session["title"], str) or not session["title"].strip():
                 raise ValueError
-            if not isinstance(config.get("config_version"), str) or not config["config_version"]:
+            _utc(session["started_at_utc"], "session.started_at_utc")
+            if not isinstance(config.get("config_version"), str) or not config["config_version"].strip():
                 raise ValueError
         except (KeyError, ValueError, TypeError, AttributeError):
             raise IntegrationError("세션 메타데이터가 올바르지 않습니다") from None
@@ -269,6 +270,8 @@ class IntegrationService:
                 raise IntegrationError("중복 이벤트 또는 저장할 수 없는 부분 전사가 있습니다")
             if event["end_ms"] > duration:
                 raise IntegrationError("이벤트가 저장된 수업 길이를 초과합니다")
+            if event["created_ms"] is not None and event["created_ms"] > duration:
+                raise IntegrationError("이벤트 생성 시각이 저장된 수업 길이를 초과합니다")
             if kind in {"transcript_final", "transcript_edited"}:
                 uid = event["payload"]["utterance_id"]
                 if uid in state["transcripts"]:

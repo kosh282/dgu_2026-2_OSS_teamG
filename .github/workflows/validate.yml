@@ -1,0 +1,37 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Run integration and contract tests
+        run: python -m unittest discover -s integration/tests -t . -v
+
+  application-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install declared application dependencies
+        run: python -m pip install -r video_recognition/requirements-integrated.txt -r frontend/requirements.txt
+      - name: Run model and frontend unit tests
+        run: |
+          python -m unittest discover -s engagement_model/tests -v
+          python -m unittest discover -s frontend/tests -v
+      - name: Run hardware-free vision regressions
+        run: |
+          python -m unittest video_recognition.test_window_enumeration video_recognition.test_layout_regions video_recognition.test_full_frame_schedule -v
+          python -m unittest discover -s experimental_vision -v

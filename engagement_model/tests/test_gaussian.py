@@ -49,8 +49,8 @@ class GaussianFormulaTests(unittest.TestCase):
                 li_liu_rank_average([bad])
 
     def test_time_kernel_matches_hand_integral_and_ignores_segmentation(self):
-        config = ModelConfig.gaussian()
-        # 직전 10초 중 오래된 5초는 100, 최근 5초는 Gaussian(0,60)점.
+        config = ModelConfig.gaussian(window_seconds=10)
+        # 설정한 10초 구간 중 오래된 5초는 100, 최근 5초는 Gaussian(0,60)점.
         rows = [(0, 5000, True, 0, (0, 0)), (5000, 10000, True, 100, (0, 60))]
         result = gaussian_window_score(rows, 0, 10000, config)
         expected = .25 * 100 + .75 * 100 * math.exp(-4.5)
@@ -59,7 +59,7 @@ class GaussianFormulaTests(unittest.TestCase):
         self.assertEqual(result, gaussian_window_score(split, 0, 10000, config))
 
     def test_none_is_excluded_and_observation_gate_is_preserved(self):
-        config = ModelConfig.gaussian()
+        config = ModelConfig.gaussian(window_seconds=10)
         result = gaussian_window_score([(0, 8000, True, None, (0, 0)),
                                         (8000, 10000, True, None, None)], 0, 10000, config)
         self.assertEqual(result['score'], 100)
@@ -70,9 +70,9 @@ class GaussianFormulaTests(unittest.TestCase):
 
 class GaussianRuntimeTests(unittest.TestCase):
 
-    def test_scores_and_observation_states_match_before_model_cleanup(self):
-        """삭제 작업 전 두 Gaussian 경로의 602개 출력과 대조한다."""
-        # 기존 출력 기준은 관측 유지 시간이 0.3초였던 설정에 대응한다.
+    def test_scores_and_observation_states_match_experimental_baseline(self):
+        """정해진 입력열에서 현재 실험 모델 출력 602개를 기준값과 대조한다."""
+        # 기준은 5초 구간, 점진적 아래 보기 감점, 0.3초 관측 유지 설정이다.
         config = ModelConfig.gaussian(max_observation_hold_seconds=0.3)
         models = [GaussianRuntime(config), GaussianRuntime(config, downward_policy=lambda f, r: (False, 'not_down'))]
         keys = ['score', 'current_direction_score', 'orientation_state', 'status', 'reason_codes', 'gaussian_observation', 'front_seconds', 'away_seconds', 'looking_down_seconds', 'eye_candidate']
@@ -84,7 +84,7 @@ class GaussianRuntimeTests(unittest.TestCase):
             rows.append([{key: result.get(key) for key in keys}
                          for result in (model(feature_window(ms, **options)) for model in models)])
         digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-        self.assertEqual(digest, 'f922bb95ca4bd929b7f6edc1fa440326daac49956fbb22cdf2bb2236e0458c37')
+        self.assertEqual(digest, 'aedce0b29a9b7f1c11b30e9bb8eebafcfa7c8ebde8cead03c3b1be8e7a01e9a6')
 
     def test_softening_improves_small_motion_without_changing_state_or_down_policy(self):
         for pitch, yaw in [(0, 10), (-5, 0), (5, 0), (0, 60), (12, 0), (20, 0)]:
@@ -183,8 +183,8 @@ class GaussianRuntimeTests(unittest.TestCase):
         self.assertEqual(event['payload']['model_output']['value'], 100)
         self.assertEqual(model.latest['score'], 100)
         ext = event['payload']['model_extensions'][model.model_id]
-        self.assertEqual(ext['scoreable_duration_ms'], 9000)
-        self.assertEqual(ext['observable_duration_ms'], 10000)
+        self.assertEqual(ext['scoreable_duration_ms'], 4000)
+        self.assertEqual(ext['observable_duration_ms'], 5000)
         self.assertNotIn('downward_status', event['payload'])
         service.stop_session(sid)
 
@@ -219,9 +219,9 @@ class GaussianRuntimeTests(unittest.TestCase):
         runtime = GaussianRuntime()
         self.run_frames(runtime, 0, 10000)
         down = self.run_frames(runtime, 10100, 30100, pitch=20)
-        self.assertEqual(down['current_direction_score'], 80.0)
+        self.assertEqual(down['current_direction_score'], 25.0)
         boundary = runtime(feature_window(30200, pitch=12))
-        self.assertEqual(boundary['current_direction_score'], 80.0)
+        self.assertEqual(boundary['current_direction_score'], 24.5)
         front = runtime(feature_window(30300))
         self.assertEqual(front['current_direction_score'], 100)
         self.assertIsNotNone(front['score'])
@@ -281,7 +281,7 @@ class GaussianPublisherTests(unittest.TestCase):
     def test_contract_uses_raw_gaussian_once_and_round_trips(self):
         with patch('integration.service.time.monotonic_ns', return_value=0):
             service = IntegrationService()
-            runtime = GaussianRuntime()
+            runtime = GaussianRuntime(ModelConfig.gaussian(window_seconds=10))
             sid = service.start_session('Gaussian', {'config_version': runtime.config.config_version,
                 'participation_model': {'model_id': runtime.model_id, 'model_version': runtime.model_version}})
             service.elapsed_ms = lambda sid: 20000
