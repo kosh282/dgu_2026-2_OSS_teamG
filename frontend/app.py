@@ -57,6 +57,7 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
   body:has(.st-key-page-title) [data-testid="stMain"] .block-container{padding-top:64px}
   .st-key-page-title{left:0;margin-left:0;margin-right:0}
 }
+body:has(.st-key-live-page-header) [data-testid="stMain"] .block-container{padding-top:64px}
 </style>''', unsafe_allow_html=True)
 
 
