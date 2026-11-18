@@ -119,9 +119,8 @@ def render_feature_panel(result, face_page=0, width=1200, model_result=None):
              f"{model_result.get('thresholds', {}).get('yaw_neutral_deadband_degrees', 2)}/"
              f"{model_result.get('thresholds', {}).get('yaw_small_angle_scale', 0.75)} through "
              f"{model_result.get('thresholds', {}).get('yaw_full_scale_start_degrees', 15)} deg; "
-             f"down grace/decay {model_result.get('thresholds', {}).get('down_grace_seconds', 5)}/"
-             f"{model_result.get('thresholds', {}).get('down_decay_seconds', 10)} s, max penalty "
-             f"{model_result.get('thresholds', {}).get('down_penalty', 20)}"),
+             f"down grace {model_result.get('thresholds', {}).get('down_grace_seconds', 5)} s, "
+             f"penalty {model_result.get('thresholds', {}).get('down_penalty_per_second', 5)} points/s"),
             (f"Model output: {score_text} | display_state={display_state} "
              f"| state={model_result.get('orientation_state', 'n/a')} "
              f"| status={model_result.get('status', 'n/a')} | reasons={reason_text}"),

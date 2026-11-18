@@ -4,6 +4,8 @@
 >
 > 참여도 평가 모델, 점수 척도, 입력 특징과 집계식은 미정입니다. 이 문서는 모듈 연결을 위한 공통 틀을 정하며, 모델 선택이나 점수의 타당성을 확정하지 않습니다. 팀 회의에서 변경사항을 합의하고 버전을 갱신하세요.
 
+현재 프런트는 5초 Gaussian 실험 집계와 아래 보기 감점 정책을 사용합니다. 이는 계약의 점수 척도나 품질 상태 변경을 뜻하지 않습니다. 구현의 모델별 확장과 검증은 `integration/contracts.py` 및 [모델 안내](../engagement_model/README.md)를 함께 확인하세요.
+
 ## 1. 목적과 사용법
 
 실시간 온라인 수업 창과 음성을 분석하는 팀의 각 파트가 같은 시간과 데이터 형식을 사용하기 위한 기준입니다. 아래 표에서 자신의 입력과 출력을 확인하고, [`examples/session.json`](examples/session.json)을 합성 데이터로 사용해 화면·저장·조교 연결을 시작할 수 있습니다. 이 문서는 프로그래밍 언어별 클래스 구현이나 최종 JSON Schema가 아니라 사람이 읽는 인터페이스 계약입니다.
@@ -137,7 +139,7 @@ flowchart LR
 `scoreable_person_duration_ms`는 점수화 가능한 사람·밀리초 합(2명을 각각10초 관측하면20000)이며,
 벽시계 구간 길이보다 클 수 있습니다. `observable_duration_ms`/`scoreable_duration_ms`와 그 비율은
 적어도 한 사람의 유효 관측/점수화가 있는 벽시계 시간입니다. 사람 수나 비율과 혼용하지 않습니다.
-그룹 점수는 각 유효한 얼굴의 현재 머리 점수 80%와 최근 10초 눈 관측 점수 20%를 결합한 뒤 최근성 시간 적분으로 가중한 실험값입니다. 양쪽 눈을 충분히 관측하지 못한 얼굴은 0점으로 넣지 않고 점수화 대상에서 제외합니다. 발행 설정에는 `head_weight`, `eye_weight`, `eye_window_seconds`, `eye_min_coverage`, `eye_closed_ear_threshold`, `eye_prolonged_seconds`, `eye_score_policy`를 기록합니다. 위치 기반 경로의 `scoreable_person_duration_ms`는 실제 사람 수가 아닌 점수화 가능한 위치 트랙·시간 합입니다. 이 확장은 검증 전 실험이며 전체 참여도나 사람 수를 의미하지 않습니다.
+그룹 점수는 각 유효한 얼굴의 같은 시각 머리 점수 80%와 눈 상태 점수 20%를 결합한 뒤 최근 5초를 시간 가중 집계한 실험값입니다. 눈을 관측하지 못한 얼굴은 0점으로 넣지 않고 해당 시점의 점수화 대상에서 제외합니다. 모델 확장에는 `head_weight`, `eye_weight`, `eye_window_seconds`, `eye_min_coverage`, `eye_closed_ear_threshold`, `eye_prolonged_seconds`, `eye_score_policy`, `eye_penalty_per_second`와 아래 보기 정책 `down_penalty_policy`, `down_penalty_per_second`를 기록합니다. 위치 기반 경로의 `scoreable_person_duration_ms`는 실제 사람 수가 아닌 점수화 가능한 위치 트랙·시간 합입니다. 이 확장은 검증 전 실험이며 전체 참여도나 사람 수를 의미하지 않습니다.
 ID 미확정·개인 보정 중·미검출·아래 보기 보류를 0점으로 넣지 않으며,
 ID·개인별 점수 표·보정 기준·원시 각도는 이벤트나 최종 JSON에 포함하지 않습니다.
 이 확장은 기존 선택 model_extensions 이름 공간 안에 있으며 최상위 스키마는 바꾸지 않습니다.

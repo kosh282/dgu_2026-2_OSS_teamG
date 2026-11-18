@@ -12,7 +12,7 @@ class EyeFusionGaussianRuntime(GaussianRuntime):
         self._fusion_start = None
         super().__init__(config, **kwargs)
         self.config = replace(self.config, config_version=self.config.config_version + '+eye-fusion')
-        self.model_version = 'angle-time-0.5+eye'
+        self.model_version = 'angle-time-0.6+eye-progressive'
         self.latest = self._empty_result('waiting_for_observation')
 
     def _reset_time_state(self, **kwargs):
@@ -34,7 +34,7 @@ class EyeFusionGaussianRuntime(GaussianRuntime):
             if end > before:
                 self._fusion_segments.append((before, end, observable, None, primitive))
         head = result.get('current_direction_score')
-        eye = (result.get('eye_candidate') or {}).get('eye_score')
+        eye = (result.get('eye_candidate') or {}).get('current_eye_score')
         combined = 0.8 * head + 0.2 * eye if head is not None and eye is not None else None
         primitive = (None, None, combined) if combined is not None else None
         observable = result.get('angles') is not None

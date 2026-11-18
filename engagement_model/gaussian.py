@@ -99,7 +99,7 @@ class GaussianRuntime(HeadOrientationState):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
-        self._eye_candidate = EyeCandidate(max_gap_ms=round(config.max_observation_hold_seconds * 1000))
+        self._eye_candidate = EyeCandidate(window_ms=round(config.window_seconds * 1000), max_gap_ms=round(config.max_observation_hold_seconds * 1000))
         super().__init__(config, **kwargs)
         self.model_id = 'gaussian-head-direction'
         self.model_version = 'angle-time-0.4'
@@ -190,10 +190,9 @@ class GaussianRuntime(HeadOrientationState):
             score_angles = gaussian_score_angles(HeadAngles(**angles), self.config)
             primitive = (score_angles.pitch, score_angles.yaw)
         elif down and self.downward_policy is None and self._down_start_score is not None:
-            # 직전 유효 점수에서 5초 유예 후 10초에 걸쳐 최대 20점 감소한다.
+            # 직전 점수에서 유예 후 초당 고정 점수만큼 감소한다.
             elapsed = max(0.0, self._down_seconds - self.config.down_grace_seconds)
-            decay = min(1.0, elapsed / self.config.down_decay_seconds)
-            adjusted = max(0.0, self._down_start_score - self.config.down_penalty * decay)
+            adjusted = max(0.0, self._down_start_score - self.config.down_penalty_per_second * elapsed)
             # 세 번째 원소는 방향각이 아닌 아래 보기 정책 점수다.
             primitive = (None, None, adjusted)
         result['gaussian_observation'] = primitive

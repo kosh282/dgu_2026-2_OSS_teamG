@@ -465,11 +465,11 @@ def save_yaw_diagnostic(report, rows, started_ms, directory=None):
     return path
 
 
-def model_lines(name, result):
+def model_lines(name, result, window_seconds=10):
     """실제 score만 표시하며 화면용 과거 점수를 현재 점수로 대체하지 않는다."""
     score = result.get('score')
     value = f'{score:.1f}/100' if score is not None else 'DEFERRED (no current score)'
-    label = '10s aggregate' if 'current_direction_score' in result else 'score'
+    label = f'{window_seconds:g}s aggregate' if 'current_direction_score' in result else 'score'
     lines = [f'{name} {label}: {value}',
              f"state={result.get('orientation_state')} | status={result.get('status')}",
              f"front={result.get('front_seconds', 0):.1f}s  away={result.get('away_seconds', 0):.1f}s  down={result.get('looking_down_seconds', 0):.1f}s"]
@@ -562,7 +562,7 @@ class GaussianDiagnostics:
         dominant = 'equal' if p_term == y_term else ('Pitch' if p_term > y_term else 'Yaw')
         self.lines.extend([
             f'USED P/Y: {pitch:.2f}/{yaw:.2f} deg (angle mode={config.gaussian_angle_mode})',
-            f"Current: {result['current_direction_score']:.1f}/100 | 10s: {result.get('score')}",
+            f"Current: {result['current_direction_score']:.1f}/100 | {config.window_seconds:g}s: {result.get('score')}",
             f'Exponent terms (P/sigmaP)^2={p_term:.3f}; (Y/sigmaY)^2={y_term:.3f}',
             f'Current attenuation: {dominant}; P/Y share=' +
             (f'{100*p_term/total:.1f}/{100*y_term/total:.1f}%' if total else '0/0% (neutral)'),
@@ -738,12 +738,13 @@ def panel_lines(feature, models, *, primary='gaussian', debug=False, diagnostics
         lines[0] += f" | {result['angle_estimator']}"
     if primary == 'gaussian':
         aggregate = result.get('score')
+        window = models[primary].config.window_seconds
         angles = result.get('source_angles')
         lines[2:2] = [
-            f'10s score: {aggregate:.1f}/100' if aggregate is not None else '10s score: UNAVAILABLE',
+            f'{window:g}s score: {aggregate:.1f}/100' if aggregate is not None else f'{window:g}s score: UNAVAILABLE',
             f"Relative P/Y: {angles['pitch']:.1f}/{angles['yaw']:.1f} deg" if angles else 'Relative P/Y: UNAVAILABLE',
             f'Sigma P/Y: {models[primary].config.gaussian_sigma_pitch_degrees:g}/{models[primary].config.gaussian_sigma_yaw_degrees:g} deg']
-        lines.append('Current = latest observation; 10s = history (not current).')
+        lines.append(f'Current = latest observation; {window:g}s = history (not current).')
         if current is None:
             lines.append('Current: DEFERRED (not zero, not previous score)')
             if result.get('downward_status'):
@@ -776,7 +777,7 @@ def panel_lines(feature, models, *, primary='gaussian', debug=False, diagnostics
         if diagnostics is not None:
             lines.extend(diagnostics.lines)
         for name, model in models.items():
-            lines.extend(model_lines(name, model.latest))
+            lines.extend(model_lines(name, model.latest, model.config.window_seconds))
             if model.config.scoring_method == 'gaussian':
                 sampling = model.sampling_diagnostics()
                 lines.append(f'Sigma P/Y: {model.config.gaussian_sigma_pitch_degrees}/{model.config.gaussian_sigma_yaw_degrees} deg (experimental)')
@@ -863,7 +864,9 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, show_overlay
     fused = bool(getattr(models[primary], 'eye_fusion', False))
     label(('GROUP CURRENT' if group else 'CURRENT COMBINED' if fused else 'CURRENT DIRECTION')
           if primary == 'gaussian' else 'MODEL SCORE', 660, 65)
-    label('10s AGGREGATE' if primary == 'gaussian' else 'AGGREGATE: N/A', 1030, 65)
+    window = models[primary].config.window_seconds
+    aggregate_label = f'{window:g}s INDIVIDUAL AVG' if group else f'{window:g}s AGGREGATE'
+    label(aggregate_label if primary == 'gaussian' else 'AGGREGATE: N/A', 1030, 65)
     label(_score_label(current), 660, 125, 1.65, (245, 245, 245), 3)
     label(_score_label(aggregate), 1030, 125, 1.65, (245, 245, 245), 3)
     if result.get('angle_estimator'):
@@ -883,10 +886,10 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, show_overlay
         label(f"{range_text} ({calibration_range['status']}; diagnostic only)", 10, 540, .48)
     label(f"State: {result.get('orientation_state', 'not_observable')} | Down: {result.get('downward_status') or '--'}"[:80], 660, 375, .52)
     candidate = result.get('eye_candidate') or {}
-    label('EYE + HEAD (LIVE ESTIMATE)' if group or fused else 'EYE + HEAD COMPARISON (NOT FINAL)', 12, 590, .48, (100, 215, 255))
-    label('TOTAL 80/20', 12, 630, .43)
-    label('HEAD 10s', 215, 630, .43)
-    label('EYE 10s', 420, 630, .43)
+    label('EYE + HEAD (FUSED)' if fused else 'EYE + HEAD COMPARISON ONLY - NOT SAVED', 12, 590, .48, (100, 215, 255))
+    label('80/20 COMBINED' if fused else '80/20 CANDIDATE', 12, 630, .43)
+    label(f'HEAD {window:g}s', 215, 630, .43)
+    label(f'EYE {window:g}s', 420, 630, .43)
     label(_score_label(candidate.get('candidate_total')), 12, 685, 1.05, (245, 245, 245), 2)
     label(_score_label(candidate.get('head_score')), 215, 685, 1.05, (245, 245, 245), 2)
     label(_score_label(candidate.get('eye_score')), 420, 685, 1.05, (245, 245, 245), 2)

@@ -8,17 +8,17 @@ from engagement_model.position_tracks import PositionTrackGaussianRuntime
 
 def group_model_identity(reidentification_enabled=False):
     """실제 생성 모델과 세션 설정·상태 이벤트가 같은 버전을 사용한다."""
-    return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-0.5-head'}
+    return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-1.1-head-eye-experimental'}
             if reidentification_enabled else
-            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-0.6-head'})
+            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-1.2-head-eye-experimental'})
 
 
 def make_group_runtime(reidentification_enabled=False):
-    """두 진입점에서 다인 머리 점수와 별도 눈 관측을 사용한다."""
+    """두 진입점에서 머리 80%, 눈 20% 결합 점수를 사용한다."""
     if reidentification_enabled:
-        model = MultiFaceGaussianRuntime(eye_fusion=False)
+        model = MultiFaceGaussianRuntime(eye_fusion=True)
     else:
-        model = PositionTrackGaussianRuntime(eye_fusion=False)
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
     version = group_model_identity(reidentification_enabled)['model_version']
     model.model_version = version
     model.latest['model_version'] = version
@@ -47,10 +47,12 @@ def render_group_panel(image, result, face, runtime, diagnostics, overlay_smooth
         sampling_diagnostics=sampler if callable(sampler) else lambda: {
             'min_interval_ms': None, 'max_interval_ms': None, 'regular': None})
     quality = diagnostics.observe(face.last_landmarks, image)
-    lines = ['LANDMARK STABILITY (diagnostic only)',
+    lines = ['HEAD 80% + EYE 20%: combined group score',
+             f'Window: {model.config.window_seconds:g}s; published group uses person-time weighting',
+             'LANDMARK STABILITY (diagnostic only)',
              f'MULTI-FACE: {len(active)} tracked, {ready} calibrated']
     for row in active:
-        lines.append(f"{row['id']}: {row['status']} total={row.get('score')}")
+        lines.append(f"{row['id']}: {row['status']} combined={row.get('score')}")
         lines.append(f"  head={row.get('head_score')} eye={row.get('eye_score')}")
         lines.append(f"  relative P/Y/R: {row.get('relative_angles') or 'unavailable'}")
         if row.get('reason_codes'):

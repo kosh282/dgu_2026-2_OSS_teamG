@@ -7,16 +7,24 @@ from engagement_model.window_publisher import WindowPublisher
 from integration import IntegrationService
 
 class DownwardPolicyTests(unittest.TestCase):
-    def test_five_second_grace_then_ten_second_decay_and_recovery(self):
+    def test_five_second_grace_then_five_points_per_second_and_recovery(self):
         model = GaussianRuntime()
         for t in range(0, 10100, 100): model(feature_window(t))
         scores = {}
         for t in range(10100, 25200, 100):
             result = model(feature_window(t, pitch=20))
             if t in (10100, 15100, 20100, 25100): scores[t] = result['current_direction_score']
-        self.assertEqual(scores, {10100:100.0, 15100:100.0, 20100:90.0, 25100:80.0})
+        self.assertEqual(scores, {10100:100.0, 15100:100.0, 20100:75.0, 25100:50.0})
         self.assertIn('looking_down_score_decay', result['reason_codes'])
         self.assertEqual(model(feature_window(25200))['current_direction_score'], 100)
+
+    def test_penalty_reaches_zero_without_crossing_zero(self):
+        model = GaussianRuntime()
+        for t in range(0, 10100, 100):
+            model(feature_window(t))
+        for t in range(10100, 70200, 100):
+            result = model(feature_window(t, pitch=20))
+        self.assertEqual(result['current_direction_score'], 0.0)
 
     def test_no_previous_valid_score_does_not_invent_one(self):
         model = GaussianRuntime()
@@ -25,10 +33,11 @@ class DownwardPolicyTests(unittest.TestCase):
         self.assertIsNone(result['gaussian_observation'])
 
     def test_downward_observations_are_included_in_single_and_group_windows(self):
-        single = GaussianRuntime()
+        from engagement_model.config import ModelConfig
+        single = GaussianRuntime(ModelConfig.gaussian(window_seconds=10))
         segments = [(0, 10000, True, None, (None, None, 80.0))]
         self.assertEqual(gaussian_window_score(segments, 0, 10000, single.config)['score'], 80.0)
-        multi = MultiFaceGaussianRuntime()
+        multi = MultiFaceGaussianRuntime(ModelConfig.gaussian(window_seconds=10))
         group = [(0, 10000, True, None, [(None, None, 80.0), (0.0, 0.0)])]
         self.assertEqual(multi.aggregate_window(group, 0, 10000)['score'], 90.0)
 

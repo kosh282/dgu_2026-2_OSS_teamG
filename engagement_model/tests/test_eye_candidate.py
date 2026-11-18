@@ -18,6 +18,19 @@ def frame(t, ear=0.3, track=1):
 
 
 class EyeCandidateTests(unittest.TestCase):
+    def test_gradual_eye_penalty_and_recovery_or_missing(self):
+        candidate = EyeCandidate()
+        head = {'angles': {'pitch': 0}, 'score': 100}
+        outputs = {}
+        for t in range(0, 13001, 100):
+            result = candidate.update(frame(t, 0.1), head)
+            if t in (0, 2000, 5000, 12000):
+                outputs[t] = result['current_eye_score']
+        self.assertEqual(outputs, {0:100.0, 2000:100.0, 5000:70.0, 12000:0.0})
+        self.assertEqual(candidate.update(frame(13100, 0.3), head)['current_eye_score'], 100.0)
+        self.assertIsNone(candidate.update(frame(13200, None), head)['current_eye_score'])
+        self.assertEqual(candidate.update(frame(13300, 0.1), head)['current_eye_score'], 100.0)
+
     def test_short_blink_not_penalized_and_long_closure_reduces_candidate(self):
         model = GaussianRuntime()
         for t in range(0, 10001, 100):
