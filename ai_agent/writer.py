@@ -304,7 +304,7 @@ class ClaudeWriter:
 
 
 PROVIDER_DEFAULT_MODELS = {
-    'openai': 'gpt-4o-mini',
+    'openai': 'gpt-5.4-nano',
     'gemini': 'gemini-2.5-flash',
     'claude': CLAUDE_MODEL,
 }

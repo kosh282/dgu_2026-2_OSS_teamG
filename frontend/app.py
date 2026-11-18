@@ -49,7 +49,15 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 .st-key-live-transcript,.st-key-live-notes,.st-key-live-assistant{background-color:#fff}
 /* 요약 카드 안의 점수에는 중첩 테두리·여백을 더하지 않는다. */
 .st-key-live-overview [data-testid="stMetric"]{border:0;padding:0;background:transparent}
-.st-key-live-page-header .st-key-page-title{left:0;margin-left:0;margin-right:0}
+/* Streamlit 상단 도구 모음의 클릭 영역 아래에 라이브 헤더를 둔다. */
+body:has(.st-key-live-page-header) [data-testid="stMain"] .block-container{padding-top:64px}
+.st-key-live-page-header [data-testid="stHorizontalBlock"]{align-items:center;justify-content:flex-start;gap:8px}
+.st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]{width:auto!important;flex:0 0 auto!important}
+.st-key-live-page-header .st-key-page-title{position:static;left:auto;margin:0!important;padding:0;flex:0 0 auto}
+.st-key-live-page-header .st-key-page-title h1{width:auto;margin:0!important;transform:none}
+.st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]:has(.st-key-page-title),
+.st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]:has([data-testid="stBaseButton-primary"]){width:max-content!important;flex:0 0 auto!important}
+.st-key-live-page-header [data-testid="stBaseButton-primary"]{position:relative;z-index:2;flex:0 0 auto;width:auto;margin:0!important;pointer-events:auto}
 .st-key-live-dashboard [data-testid="stColumn"]{min-width:0}
 @media(max-width:540px){.st-key-live-dashboard [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}
 .st-key-live-dashboard [data-testid="stColumn"]{flex:1 1 100%!important}}
@@ -61,7 +69,7 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 
 
 def page_title(title):
-    with st.container(key='page-title'):
+    with st.container(key='page-title', width='content'):
         st.title(title)
 
 
@@ -577,13 +585,10 @@ def live_page():
         except Exception as exc:
             st.session_state.live_action_error=f'수업 종료·저장 실패: {exc}'
 
-    # 종료는 카드의 관측 정보와 분리해 페이지 제목 오른쪽에 둔다.
-    header_columns={'wrap':False} if 'wrap' in inspect.signature(st.columns).parameters else {}
+    # 제목과 종료 버튼을 같은 가로 행에 배치한다.
     with st.container(key='live-page-header'):
-        title_column,action_column=st.columns([4,1],gap='small',vertical_alignment='center',**header_columns)
-        with title_column:
+        with st.container(horizontal=True, horizontal_alignment='left', vertical_alignment='center', gap='xsmall'):
             page_title('라이브 세션')
-        with action_column, st.container(horizontal=True,horizontal_alignment='right'):
             st.button('수업 종료',type='primary',key='live-stop',disabled=not live.is_running(),on_click=stop_session)
 
     # 카드와 도구를 한 갱신 단위에 고정해 서로 다른 시점의 화면이 섞이지 않게 한다.
