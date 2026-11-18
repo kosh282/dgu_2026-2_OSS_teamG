@@ -310,7 +310,7 @@ class AdapterTests(unittest.TestCase):
                     pointer._obj.value = demo.os.getpid()
                     return 1
                 user32.GetWindowThreadProcessId.side_effect = owner
-                stack.enter_context(patch.object(demo.ctypes, 'WinDLL', return_value=user32))
+                stack.enter_context(patch.object(demo.ctypes, 'WinDLL', return_value=user32, create=True))
                 win_capture = stack.enter_context(patch.object(demo, 'WindowCapture'))
                 stack.enter_context(patch.object(demo, 'FaceAnalyzer', return_value=MagicMock(last_face_boxes=[])))
                 stack.enter_context(patch.object(demo, 'PreviewCapture', return_value=capture))
