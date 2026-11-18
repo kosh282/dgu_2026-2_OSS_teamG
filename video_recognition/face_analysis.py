@@ -11,6 +11,8 @@ EXPRESSION_KEYS = {'mouthSmileLeft', 'mouthSmileRight', 'browInnerUp', 'jawOpen'
 DEFAULT_MODEL = Path(__file__).resolve().parent / 'models' / 'face_landmarker.task'
 DEFAULT_FACE_DETECTION_CONFIDENCE = 0.3
 DEFAULT_FACE_PRESENCE_CONFIDENCE = 0.3
+# 전체 프레임 재검출 주기. 참가자 배치가 변하면 이 주기를 기다리지 않는다.
+DEFAULT_FULL_FRAME_INTERVAL_MS = 4000
 
 
 def _overlapping_regions(width, height):
@@ -45,6 +47,25 @@ def _same_face_box(a, b):
     center_a = ((a[0] + a[2]) / 2, (a[1] + a[3]) / 2)
     center_b = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
     return math.dist(center_a, center_b) <= 0.15 * min(math.hypot(wa, ha), math.hypot(wb, hb))
+
+
+def _layout_changed(previous, current):
+    """순서는 무시하고 영역 크기·위치가 크게 달라진 경우에만 재검출한다."""
+    if len(previous) != len(current):
+        return True
+    unmatched = list(current)
+    for a in previous:
+        def iou(b):
+            intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+            union = (a[2]-a[0]) * (a[3]-a[1]) + (b[2]-b[0]) * (b[3]-b[1]) - intersection
+            return intersection / union if union > 0 else 0
+        if not unmatched:
+            return True
+        best = max(range(len(unmatched)), key=lambda index: iou(unmatched[index]))
+        if iou(unmatched[best]) < 0.8:
+            return True
+        unmatched.pop(best)
+    return False
 
 
 def eye_ratio(landmarks, indices, width, height):
@@ -85,12 +106,15 @@ def periodic_angles(angles):
 
 class FaceAnalyzer:
     """프레임 단위 다중 얼굴 분석. 순서는 개인 식별이나 추적 정보가 아니다."""
-    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20, show_landmarks=False, pose_source='face-transform'):
+    def __init__(self, model_path=DEFAULT_MODEL, max_faces=20, show_landmarks=False, pose_source='face-transform',
+                 full_frame_interval_ms=DEFAULT_FULL_FRAME_INTERVAL_MS):
         import mediapipe as mp
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision
         if pose_source != 'face-transform':
             raise ValueError('지원하지 않는 얼굴 자세 추정 방식입니다')
+        if isinstance(full_frame_interval_ms, bool) or not isinstance(full_frame_interval_ms, int) or full_frame_interval_ms <= 0:
+            raise ValueError('전체 프레임 분석 간격은 양의 밀리초 정수여야 합니다')
         self.pose_source = pose_source
         self.mp = mp
         # Windows의 한글 경로에서도 읽도록 Python에서 모델 바이트를 전달한다.
@@ -121,6 +145,8 @@ class FaceAnalyzer:
             raise
         self.max_faces = max_faces
         self.last_timestamp = -1
+        self.full_frame_interval_ms = full_frame_interval_ms
+        self._last_full_frame_ms = None
         self._layout_regions = []
         self._layout_timestamp = None
         self._layout_frame_size = None
@@ -137,14 +163,23 @@ class FaceAnalyzer:
         # MediaPipe는 증가하는 시각을 요구한다. 공통 캡처 시각은 별도로 유지한다.
         timestamp = max(frame.capture_ms, self.last_timestamp + 1)
         self.last_timestamp = timestamp
-        result = self.detector.detect_for_video(
-            self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), timestamp)
         frame_size = (frame.width, frame.height)
+        size_changed = self._layout_frame_size != frame_size
+        layout_changed = False
         if (self._layout_frame_size != frame_size or self._layout_timestamp is None
                 or timestamp - self._layout_timestamp >= 1000):
-            self._layout_regions = detect_layout_regions(frame.image)
+            new_regions = detect_layout_regions(frame.image)
+            layout_changed = _layout_changed(self._layout_regions, new_regions)
+            self._layout_regions = new_regions
             self._layout_timestamp = timestamp
             self._layout_frame_size = frame_size
+        # 전체 화면 결과는 현재 프레임에서만 사용한다. 재검출 사이에는 부분 영역만 사용한다.
+        result = None
+        if (self._last_full_frame_ms is None or size_changed or layout_changed
+                or timestamp - self._last_full_frame_ms >= self.full_frame_interval_ms):
+            result = self.detector.detect_for_video(
+                self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb), timestamp)
+            self._last_full_frame_ms = timestamp
         # 전체 화면과 각 부분의 결과를 공통 좌표로 변환한 뒤 겹치는 얼굴을 한 번만 쓴다.
         import numpy as np
         candidates = []
@@ -173,7 +208,8 @@ class FaceAnalyzer:
                 priority = (max(xs) - min(xs)) * (max(ys) - min(ys))
                 candidates.append((priority, box, points, shapes, matrix))
 
-        add_results(result, (0, 0, frame.width, frame.height))
+        if result is not None:
+            add_results(result, (0, 0, frame.width, frame.height))
         regions = _overlapping_regions(frame.width, frame.height) + self._layout_regions
         for x0, y0, x1, y1 in regions:
             crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])

@@ -19,7 +19,7 @@ st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout
 files = SessionFiles(os.environ.get('LECTURER_SESSION_DIR', str(Path.home() / 'lecturer_dashboard' / 'sessions')))
 for key, value in {'page':'세션 시작 준비','live':None,'review':None,'saved_sid':None,'hidden_suggestions':set(),
                    'assistant':None,'assistant_error':None,'material_cache':{},'material_index':None,
-                   'assistant_result':None}.items():
+                   'assistant_result':None,'live_manual_suggestion':None}.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -427,6 +427,7 @@ def preparation():
                     st.session_state.hidden_suggestions=set()
                     st.session_state.assistant=None
                     st.session_state.assistant_error=None
+                    st.session_state.live_manual_suggestion=None
                     # 업로더 상태는 페이지를 옮기면 사라지므로 사후 검토에서 쓸 색인을 따로 보관한다(메모리 전용).
                     st.session_state.material_index=index
                     try:
@@ -656,6 +657,43 @@ def live_page():
                 st.subheader('강의 조교 · 자료 제안')
                 assistant_message=snapshot.get('status_messages',{}).get('assistant')
                 if assistant_message: st.caption(assistant_message)
+                manual_assistant=st.session_state.assistant
+                if st.button('제안 요청',key='live-manual-suggestion',
+                             disabled=not running or manual_assistant is None,
+                             help='최근 60초 확정 전사와 관련 강의자료로 한 번 요청합니다. 점수 기준과 자동 제안 간격은 적용하지 않습니다.'):
+                    now_ms=live.service.elapsed_ms(live.sid)
+                    recent=[event for event in snapshot['transcripts']
+                            if now_ms-60_000 <= event['end_ms'] <= now_ms]
+                    texts=[event['payload']['text'] for event in recent]
+                    if not texts:
+                        st.session_state.live_manual_suggestion={
+                            'error':'최근 60초 안에 확정된 전사가 없어 요청하지 않았습니다.'}
+                    else:
+                        writer=manual_assistant.writer
+                        hits=manual_assistant.index.search(' '.join(texts),limit=3)
+                        if writer.uses_external_service and hasattr(writer,'suggest_teaching'):
+                            with st.spinner('제안을 요청하는 중…'):
+                                suggestion=writer.suggest_teaching(texts,hits)
+                            st.session_state.live_manual_suggestion=(
+                                {'result':suggestion,'model_id':writer.model_id} if suggestion else
+                                {'error':writer.last_error or 'AI가 제안을 반환하지 않았습니다.'})
+                        elif hits:
+                            suggestion=writer.suggest(texts,hits)
+                            st.session_state.live_manual_suggestion=(
+                                {'result':{'title':suggestion['title'],'description':suggestion['description']},
+                                 'model_id':writer.model_id} if suggestion else
+                                {'error':'관련 자료 제안을 찾지 못했습니다.'})
+                        else:
+                            st.session_state.live_manual_suggestion={
+                                'error':'관련 강의자료가 없어 로컬 제안을 만들 수 없습니다.'}
+                manual_result=st.session_state.live_manual_suggestion
+                if manual_result:
+                    if manual_result.get('error'):
+                        st.warning(manual_result['error'])
+                    else:
+                        st.markdown(f"**{manual_result['result']['title']}**")
+                        st.caption(manual_result['result']['description'])
+                        st.caption(f"수동 요청 결과 · {manual_result['model_id']} · 기록에는 저장되지 않음")
                 resources(live.service,live.sid,snapshot,limit=1)
                 visible=[e for e in snapshot['suggestions']+snapshot.get('teaching_suggestions',[])
                          if e['event_id'] not in st.session_state.hidden_suggestions]

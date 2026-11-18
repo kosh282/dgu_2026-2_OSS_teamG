@@ -6,6 +6,9 @@
   얼굴 특징은 보내지 않는다. 호출이 실패하면 `LocalWriter` 결과로 대체하고 오류를 남긴다.
 """
 import json
+import re
+import socket
+import ssl
 import threading
 from urllib import error as urlerror
 from urllib import parse, request
@@ -158,6 +161,54 @@ _FEEDBACK_SCHEMA = {
 
 class ClaudeUnavailable(RuntimeError):
     """Claude 호출 실패. 호출 측은 로컬 결과로 대체한다."""
+
+
+def _safe_error_token(value):
+    """제공자 오류의 짧은 식별자만 노출하고 임의의 응답 문구는 버린다."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:80] if value and re.fullmatch(r'[A-Za-z0-9_.:/-]+', value) else None
+
+
+def _http_error_summary(provider, error):
+    details = []
+    try:
+        body = json.loads(error.read().decode('utf-8', errors='replace'))
+        item = body.get('error', body) if isinstance(body, dict) else {}
+        if isinstance(item, dict):
+            for label, value in (('코드', item.get('code')), ('상태', item.get('status')),
+                                 ('유형', item.get('type')), ('항목', item.get('param'))):
+                token = _safe_error_token(value)
+                if token and token not in details:
+                    details.append(f'{label} {token}')
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    headers = error.headers or {}
+    request_id = _safe_error_token(headers.get('x-request-id') or headers.get('request-id'))
+    if request_id:
+        details.append(f'요청 ID {request_id}')
+    retry_after = _safe_error_token(headers.get('retry-after'))
+    if retry_after and retry_after.isdigit():
+        details.append(f'{retry_after}초 후 재시도 안내')
+    suffix = '; ' + ', '.join(details) if details else ''
+    return (f'{provider} API 요청 실패 (HTTP {error.code}{suffix}). '
+            '비밀 키와 응답 본문은 표시하지 않았습니다. 키 권한, 모델 접근, 결제·사용량 한도를 확인하세요.')
+
+
+def _connection_error_summary(provider, error):
+    reason = error.reason if isinstance(error, urlerror.URLError) else error
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        cause = '30초 연결/응답 시간 초과'
+    elif isinstance(reason, ssl.SSLError):
+        cause = 'TLS 인증서 또는 보안 연결 오류'
+    elif isinstance(reason, socket.gaierror):
+        cause = 'DNS에서 API 호스트를 찾지 못함'
+    elif isinstance(reason, ConnectionRefusedError):
+        cause = '네트워크 연결이 거부됨'
+    else:
+        cause = f'네트워크 연결 오류 ({type(reason).__name__})'
+    return f'{provider} API {cause}. 키·요청 본문은 표시하지 않았습니다.'
 
 
 def claude_ready():
@@ -379,9 +430,9 @@ class PersonalAPIWriter(ClaudeWriter):
             _validate_response(data, schema)
             return data
         except urlerror.HTTPError as exc:
-            raise ClaudeUnavailable(f'{self.provider} API 요청 실패 (HTTP {exc.code}); 키, 모델 및 사용량을 확인하세요') from None
-        except (urlerror.URLError, TimeoutError, OSError):
-            raise ClaudeUnavailable(f'{self.provider} API 연결 실패 또는 시간 초과') from None
+            raise ClaudeUnavailable(_http_error_summary(self.provider, exc)) from None
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise ClaudeUnavailable(_connection_error_summary(self.provider, exc)) from None
         except (ValueError, TypeError, KeyError, AttributeError):
             raise ClaudeUnavailable(f'{self.provider} API 응답이 유효하지 않거나 중단됐습니다') from None
 
