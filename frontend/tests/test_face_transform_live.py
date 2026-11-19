@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import numpy as np
-from video_recognition.face_analysis import FaceAnalyzer
+from video_recognition.face_analysis import FaceAnalyzer, DEFAULT_FULL_FRAME_INTERVAL_MS
 from frontend.live_session import LiveSession
 
 class FrontendFaceTransformTests(unittest.TestCase):
@@ -16,6 +16,8 @@ class FrontendFaceTransformTests(unittest.TestCase):
         analyzer.detector = SimpleNamespace(detect_for_video=lambda *args: result)
         analyzer.tile_detector = SimpleNamespace(detect=lambda *args: result)
         analyzer.max_faces = 20
+        analyzer.full_frame_interval_ms = DEFAULT_FULL_FRAME_INTERVAL_MS
+        analyzer._last_full_frame_ms = None
         analyzer._layout_frame_size = None
         analyzer._layout_timestamp = None
         analyzer._layout_regions = []
@@ -39,6 +41,6 @@ class FrontendFaceTransformTests(unittest.TestCase):
             self.assertEqual(runtime.model_version, live._model_identity()['model_version'])
             self.assertEqual(runtime.model_id, live._model_identity()['model_id'])
             self.assertEqual(runtime.latest['model_version'], runtime.model_version)
-            self.assertFalse(runtime.eye_fusion)
+            self.assertTrue(runtime.eye_fusion)
 
 if __name__ == '__main__': unittest.main()

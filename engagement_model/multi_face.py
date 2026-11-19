@@ -56,7 +56,8 @@ class MultiFaceGaussianRuntime:
                 person['runtime'].reset()
                 person['row'].update(calibration_status='collecting', status='calibrating',
                                      current_direction_score=None, score=None,
-                                     head_score=None, eye_score=None, eye_coverage=None, relative_angles=None,
+                                     head_score=None, eye_score=None, current_head_score=None, current_eye_score=None,
+                                     eye_coverage=None, relative_angles=None,
                                      reason_codes=['baseline_unavailable'])
         if changed:
             self.latest = self._empty('baseline_unavailable')
@@ -85,7 +86,8 @@ class MultiFaceGaussianRuntime:
                 person['runtime'].reset()
                 person['present'] = False
                 person['row'].update(status='unavailable', score=None,
-                                     current_direction_score=None, head_score=None, eye_score=None, eye_coverage=None,
+                                     current_direction_score=None, head_score=None, eye_score=None,
+                                     current_head_score=None, current_eye_score=None, eye_coverage=None,
                                      relative_angles=None, reason_codes=['invalid_feature_window'])
             self.latest = self._empty('invalid_feature_window')
             self.latest['status'] = 'input_error'
@@ -140,8 +142,9 @@ class MultiFaceGaussianRuntime:
             single['features']['head_calibration_status'] = calibration.status
             result = person['runtime'](single)
             eye = (result.get('eye_candidate') or {}).get('eye_score')
-            fused_current = (round(0.8 * result['current_direction_score'] + 0.2 * eye, 1)
-                             if self.eye_fusion and eye is not None
+            eye_current = (result.get('eye_candidate') or {}).get('current_eye_score')
+            fused_current = (round(0.8 * result['current_direction_score'] + 0.2 * eye_current, 1)
+                             if self.eye_fusion and eye_current is not None
                              and result.get('current_direction_score') is not None else None)
             fused_recent = (result.get('eye_candidate') or {}).get('candidate_total') if self.eye_fusion else None
             person['row'].update(status=(('deferred' if self.eye_fusion and fused_current is None else result['status'])
@@ -150,6 +153,7 @@ class MultiFaceGaussianRuntime:
                                  current_direction_score=fused_current if self.eye_fusion else result.get('current_direction_score'),
                                  score=fused_recent if self.eye_fusion else result['score'],
                                  head_score=result.get('score'), eye_score=eye,
+                                 current_head_score=result.get('current_direction_score'), current_eye_score=eye_current,
                                  eye_coverage=(result.get('eye_candidate') or {}).get('coverage'),
                                  relative_angles=result.get('angles'),
                                  reason_codes=list(result['reason_codes']) + (['eye_observation_unavailable']
@@ -167,13 +171,14 @@ class MultiFaceGaussianRuntime:
                 elif was_present:
                     person['runtime'].pause_observation()
                 person['row'].update(status='missing', score=None, current_direction_score=None,
-                                     head_score=None, eye_score=None, eye_coverage=None, relative_angles=None,
+                                     head_score=None, eye_score=None, current_head_score=None, current_eye_score=None,
+                                     eye_coverage=None, relative_angles=None,
                                      reason_codes=['identity_not_observed'])
         if self.eye_fusion:
-            # 같은 얼굴에서 현재 머리 점수와 최근 10초 눈 점수가 모두 있는 경우만 집계한다.
-            primitives = [(None, None, 0.8 * r['current_direction_score'] + 0.2 * r['eye_candidate']['eye_score'])
+            # 같은 시각의 머리·눈 점수만 결합해 publisher에서 최근 구간을 한 번 집계한다.
+            primitives = [(None, None, 0.8 * r['current_direction_score'] + 0.2 * r['eye_candidate']['current_eye_score'])
                           for r in outputs if r.get('current_direction_score') is not None
-                          and (r.get('eye_candidate') or {}).get('eye_score') is not None]
+                          and (r.get('eye_candidate') or {}).get('current_eye_score') is not None]
         else:
             primitives = [r['gaussian_observation'] for r in outputs if r.get('gaussian_observation') is not None]
         observable_count = sum(r['angles'] is not None for r in outputs)

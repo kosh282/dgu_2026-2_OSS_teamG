@@ -15,6 +15,22 @@ def eyes(t, value=0.3, xs=(.25,.75)):
     return result
 
 class EyeFusionTests(unittest.TestCase):
+    def test_group_event_forgets_eye_closure_after_five_seconds(self):
+        service = IntegrationService(); sid = service.start_session('test')
+        runtime = PositionTrackGaussianRuntime(eye_fusion=True)
+        publisher = WindowPublisher(service, sid, runtime, start_ms=0)
+        for t in range(0, 26001, 100):
+            feature = eyes(t, 0.1 if 10000 <= t < 15000 else 0.3)
+            feature['session_id'] = sid
+            with patch.object(service, 'elapsed_ms', return_value=t):
+                publisher(feature)
+        events = [e for e in service.get_events_in_range(sid, 0, 26000)
+                  if e['event_type'] == 'engagement_window' and e['payload']['model_output']]
+        self.assertLess(min(e['payload']['model_output']['value'] for e in events), 100)
+        self.assertEqual(events[-1]['payload']['model_output']['value'], 100)
+        self.assertEqual(events[-1]['end_ms'] - events[-1]['start_ms'], 5000)
+        self.assertEqual(events[-1]['payload']['model_extensions'][runtime.model_id]['eye_window_seconds'], 5)
+
     def test_webcam_single_runtime_combines_and_defers_when_eyes_missing(self):
         model = EyeFusionGaussianRuntime()
         for t in range(0, 25001, 100):
@@ -40,7 +56,7 @@ class EyeFusionTests(unittest.TestCase):
                   if e['event_type'] == 'engagement_window' and e['payload']['model_output']]
         self.assertTrue(events)
         self.assertLess(events[-1]['payload']['model_output']['value'], 100)
-        self.assertEqual(events[-1]['provenance']['model_version'], 'angle-time-0.5+eye')
+        self.assertEqual(events[-1]['provenance']['model_version'], 'angle-time-0.6+eye-progressive')
         self.assertEqual(events[-1]['payload']['model_extensions']['gaussian-head-direction']['eye_weight'], 0.2)
     def test_eye_missing_defers_without_creating_zero(self):
         runtime = PositionTrackGaussianRuntime(eye_fusion=True)
@@ -68,6 +84,8 @@ class EyeFusionTests(unittest.TestCase):
         self.assertLess(values[-1],max(values))
         extension=events[-1]['payload']['model_extensions']['position-track-gaussian']
         self.assertEqual((extension['head_weight'],extension['eye_weight']),(0.8,0.2))
+        self.assertEqual(extension['eye_penalty_per_second'], 10.0)
+        self.assertEqual(extension['eye_score_policy'], 'linear_penalty_after_bilateral_closure_grace')
         self.assertNotIn('eye_candidate',repr(events))
         self.assertNotIn('transient_track_key',repr(events))
 
@@ -83,6 +101,9 @@ class EyeFusionTests(unittest.TestCase):
         rows=runtime.participants()
         self.assertIsNone(rows[1]['current_direction_score'])
         self.assertEqual(rows[0]['current_direction_score'],100)
+        self.assertEqual(rows[0]['current_head_score'],100)
+        self.assertEqual(rows[0]['current_eye_score'],100)
+        self.assertIsNone(rows[1]['current_eye_score'])
 
     def test_downward_grace_does_not_erase_valid_eye_observation(self):
         runtime = PositionTrackGaussianRuntime(eye_fusion=True)

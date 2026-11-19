@@ -125,8 +125,8 @@ class WindowPublisher:
                 'down_transition_pitch_degrees': self.config.gaussian_down_transition_pitch_degrees,
                 'down_confirm_seconds': self.config.gaussian_down_confirm_seconds,
                 'down_grace_seconds': self.config.down_grace_seconds,
-                'down_decay_seconds': self.config.down_decay_seconds,
-                'down_penalty': self.config.down_penalty,
+                'down_penalty_policy': 'linear_points_per_second_after_grace',
+                'down_penalty_per_second': self.config.down_penalty_per_second,
                 'window_seconds': self.config.window_seconds,
                 'temporal_weighting': 'linear-time-integral',
                 'max_observation_hold_seconds': self.config.max_observation_hold_seconds,
@@ -140,19 +140,13 @@ class WindowPublisher:
             })
         if getattr(self.runtime, 'eye_fusion', False):
             payload['model_extensions'][self.model_id].update({
-                'version': 'head-eye-time-window-1',
+                'version': 'head-eye-time-window-3',
                 'head_weight': 0.8, 'eye_weight': 0.2,
-                'eye_window_seconds': 10, 'eye_min_coverage': 0.7,
+                'eye_window_seconds': self.config.window_seconds, 'eye_min_coverage': 0.7,
                 'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
-                'eye_score_policy': 'prolonged_bilateral_closure_observable_ratio',
+                'eye_score_policy': 'linear_penalty_after_bilateral_closure_grace',
+                'eye_penalty_per_second': 10.0,
             })
-            if getattr(self.runtime, 'eye_fusion', False):
-                payload['model_extensions'][self.model_id].update({
-                    'head_weight': 0.8, 'eye_weight': 0.2,
-                    'eye_window_seconds': 10, 'eye_min_coverage': 0.7,
-                    'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
-                    'eye_score_policy': 'prolonged_bilateral_closure_observable_ratio',
-                })
         event = self.service.make_event(
             self.session_id, 'engagement_window', payload, start, end, 'model',
             quality_status=quality, reason_codes=reasons,

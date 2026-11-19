@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_score_unavailable_reason, overlap, score, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_score_display, live_score_unavailable_reason, overlap, score, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -61,6 +61,63 @@ class DashboardTests(unittest.TestCase):
     def test_contract_model_output_value(self):
         event = {'payload': {'model_output': {'kind': 'continuous', 'value': 73.5}}, 'quality': {'status': 'valid'}}
         self.assertEqual(score(event), 73.5)
+
+    def test_live_display_temporarily_holds_only_a_recent_valid_score(self):
+        valid = {'event_id':'a','end_ms':10000,'payload':{'model_output':{'value':80}},'quality':{'status':'valid'}}
+        missing = {'event_id':'b','end_ms':11000,'payload':{'model_output':None},'quality':{'status':'not_observable'}}
+        opts = dict(running=True, model_enabled=True, model_status='running')
+        self.assertEqual(live_score_display([valid], 11000, **opts)['state'], 'current')
+        held = live_score_display([valid, missing], 12000, **opts)
+        self.assertEqual((held['state'], held['value'], held['age_ms']), ('held', 80, 2000))
+        self.assertEqual(live_score_display([valid, missing], 25001, **opts)['state'], 'unavailable')
+        self.assertEqual(live_score_display([missing], 12000, **opts)['state'], 'unavailable')
+        self.assertEqual(live_score_display([valid, missing], 12000, **{**opts, 'model_status':'unavailable'})['state'], 'unavailable')
+        self.assertIsNone(score(missing))
+
+    def test_live_chart_shows_held_card_value_as_separate_point_only(self):
+        valid = dict(event_id='a', start_ms=5000, end_ms=10000,
+                     payload={'model_output': {'value': 80}}, quality={'status': 'valid'})
+        missing = dict(event_id='b', start_ms=6000, end_ms=11000,
+                       payload={'model_output': None}, quality={'status': 'not_observable'})
+        windows = [valid, missing]
+        display = live_score_display(windows, 12000, running=True, model_enabled=True, model_status='running')
+        data = live_chart_data(windows, [], 12000, display_score=display)
+        held = data[data['kind'] == 'held'].iloc[0]
+        self.assertEqual((held['time'], held['value']), (12, display['value']))
+        self.assertIn('이전 점수 유지', held['text'])
+        self.assertTrue(data[data['kind'] == 'score']['value'].isna().any())
+        self.assertIsNone(score(missing))
+        self.assertTrue(live_chart_data(windows, [], 26000, display_score=
+            live_score_display(windows, 26000, running=True, model_enabled=True, model_status='running'))
+            .query("kind == 'held'").empty)
+
+    def test_live_chart_current_point_matches_card_and_uses_event_values(self):
+        windows = [dict(event_id=str(i), start_ms=i*1000, end_ms=i*1000+5000,
+                        payload={'model_output': {'value': value}}, quality={'status':'valid'})
+                   for i, value in enumerate((100, 87, 63))]
+        display = live_score_display(windows, 7000, running=True, model_enabled=True, model_status='running')
+        data = live_chart_data(windows, [], 7000, display_score=display)
+        self.assertEqual(data[data['kind']=='score']['value'].tolist(), [100, 87, 63])
+        self.assertEqual(data[data['kind']=='current']['value'].tolist(), [display['value']])
+
+    def test_live_chart_orders_final_scores_by_window_end(self):
+        windows = [dict(event_id='a', start_ms=0, end_ms=10000,
+                        payload={'model_output': {'value': 100}}, quality={'status':'valid'}),
+                   dict(event_id='b', start_ms=5000, end_ms=6000,
+                        payload={'model_output': {'value': 75}}, quality={'status':'valid'})]
+        data = live_chart_data(windows, [], 10000)
+        self.assertEqual(data[data['kind']=='score']['value'].tolist(), [75, 100])
+
+    def test_chart_uses_contract_output_over_legacy_scores(self):
+        event = dict(event_id='a', start_ms=0, end_ms=5000,
+                     payload={'score': 12, 'model_output': {'value': 84}},
+                     quality={'status': 'valid'})
+        self.assertEqual(score(event), 84)
+        self.assertEqual(chart([event], [], 5000).data[0].y[0], 84)
+        points = live_chart_data([event], [], 5000)
+        self.assertEqual(points.loc[points['kind'] == 'score', 'value'].iloc[0], 84)
+        event['payload']['model_output'] = None
+        self.assertIsNone(score(event))
 
     def test_transcript_uses_completed_score_without_crossing_missing_or_future_windows(self):
         def window(end, value):
@@ -155,7 +212,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_live_ui_uses_shared_snapshot(self):
         from streamlit.testing.v1 import AppTest
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {'LECTURER_SESSION_DIR': directory}):
             service,sid=SessionFiles(directory).load(SAMPLE)
             class FakeLive:
                 def __init__(self):
@@ -190,12 +247,10 @@ class DashboardTests(unittest.TestCase):
             timeline_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and '공통 타임라인' in element.value)
             note_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='교수자 메모')
             transcript_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='실시간 전사 · 분석 상태')
-            self.assertLess(score_index, timeline_index)
-            # 두 번째 행은 타임라인·전사, 세 번째 행은 메모·조교 카드다.
-            self.assertLess(timeline_index, transcript_index)
-            self.assertLess(transcript_index, note_index)
-            next(t for t in app.text_input if t.label=='메모 입력').set_value('라이브 메모')
-            next(b for b in app.button if b.label=='메모 저장').click().run()
+            self.assertLess(timeline_index, score_index)
+            self.assertLess(score_index, note_index)
+            self.assertLess(note_index, transcript_index)
+            app.chat_input(key='live-note-text').set_value('라이브 메모').run()
             self.assertFalse(app.exception)
             self.assertTrue(any(e['payload']['text']=='라이브 메모' for e in service.get_dashboard_snapshot(sid)['notes']))
             app.session_state['live'].running=True

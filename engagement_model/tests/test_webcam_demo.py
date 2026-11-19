@@ -113,7 +113,7 @@ class GaussianWebcamRunnerTests(unittest.TestCase):
         self.assertNotIn('aggregate', normal)
         self.assertNotIn('Relative pitch/yaw', normal)
         detailed = '\n'.join(panel_lines(feature, models, debug=True))
-        self.assertIn('10s aggregate:', detailed)
+        self.assertIn('5s score:', detailed)
         self.assertIn('Reasons:', detailed)
         self.assertIn('Relative pitch/yaw', detailed)
         with patch('engagement_model.webcam_demo.render_video_frame') as overlay:
@@ -151,7 +151,7 @@ class GaussianWebcamRunnerTests(unittest.TestCase):
                 diagnostics=diagnostics, debug_page=0)
         positions = {call.args[1]: call.args[2] for call in draw.call_args_list}
         self.assertEqual(positions['CURRENT DIRECTION'], (660, 65))
-        self.assertEqual(positions['10s AGGREGATE'], (1030, 65))
+        self.assertEqual(positions['5s AGGREGATE'], (1030, 65))
         self.assertEqual(positions['RELATIVE HEAD PITCH / YAW'], (660, 165))
         with patch('engagement_model.webcam_demo.cv2.putText', wraps=cv2.putText) as draw:
             second = render_panel(np.zeros((480,640,3), dtype=np.uint8), feature, {'gaussian':model},

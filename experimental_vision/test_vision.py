@@ -56,7 +56,7 @@ class VisionTests(unittest.TestCase):
         backend.event.side_effect = register
         with patch.dict(WindowCapture._shared, clear=True), \
              patch.dict(sys.modules, {'windows_capture': SimpleNamespace(WindowsCapture=Mock(return_value=backend))}), \
-             patch('video_recognition.window_capture.ctypes.WinDLL', return_value=Mock()), \
+             patch('video_recognition.window_capture.ctypes.WinDLL', return_value=Mock(), create=True), \
              patch('video_recognition.window_capture.get_window_process_id', return_value=123):
             capture = WindowCapture(42)
             image = np.zeros((2, 2, 3), dtype=np.uint8)

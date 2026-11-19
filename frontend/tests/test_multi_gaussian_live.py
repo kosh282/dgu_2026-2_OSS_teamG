@@ -132,11 +132,14 @@ class MultiGaussianLiveTests(unittest.TestCase):
 
     def test_snapshot_marks_capture_gap_unobservable_and_returns_copies(self):
         live = self.live(True)
-        live._participant_rows = [{'id':'P001','status':'observed','score':95.,'current_direction_score':96.}]
+        live._participant_rows = [{'id':'P001','status':'observed','score':95.,'current_direction_score':96.,
+                                   'current_head_score':95.,'current_eye_score':100.}]
         live.latest = {'start_ms':0}
         with patch.object(live.service,'elapsed_ms',return_value=2000):
             rows = live.participant_snapshot()
         self.assertIsNone(rows[0]['score'])
+        self.assertIsNone(rows[0]['current_head_score'])
+        self.assertIsNone(rows[0]['current_eye_score'])
         rows[0]['id']='changed'
         self.assertEqual(live._participant_rows[0]['id'],'P001')
 
@@ -152,7 +155,7 @@ class MultiGaussianLiveTests(unittest.TestCase):
         self.assertFalse(live._model_failed)
         event = live.service.get_dashboard_snapshot(live.sid)['engagement_windows'][-1]
         self.assertEqual(event['payload']['model_output']['value'],100.)
-        self.assertGreater(len(live.window_publisher._segments),80)
+        self.assertLessEqual(live.window_publisher._segments[0][0], 18100)
 
     def test_group_recalibration_resumes_status_after_new_window(self):
         live = self.live(True)

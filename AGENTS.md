@@ -83,3 +83,12 @@ The submitted proposal names the following initial evaluation targets. They are 
 - Record the annotation criteria, evaluated intervals, machine/environment, and deferred or unobservable intervals. Treat public datasets such as DAiSEE as research references, not ground truth for real-class engagement.
 
 The proposal's `session`, `transcript/notes`, `aggregates/events`, `assistant`, and `config` are logical data categories, not the current JSON schema. Map them through the shared contract; do not add top-level fields by assumption.
+
+## 협업 영역과 검증 자동화
+
+- 작업 전에 `git status --short`를 확인하고 기존 변경·미추적 파일을 보존한다. 실제 세션 JSON, 로그, 모델 파일을 정리하거나 덮어쓰지 않는다.
+- 역할 문서(`공유용_데이터_계약/README.md`)에 적힌 담당 경계를 기본 작업 영역으로 삼는다: 영상은 `video_recognition/`, 오디오는 `sherpa_stt/` 및 `faster_whisper_stt/`, 화면은 `frontend/`, 모델은 `engagement_model/`, 조교는 `ai_agent/`다. 통합 계약·저장·CI·루트 규칙은 공통 영역이다.
+- 담당자와 합의되지 않은 교차 모듈 작업은 해당 모듈 소유자와 영향 범위를 확인한다. `integration/contracts.py`, 계약 문서와 예시, 공통 시간축, `integration/service.py`의 저장 형식은 공통 수정 영역이다. 담당자 제안과 생산자·소비자 확인 없이 공통 계약을 바꾸지 않는다.
+- 병렬 작업은 파일 경계가 분명하고 같은 계약·공통 파일을 동시에 수정하지 않을 때만 제안한다. 통합 담당자가 공유 파일과 최종 통합을 관리하고, 각 작업은 담당 파일 목록·검증 명령·결과를 보고한다. 역할 제안만으로 에이전트를 자동 생성하지 않는다.
+- 완료 보고에는 변경 파일, 실행한 명령과 결과, 미실행 검증 및 장치/API 의존성을 구분해 적는다. 모의 입력 결과를 실제 카메라·마이크·모델 성능으로 표현하지 않는다.
+- 일반 무장치 CI는 계약·단위 검사와 모의 통합 검사만 실행한다. 카메라·오디오 장치·외부 AI API가 필요한 평가는 별도 수동/선택 환경 검사로 표시하고, 합성·모의 검증과 실제 환경 검증을 혼합하지 않는다.

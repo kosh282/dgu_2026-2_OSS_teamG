@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 from streamlit.proto.GapSize_pb2 import GapSize
+from streamlit.proto.Block_pb2 import Block
 
 from frontend.dashboard_data import SessionFiles
 from integration import IntegrationService
@@ -15,8 +16,8 @@ from integration import IntegrationService
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / '공유용_데이터_계약' / 'examples' / 'session.json'
-CARD_HEIGHTS = {'live-overview': 170, 'live-health': 210, 'live-timeline': 250,
-                'live-transcript': 250, 'live-notes': 210, 'live-assistant': 170}
+CARD_HEIGHTS = {'live-overview': 'content', 'live-health': 210,
+                'live-transcript': 210, 'live-notes': 250, 'live-assistant': 170}
 
 
 class FakeMonitor:
@@ -82,36 +83,42 @@ class LiveLayoutTests(unittest.TestCase):
         self.app.session_state['saved_sid'] = sid
 
     def cards(self):
-        return {key: (item.proto.id, item.proto.height_config.pixel_height)
+        return {key: (item.proto.id, item.proto.height_config.pixel_height
+                      if item.proto.height_config.WhichOneof('height_spec') == 'pixel_height' else 'content')
                 for item in self.app if item.type == 'flex_container'
                 for key in CARD_HEIGHTS if item.proto.id.endswith('-' + key)}
 
     def button(self, label):
         return next(item for item in self.app.button if item.label == label)
 
-    def test_six_fixed_cards_are_arranged_in_three_equal_column_rows(self):
+    def test_overview_and_timeline_share_a_card_beside_assistant_and_notes(self):
         self.app.run()
         self.assertFalse(self.app.exception)
         self.assertEqual({key: height for key, (_, height) in self.cards().items()}, CARD_HEIGHTS)
         root = next(item for item in self.app if item.type == 'flex_container'
                     and item.proto.id.endswith('-live-dashboard'))
         rows = [item for item in root.children.values() if item.type == 'flex_container']
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 2)
         for row in rows:
             self.assertEqual([item.proto.weight for item in row.children.values()], [0.5, 0.5])
-        expected = [('live-overview', 'live-assistant'), ('live-timeline', 'live-transcript'),
-                    ('live-notes', 'live-health')]
-        for row, keys in zip(rows, expected):
-            for column, key in zip(row.children.values(), keys):
-                self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-' + key)
-                                    for item in column.children.values()))
+        expected = [(('live-overview',), ('live-assistant', 'live-notes')),
+                    (('live-transcript',), ('live-health',))]
+        for row, column_keys in zip(rows, expected):
+            for column, keys in zip(row.children.values(), column_keys):
+                for key in keys:
+                    self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-' + key)
+                                        for item in column.children.values()))
+        overview = next(item for item in self.app if item.type == 'flex_container'
+                        and item.proto.id.endswith('-live-overview'))
+        self.assertTrue(any(item.type == 'selectbox' and item.key == 'live-chart-range' for item in overview))
+        self.assertTrue(any(item.type == 'subheader' and item.value == '공통 타임라인' for item in overview))
 
     def test_card_spacing_uses_streamlit_layout_instead_of_css_height_overrides(self):
         self.app.run()
         self.assertFalse(self.app.exception)
         cards = [item for item in self.app if item.type == 'flex_container'
                  and any(item.proto.id.endswith('-' + key) for key in CARD_HEIGHTS)]
-        self.assertEqual(len(cards), 6)
+        self.assertEqual(len(cards), 5)
         for card in cards:
             gap = GapSize.XXSMALL if card.proto.id.endswith('-live-overview') else GapSize.XSMALL
             self.assertEqual(card.proto.flex_container.gap_config.gap_size, gap)
@@ -127,20 +134,25 @@ class LiveLayoutTests(unittest.TestCase):
                         and item.proto.id.endswith('-live-overview'))
         rows = [item for item in overview.children.values() if item.type == 'flex_container']
         self.assertEqual(len(rows), 1)
-        body_columns = list(rows[0].children.values())
+        timeline_columns = list(rows[0].children.values())
         self.assertFalse(any(item.type == 'button' and item.label == '수업 종료' for item in overview))
+        self.assertFalse(any(item.type == 'caption' and '진행 시간' in item.value for item in overview))
+        self.assertTrue(any('진행 시간' in item.value for item in self.app.caption))
         header = next(item for item in self.app if item.type == 'flex_container'
                       and item.proto.id.endswith('-live-page-header'))
         header_row = next(item for item in header.children.values() if item.type == 'flex_container')
-        action_column = list(header_row.children.values())[1]
-        self.assertTrue(any(item.type == 'button' and item.label == '수업 종료' for item in action_column))
-        self.assertTrue(any(item.type == 'metric' and item.label == '최근 실험 구간 점수' for item in body_columns[0]))
-        self.assertTrue(any(item.type == 'button' and item.label == '정면 기준 재보정' for item in body_columns[1]))
+        self.assertEqual(header_row.proto.flex_container.justify, Block.FlexContainer.SPACE_BETWEEN)
+        action_group = list(header_row.children.values())[1]
+        self.assertEqual([item.label for item in action_group if item.type == 'button'],
+                         ['정면 기준 재보정', '수업 종료'])
+        self.assertTrue(any(item.type == 'caption' and '진행 시간' in item.value for item in header.children.values()))
+        self.assertTrue(any(item.type == 'subheader' and item.value == '공통 타임라인' for item in timeline_columns[0]))
+        self.assertTrue(any(item.type == 'metric' and item.label == '최근 실험 구간 점수' for item in timeline_columns[1]))
         footer = next(item for item in overview.children.values()
                       if item.type == 'caption' and '점수 상태:' in item.value)
         self.assertFalse(footer.proto.wrap)
         self.assertEqual(footer.proto.help, footer.value)
-        self.assertEqual(overview.proto.height_config.pixel_height, 170)
+        self.assertEqual(overview.proto.height_config.WhichOneof('height_spec'), 'use_content')
 
     def test_overview_collecting_and_long_title_keep_controls_and_footer(self):
         title = '긴 수업 제목 ' * 30
@@ -155,11 +167,10 @@ class LiveLayoutTests(unittest.TestCase):
         header = next(item for item in self.app.caption if '진행 시간' in item.value)
         self.assertFalse(header.proto.wrap)
         self.assertEqual(header.proto.help, title)
-        self.assertEqual(self.cards()['live-overview'][1], 170)
+        self.assertEqual(self.cards()['live-overview'][1], 'content')
 
-    def test_preview_and_log_toggles_preserve_cards_draft_range_and_session(self):
+    def test_preview_and_log_toggles_preserve_cards_range_and_session(self):
         self.app.run()
-        self.app.text_input(key='live-note-text').set_value('작성 중인 메모').run()
         self.app.selectbox(key='live-chart-range').select('최근 10분').run()
         cards = self.cards()
         before = self.live.service.get_dashboard_snapshot(self.live.sid)
@@ -168,7 +179,6 @@ class LiveLayoutTests(unittest.TestCase):
                 self.button(label).click().run()
                 self.assertFalse(self.app.exception)
                 self.assertEqual(self.cards(), cards)
-                self.assertEqual(self.app.text_input(key='live-note-text').value, '작성 중인 메모')
                 self.assertEqual(self.app.selectbox(key='live-chart-range').value, '최근 10분')
                 self.assertIs(self.app.session_state['live'], self.live)
             rerun.assert_not_called()
@@ -187,12 +197,12 @@ class LiveLayoutTests(unittest.TestCase):
 
     def test_note_is_saved_once_after_tool_changes(self):
         self.app.run()
-        self.app.text_input(key='live-note-text').set_value('새 메모').run()
         self.button('개발자 모드 켜기').click().run()
-        self.button('메모 저장').click().run()
+        self.app.chat_input(key='live-note-text').set_value('첫 줄\n둘째 줄').run()
         self.app.run()
         notes = self.live.service.get_dashboard_snapshot(self.live.sid)['notes']
-        self.assertEqual(sum(event['payload']['text'] == '새 메모' for event in notes), 1)
+        self.assertEqual(sum(event['payload']['text'] == '첫 줄\n둘째 줄' for event in notes), 1)
+        self.assertTrue(any(item.value == '첫 줄\n둘째 줄' for item in self.app.text))
 
     def test_long_content_and_empty_content_keep_the_same_card_geometry(self):
         self.app.run()
@@ -214,18 +224,16 @@ class LiveLayoutTests(unittest.TestCase):
         self.assertFalse(self.app.exception)
         self.assertEqual(self.cards(), cards)
 
-    def test_accepting_suggestion_preserves_draft_and_records_evidence_once(self):
+    def test_accepting_suggestion_records_evidence_once(self):
         self.app.run()
         cards = self.cards()
         snapshot = self.live.service.get_dashboard_snapshot(self.live.sid)
         suggestion = snapshot['suggestions'][0]
-        self.app.text_input(key='live-note-text').set_value('별도 메모 초안').run()
         with patch('streamlit.rerun') as rerun:
             self.button('제안 메모로 저장').click().run()
             rerun.assert_not_called()
         self.assertFalse(self.app.exception)
         self.assertEqual(self.cards(), cards)
-        self.assertEqual(self.app.text_input(key='live-note-text').value, '별도 메모 초안')
         notes = self.live.service.get_dashboard_snapshot(self.live.sid)['notes']
         self.assertEqual(sum(suggestion['event_id'] in event['payload']['linked_event_ids'] for event in notes), 1)
         self.assertIn(suggestion['event_id'], self.app.session_state['hidden_suggestions'])

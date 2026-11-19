@@ -31,7 +31,7 @@ class WindowPublisherTests(unittest.TestCase):
         self.service.elapsed_ms = lambda sid: 10000
         self.publisher = WindowPublisher(self.service, self.sid, FakeRuntime())
 
-    def test_default_windows_publish_every_second_after_first_ten_seconds(self):
+    def test_default_windows_publish_every_second_after_first_five_seconds(self):
         runtime = FakeRuntime()
         runtime.config = ModelConfig()
         publisher = WindowPublisher(self.service, self.sid, runtime)
@@ -39,7 +39,8 @@ class WindowPublisherTests(unittest.TestCase):
         publisher.advance(12000)
         events = self.service.get_dashboard_snapshot(self.sid)['engagement_windows']
         self.assertEqual([(e['start_ms'], e['end_ms']) for e in events],
-                         [(0, 10000), (1000, 11000), (2000, 12000)])
+                         [(0, 5000), (1000, 6000), (2000, 7000), (3000, 8000),
+                          (4000, 9000), (5000, 10000), (6000, 11000), (7000, 12000)])
 
     def test_time_weighted_window_and_contract(self):
         for ms in range(0, 1001, 100):

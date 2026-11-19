@@ -6,6 +6,9 @@
   얼굴 특징은 보내지 않는다. 호출이 실패하면 `LocalWriter` 결과로 대체하고 오류를 남긴다.
 """
 import json
+import re
+import socket
+import ssl
 import threading
 from urllib import error as urlerror
 from urllib import parse, request
@@ -160,6 +163,67 @@ class ClaudeUnavailable(RuntimeError):
     """Claude 호출 실패. 호출 측은 로컬 결과로 대체한다."""
 
 
+def _safe_error_token(value):
+    """제공자 오류의 짧은 식별자만 노출하고 임의의 응답 문구는 버린다."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:80] if value and re.fullmatch(r'[A-Za-z0-9_.:/-]+', value) else None
+
+
+def _http_error_summary(provider, error, *, operation=None):
+    details = []
+    try:
+        body = json.loads(error.read().decode('utf-8', errors='replace'))
+        item = body.get('error', body) if isinstance(body, dict) else {}
+        if isinstance(item, dict):
+            for label, value in (('코드', item.get('code')), ('상태', item.get('status')),
+                                 ('유형', item.get('type')), ('항목', item.get('param'))):
+                token = _safe_error_token(value)
+                if token and token not in details:
+                    details.append(f'{label} {token}')
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    headers = error.headers or {}
+    request_id = _safe_error_token(headers.get('x-request-id') or headers.get('request-id'))
+    if request_id:
+        details.append(f'요청 ID {request_id}')
+    retry_after = _safe_error_token(headers.get('retry-after'))
+    if retry_after and retry_after.isdigit():
+        details.append(f'{retry_after}초 후 재시도 안내')
+    suffix = '; ' + ', '.join(details) if details else ''
+    if error.code == 404:
+        action = '모델 ID와 해당 모델의 API 메서드 지원 여부를 확인하세요.'
+    elif error.code in {401, 403}:
+        action = '키 유효성, 프로젝트 및 키의 API 접근 권한을 확인하세요.'
+    elif error.code == 429:
+        action = '요청 제한 또는 프로젝트 할당량을 확인하세요.'
+    elif error.code == 400:
+        action = '요청 형식과 모델이 지원하는 기능을 확인하세요.'
+    else:
+        action = '제공자 API 상태와 오류 코드를 확인하세요.'
+    phase = f'{operation} ' if operation else ''
+    return (f'{provider} API {phase}실패 (HTTP {error.code}{suffix}). '
+            f'비밀 키와 응답 본문은 표시하지 않았습니다. {action}')
+
+
+def _connection_error_summary(provider, error):
+    reason = error.reason if isinstance(error, urlerror.URLError) else error
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        cause = '30초 연결/응답 시간 초과'
+    elif isinstance(reason, ssl.SSLError):
+        cause = 'TLS 인증서 또는 보안 연결 오류'
+    elif isinstance(reason, socket.gaierror):
+        cause = 'DNS에서 API 호스트를 찾지 못함'
+    elif isinstance(reason, ConnectionRefusedError):
+        cause = '네트워크 연결이 거부됨'
+    else:
+        cause = f'네트워크 연결 오류 ({type(reason).__name__})'
+    return f'{provider} API {cause}. 키·요청 본문은 표시하지 않았습니다.'
+
+
 def claude_ready():
     """anthropic 패키지 설치 여부. 자격 증명은 실제 호출에서 확인한다."""
     import importlib.util
@@ -304,8 +368,8 @@ class ClaudeWriter:
 
 
 PROVIDER_DEFAULT_MODELS = {
-    'openai': 'gpt-4o-mini',
-    'gemini': 'gemini-2.5-flash',
+    'openai': 'gpt-5.4-nano',
+    'gemini': 'gemini-3.5-flash-lite',
     'claude': CLAUDE_MODEL,
 }
 
@@ -329,9 +393,32 @@ class PersonalAPIWriter(ClaudeWriter):
 
     def check_connection(self):
         """수업 내용 없이 선택한 모델의 구조화 응답을 확인한다."""
+        if self.provider == 'gemini':
+            self._check_gemini_model()
         self._ask('Return a JSON object matching the requested schema.',
                   'Connection check only. Set choice to -1 and use empty strings.',
                   _SUGGEST_SCHEMA, 'low')
+
+    def _check_gemini_model(self):
+        """생성 호출 전에 선택 모델의 존재와 generateContent 지원을 확인한다."""
+        endpoint = ('https://generativelanguage.googleapis.com/v1beta/models/'
+                    + parse.quote(self._model, safe=''))
+        req = request.Request(endpoint, headers={'x-goog-api-key': self._api_key}, method='GET')
+        try:
+            with request.urlopen(req, timeout=30) as response:
+                model_info = json.loads(response.read().decode('utf-8'))
+        except urlerror.HTTPError as exc:
+            raise ClaudeUnavailable(_http_error_summary(self.provider, exc, operation='모델 조회')) from None
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise ClaudeUnavailable(_connection_error_summary(self.provider, exc)) from None
+        except (ValueError, TypeError, AttributeError):
+            raise ClaudeUnavailable('Gemini 모델 조회 응답을 해석할 수 없습니다.') from None
+        methods = model_info.get('supportedGenerationMethods') if isinstance(model_info, dict) else None
+        if isinstance(methods, list) and 'generateContent' not in methods:
+            listed = ', '.join(_safe_error_token(method) or 'unknown' for method in methods[:8]) or '없음'
+            raise ClaudeUnavailable(
+                f"Gemini 모델 '{self._model}'은 존재하지만 generateContent를 지원하지 않습니다 "
+                f'(지원 메서드: {listed}).')
 
     def _ask(self, system, content, schema, effort):
         headers = {'Content-Type': 'application/json'}
@@ -379,9 +466,10 @@ class PersonalAPIWriter(ClaudeWriter):
             _validate_response(data, schema)
             return data
         except urlerror.HTTPError as exc:
-            raise ClaudeUnavailable(f'{self.provider} API 요청 실패 (HTTP {exc.code}); 키, 모델 및 사용량을 확인하세요') from None
-        except (urlerror.URLError, TimeoutError, OSError):
-            raise ClaudeUnavailable(f'{self.provider} API 연결 실패 또는 시간 초과') from None
+            operation = 'generateContent 요청' if self.provider == 'gemini' else None
+            raise ClaudeUnavailable(_http_error_summary(self.provider, exc, operation=operation)) from None
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise ClaudeUnavailable(_connection_error_summary(self.provider, exc)) from None
         except (ValueError, TypeError, KeyError, AttributeError):
             raise ClaudeUnavailable(f'{self.provider} API 응답이 유효하지 않거나 중단됐습니다') from None
 

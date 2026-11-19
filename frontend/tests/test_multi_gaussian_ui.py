@@ -38,7 +38,7 @@ class FakeLive:
     def participant_snapshot(self):
         return [
             {'id': 'S001', 'status': 'scored', 'calibration_status': 'ready',
-             'current_direction_score': 87.5, 'score': 82.0},
+             'current_direction_score': 87.5, 'score': 82.0, 'current_head_score': 85.0, 'current_eye_score': 97.5},
             {'id': 'S002', 'status': 'missing', 'calibration_status': 'ready',
              'current_direction_score': None, 'score': None},
         ]
@@ -84,11 +84,12 @@ class MultiGaussianUITests(unittest.TestCase):
         self.assertFalse(app.exception)
         table = next(item.value for item in app.dataframe if '임시 ID' in item.value.columns)
         self.assertEqual(table['임시 ID'].tolist(), ['S001', 'S002'])
-        self.assertEqual(table.loc[0, '현재 머리 점수'], 87.5)
-        self.assertEqual(table.loc[0, '최근 머리 점수'], 82.0)
+        self.assertEqual(table.loc[0, '현재 결합 점수'], 87.5)
+        self.assertEqual(table.loc[0, '현재 머리 점수'], 85.0)
+        self.assertEqual(table.loc[0, '현재 눈 점수'], 97.5)
         self.assertEqual(table.loc[1, '상태'], '관측 불가')
         self.assertTrue(pd.isna(table.loc[1, '현재 머리 점수']))
-        self.assertTrue(pd.isna(table.loc[1, '최근 머리 점수']))
+        self.assertTrue(pd.isna(table.loc[1, '현재 눈 점수']))
 
     def test_targeted_recalibration_offers_only_observed_tracks(self):
         app = self.app(live=True).run()
