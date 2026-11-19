@@ -3,3 +3,5 @@ __pycache__/
 frontend/diagnostic_logs/
 engagement_model/diagnostic_logs/
 video_recognition/demo_logs/
+# 제거한 sherpa-onnx 전사 모듈이 각 PC에 남긴 모델(약 430MB)·캐시. 커밋하지 않는다.
+sherpa_stt/

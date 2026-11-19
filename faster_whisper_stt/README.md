@@ -26,6 +26,15 @@ video_recognition/.venv/Scripts/python.exe -m pip install -r faster_whisper_stt/
 
 선택한 모델(`small` 기본, `base`)은 첫 사용 시 `faster_whisper_stt/models/`에 자동으로 내려받습니다(small 약 480MB). 모델 폴더는 Git에 올리지 않습니다. Python 3.13 가상환경(Windows 11)에서 faster-whisper 1.2.1 설치·실행을 확인했습니다. Python 3.14의 `ctranslate2` 휠 제공 여부는 확인하지 않았습니다.
 
+### 이전 sherpa 정리
+
+sherpa를 쓰던 PC에는 pull 후에도 Git이 관리하지 않던 모델 폴더(`sherpa_stt/models`, 약 430MB)와 패키지가 남습니다. 실행에는 영향이 없고 `sherpa_stt/`는 루트 `.gitignore`로 커밋에서 제외되지만, 정리하려면 저장소 루트에서 다음을 실행합니다.
+
+```powershell
+if (Test-Path sherpa_stt) { Remove-Item -Recurse -Force sherpa_stt }
+video_recognition/.venv/Scripts/python.exe -m pip uninstall -y sherpa-onnx sherpa-onnx-core
+```
+
 ## 프런트 실행기 동작
 
 `WhisperLiveTranscription`은 겹치지 않는 구간을 한 번씩 인식해 확정 전사로 전달합니다(값은 실험값).
