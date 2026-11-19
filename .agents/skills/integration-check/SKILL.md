@@ -17,7 +17,6 @@ Use when a change crosses module boundaries, modifies event delivery or session 
    video_recognition/.venv/Scripts/python.exe -m unittest discover -s integration/tests -t . -v
    video_recognition/.venv/Scripts/python.exe -m unittest discover -s engagement_model/tests -v
    video_recognition/.venv/Scripts/python.exe -m unittest discover -s frontend/tests -v
-   video_recognition/.venv/Scripts/python.exe -m unittest discover -s sherpa_stt/tests -t . -v
    video_recognition/.venv/Scripts/python.exe -m unittest discover -s ai_agent/tests -t . -v
    video_recognition/.venv/Scripts/python.exe -m unittest discover -s faster_whisper_stt -p "test_*.py" -v
    video_recognition/.venv/Scripts/python.exe -m unittest discover -s experimental_vision -v

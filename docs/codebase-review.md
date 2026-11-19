@@ -11,8 +11,7 @@
 | `video_recognition/` | Windows 창 캡처, 입력 크기 제한, MediaPipe 전체·부분 영역 추론, 후처리·보정 | 참가자 고정 타일을 전제로 하지 않는다. 화면 경계 기반 후보 영역도 추가 분석한다. 작은 얼굴·중복 제거·실제 다인 정확도는 검증되지 않았다. |
 | `engagement_model/` | 단일 얼굴 Gaussian 상태 계산, ID/임시 위치별 보정·집계, `WindowPublisher` | 현재 프런트·Windows 데모는 머리 점수를 집계하고 눈 점수는 별도 참고값으로 계산한다. `latest` 계산과 `engagement_window` 발행이 실제로 연결되어 있다. |
 | `integration/` | 계약 검증, 공통 시간축, 전사 revision, 근거 연결, JSON 저장·재열기 | RLock과 복사 반환, 임시 파일·원자 교체를 사용한다. 기존 v0.1.0과 현재 v0.2.0 확장안을 읽는다. |
-| `sherpa_stt/` | 루프백/마이크 → 메모리 큐 → 스트리밍 인식 → 부분·확정 전사 | 세션 공통 시계와 청크 누락 처리가 연결되어 있다. 프로세스 루프백 도우미는 별도 실험 경로다. |
-| `faster_whisper_stt/` | 콘솔 비교와 선택형 `WhisperLiveTranscription` | 현재 프런트는 base/small 선택형 경로도 연결한다(설치 시 small 기본). 말 멈춤 단위(8~20초) 비중첩 확정 전사로, sherpa의 실시간 부분 전사와 지연 특성이 다르다. |
+| `faster_whisper_stt/` | 루프백/마이크 → 메모리 큐 → 말 멈춤 분할 → faster-whisper 확정 전사(`WhisperLiveTranscription`) | 프런트의 유일한 전사 경로(small 기본, base 선택). 세션 공통 시계와 청크 누락 처리가 연결되어 있다. 부분 전사는 없고 말 멈춤 단위(8~20초)로 늦게 확정된다. 프로세스 루프백 도우미는 별도 실험 경로다. 2026-11 이후 sherpa-onnx 경로는 제거했다. |
 | `ai_agent/` | PDF/PPTX 텍스트 → 로컬 BM25 → 점수·전사 기반 제안과 사후 피드백 | 로컬 검색 및 외부 작성기를 지원한다. 근거 ID·자료 페이지를 연결한다. 외부 API 결과의 사실 정확성은 검증하지 않는다. |
 | `experimental_vision/` | 공통 영상 코드의 모의 회귀 테스트 | 일부 테스트가 이전 데모 구조와 이전 축소 규칙을 참조하고 있어 현재 진입점에 맞췄다. |
 

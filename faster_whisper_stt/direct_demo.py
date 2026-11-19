@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from integration import IntegrationService
-from sherpa_stt.audio import to_mono_float32
+from faster_whisper_stt.audio import to_mono_float32
 from faster_whisper_stt.capture import make_capture
 
 

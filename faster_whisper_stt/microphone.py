@@ -44,7 +44,7 @@ class MicrophoneCapture:
         try:
             import sounddevice as sd
         except ImportError as error:
-            raise ImportError("sounddevice가 설치되지 않았습니다. sherpa_stt/requirements.txt를 설치하세요") from error
+            raise ImportError("sounddevice가 설치되지 않았습니다. faster_whisper_stt/requirements.txt를 설치하세요") from error
         self._stream = sd.InputStream(samplerate=self._sample_rate_hz, channels=1, dtype="float32",
                                       blocksize=self._blocksize, device=self._device, callback=self._callback)
         self._stream.start()

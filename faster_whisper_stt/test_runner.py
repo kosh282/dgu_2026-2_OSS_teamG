@@ -6,7 +6,7 @@ import numpy as np
 
 from faster_whisper_stt.runner import WhisperConfig, WhisperLiveTranscription
 from integration import IntegrationService
-from sherpa_stt.audio import AudioChunk
+from faster_whisper_stt.audio import AudioChunk
 
 
 class FakeCapture:

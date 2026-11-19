@@ -1,18 +1,20 @@
-"""말 멈춤 단위 faster-whisper 전사를 공통 세션에 전달한다."""
+"""오디오 입력 → faster-whisper → 통합 서비스로 이어지는 말 멈춤 단위 전사 실행기."""
 from dataclasses import dataclass
 from collections import deque
 from pathlib import Path
 import queue
 import re
+import threading
 import time
 from uuid import uuid4
 
 import numpy as np
 
-from sherpa_stt.audio import to_mono_float32
-from sherpa_stt.runner import LiveTranscription
-
+from .audio import to_mono_float32
 from .segmenter import PauseSegmenter
+
+COMPONENT = 'stt'
+SOURCES = {'loopback', 'microphone'}
 
 # Whisper가 무음·잡음 구간에서 자주 만들어 내는 문장. 구간 전체가 이 문장 하나일 때만 버린다.
 HALLUCINATED_PHRASES = frozenset(re.sub(r'[^0-9a-z가-힣]', '', text.lower()) for text in (
@@ -145,8 +147,14 @@ def load_whisper(config):
                         download_root=str(Path(__file__).resolve().parent / 'models'))
 
 
-class WhisperLiveTranscription(LiveTranscription):
-    """같은 캡처·세션 시계를 사용하며 말 멈춤에서 자른 겹치지 않는 구간을 한 번씩 인식한다.
+class WhisperLiveTranscription:
+    """세션 하나의 전사를 별도 스레드에서 실행한다. 말 멈춤에서 자른 겹치지 않는 구간을 한 번씩 인식한다.
+
+    - `source="loopback"`: `target_process_id`가 있으면 해당 프로세스 트리, 없으면 기본 출력 장치 소리
+    - `source="microphone"`: 마이크 입력
+    청크 시각은 영상 분석과 같은 `service.elapsed_ms(session_id)` 기준이다.
+    사용 순서: `start()` → (수업 진행) → `stop()` → `service.stop_session()`.
+    `stop()`이 남은 구간을 처리하므로 세션 종료보다 먼저 호출한다.
 
     말소리가 없는 구간은 인식하지 않고, 지어낸 문장으로 보이는 결과는 버린다(`segment_text`).
     `hint_terms`(강의 자료 용어 목록)를 주면 faster-whisper `hotwords`로 넣어 전문용어 인식을 돕는다.
@@ -155,8 +163,29 @@ class WhisperLiveTranscription(LiveTranscription):
     """
     MAX_HINT_CHARS = 150
 
-    def __init__(self, *args, hint_terms=None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, service, session_id, config, source='loopback', device=None, engine=None,
+                 capture=None, target_process_id=None, hint_terms=None):
+        if source not in SOURCES:
+            raise ValueError(f'source는 {sorted(SOURCES)} 중 하나여야 합니다')
+        self._service = service
+        self._session_id = session_id
+        self._config = config
+        self.source = source
+        self._device = device
+        self._target_process_id = target_process_id
+        self._engine = engine
+        self._capture = capture
+        self._thread = None
+        self._stop = threading.Event()
+        self._finished = False
+        self._stats_lock = threading.Lock()
+        self._capture_lock = threading.Lock()
+        self._capture_stopped = False
+        self._audio_ms = 0.0
+        self._process_s = 0.0
+        self._lags = []
+        self._last_lag_ms = None
+        self.last_error = None
         terms, length = [], 0
         for term in hint_terms or ():
             term = str(term).strip()
@@ -174,31 +203,93 @@ class WhisperLiveTranscription(LiveTranscription):
         self._empty_windows = 0
         self._previous_text = ''
 
+    # 상태 ---------------------------------------------------------------
+    def _status(self, state, message, reasons=None):
+        now = self._service.elapsed_ms(self._session_id)
+        event = self._service.make_event(
+            self._session_id, 'analysis_status', {'component': COMPONENT, 'state': state, 'message': message},
+            now, now, 'speech', quality_status='not_observable' if state == 'unavailable' else 'valid',
+            reason_codes=reasons)
+        self._service.receive_event(event)
+
+    def _safe_status(self, *args):
+        try:
+            self._status(*args)
+        except Exception:
+            pass
+
     def stats(self):
-        stats = super().stats()
+        """실시간성 계측(메모리 전용, 세션 JSON에 넣지 않음).
+
+        - `rtf`: 인식 처리 시간 / 받은 오디오 길이. 1보다 작으면 실시간보다 빠르다.
+        - `lag_ms_*`: 구간 끝 시각 → 해당 구간 인식 완료 시각(세션 시계).
+        """
         with self._stats_lock:
+            lags = sorted(self._lags)
+            audio_ms, process_s = self._audio_ms, self._process_s
             peak = max(self._recent_levels) if self._recent_levels else None
-            stats['capture_level_dbfs'] = (round(20 * float(np.log10(max(peak, 1e-10))), 1)
-                                          if peak is not None else None)
-            stats['processed_windows'] = self._processed_windows
-            stats['empty_windows'] = self._empty_windows
-            stats['hint_term_count'] = len(self.hint_terms)
+            stats = {
+                'source': self.source, 'audio_seconds': round(audio_ms / 1000, 2),
+                'rtf': round(process_s * 1000 / audio_ms, 3) if audio_ms else None,
+                'lag_ms_p50': lags[min(len(lags) - 1, int(len(lags) * 0.5))] if lags else None,
+                'lag_ms_p95': lags[min(len(lags) - 1, int(len(lags) * 0.95))] if lags else None,
+                'lag_ms_max': lags[-1] if lags else None,
+                'lag_ms_latest': self._last_lag_ms,
+                # 최근 약 2초 청크 RMS의 최대값. 말소리 여부 판정에는 쓰지 않는다.
+                'capture_level_dbfs': (round(20 * float(np.log10(max(peak, 1e-10))), 1)
+                                       if peak is not None else None),
+                'processed_windows': self._processed_windows,
+                'empty_windows': self._empty_windows,
+                'hint_term_count': len(self.hint_terms),
+            }
+        capture = self._capture
+        stats.update({
+            'dropped_chunks': getattr(capture, 'dropped_chunks', 0),
+            'input_overflows': getattr(capture, 'overflow_count', 0),
+            'discontinuities': getattr(capture, 'discontinuity_count', 0),
+            'queue_size': capture.chunks.qsize() if capture is not None else None,
+        })
         return stats
 
+    def is_alive(self):
+        """전사 작업이 실제로 동작 중인지 관리자에게 알린다."""
+        return self._thread is not None and self._thread.is_alive()
+
+    # 실행 ---------------------------------------------------------------
+    def _make_capture(self):
+        if self.source == 'loopback':
+            from .loopback import LoopbackCapture
+            return LoopbackCapture(self._service, self._session_id, self._config.sample_rate_hz,
+                                   self._config.chunk_ms, speaker=self._device,
+                                   process_id=self._target_process_id)
+        from .microphone import MicrophoneCapture
+        return MicrophoneCapture(self._service, self._session_id, self._config.sample_rate_hz,
+                                 self._config.chunk_ms, self._device)
+
+    def _stop_capture(self):
+        with self._capture_lock:
+            if self._capture is not None and not self._capture_stopped:
+                self._capture.stop()
+                self._capture_stopped = True
+
     def start(self):
+        """모델과 입력 장치를 준비한다. 실패하면 `unavailable` 상태를 알리고 False를 반환한다."""
         if self._thread is not None:
             raise RuntimeError('이미 시작했습니다')
         try:
             self._engine = self._engine or load_whisper(self._config)
             self._capture = self._capture or self._make_capture()
             self._capture.start()
-        except Exception as error:
+        except Exception as error:  # 모델 없음, 장치 없음, 권한 거부, 드라이버 오류 등
             self.last_error = error
-            self._stop_capture()
+            try:
+                self._stop_capture()
+            except Exception:
+                pass
             self._status('unavailable', f'전사를 시작하지 못했습니다: {error}', ['audio_unavailable'])
             return False
-        self._status('running', 'faster-whisper 말 멈춤 단위 전사를 시작했습니다.')
-        import threading
+        label = '출력 음성(루프백)' if self.source == 'loopback' else '마이크'
+        self._status('running', f'faster-whisper 말 멈춤 단위 전사를 시작했습니다. 입력: {label}')
         self._thread = threading.Thread(target=self._loop, name='whisper-stt', daemon=True)
         self._thread.start()
         return True

@@ -88,8 +88,8 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 super().__init__(service, sid)
                 engines.append((engine, service.elapsed_ms(sid)))
 
-        with patch('sherpa_stt.engine.SherpaEngine', side_effect=fake_engine), \
-             patch('sherpa_stt.runner.LiveTranscription', RecordingTranscription):
+        with patch('faster_whisper_stt.runner.load_whisper', side_effect=fake_engine), \
+             patch('faster_whisper_stt.runner.WhisperLiveTranscription', RecordingTranscription):
             for _ in range(2):
                 live = LiveSession(None, audio_source='loopback', video_enabled=False)
                 live.start('test')
@@ -117,8 +117,8 @@ class LiveSessionIsolationTests(unittest.TestCase):
             failure.set()
             raise RuntimeError('camera failed')
 
-        with patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
-             patch('sherpa_stt.runner.LiveTranscription', FakeTranscription), \
+        with patch('faster_whisper_stt.runner.load_whisper', return_value=object()), \
+             patch('faster_whisper_stt.runner.WhisperLiveTranscription', FakeTranscription), \
              patch('frontend.live_session.RETRY_DELAYS_SECONDS', (0.01, 0.01, 0.01)), \
              patch('frontend.live_session.FaceAnalyzer', side_effect=fail_video):
             live = LiveSession(123, audio_source='microphone')
@@ -149,8 +149,8 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 live.stop_event.wait(0.01)
                 return None
 
-        with patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
-             patch('sherpa_stt.runner.LiveTranscription', side_effect=RuntimeError('STT failed')), \
+        with patch('faster_whisper_stt.runner.load_whisper', return_value=object()), \
+             patch('faster_whisper_stt.runner.WhisperLiveTranscription', side_effect=RuntimeError('STT failed')), \
              patch('frontend.live_session.FaceAnalyzer', FakeResource), \
              patch('frontend.live_session.WindowCapture', FakeResource), \
              patch('frontend.live_session.PreviewCapture', FakeResource), \
@@ -250,8 +250,8 @@ class LiveSessionIsolationTests(unittest.TestCase):
             live.stop()
 
     def test_audio_only_does_not_open_window(self):
-        with patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
-             patch('sherpa_stt.runner.LiveTranscription', FakeTranscription), \
+        with patch('faster_whisper_stt.runner.load_whisper', return_value=object()), \
+             patch('faster_whisper_stt.runner.WhisperLiveTranscription', FakeTranscription), \
              patch('frontend.live_session.WindowCapture') as capture:
             live = LiveSession(None, audio_source='microphone', video_enabled=False)
             live.start('test')
@@ -324,8 +324,8 @@ class LiveSessionIsolationTests(unittest.TestCase):
                 self.stopped = True
 
         with patch('frontend.live_session.RETRY_DELAYS_SECONDS', (0.01, 0.01, 0.01)), \
-             patch('sherpa_stt.engine.SherpaEngine', return_value=object()), \
-             patch('sherpa_stt.runner.LiveTranscription', SometimesFails):
+             patch('faster_whisper_stt.runner.load_whisper', return_value=object()), \
+             patch('faster_whisper_stt.runner.WhisperLiveTranscription', SometimesFails):
             live = LiveSession(None, audio_source='microphone', video_enabled=False)
             live.start('test')
             self.addCleanup(lambda: live.stop() if live.is_running() else None)

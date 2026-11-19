@@ -51,7 +51,7 @@ flowchart LR
 - 프런트는 Streamlit 기반이며 수업 제목 입력, 창 연결, 수업 시작·종료, 메모, 세션 JSON 내보내기 기능을 제공합니다.
 - 영상 분석은 MediaPipe로 얼굴 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 실험 점수를 확인할 수 있습니다.
 - 머리 방향 80%와 눈 감김 20%를 결합한 실험 점수를 통합부 구간 이벤트로 전달합니다. 재식별을 켜면 ID별, 끄면 단기 위치 트랙별 점수를 익명으로 집계합니다. 관측 불가를 0점으로 처리하지 않으며 집중도·이해도 측정값으로 검증된 것은 아닙니다.
-- 프런트에서 sherpa-onnx 또는 faster-whisper 전사를 선택할 수 있습니다. 강의 조교는 확정 전사와 유효 점수를 바탕으로 제안하며 PDF·PPTX 자료와 개인 API 사용은 선택 사항입니다. 출처 내용과 제안의 적합성은 교수자가 확인합니다. 실제 수업 자료에서의 정확도는 평가가 필요합니다. 자세한 내용은 [강의 조교 안내](ai_agent/README.md)를 참고하세요.
+- 프런트는 faster-whisper(small 기본, base 선택)로 수업 음성을 말 멈춤 단위로 전사합니다. 강의 조교는 확정 전사와 유효 점수를 바탕으로 제안하며 PDF·PPTX 자료와 개인 API 사용은 선택 사항입니다. 출처 내용과 제안의 적합성은 교수자가 확인합니다. 실제 수업 자료에서의 정확도는 평가가 필요합니다. 자세한 내용은 [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 - 창 단위 캡처는 현재 Windows용입니다. macOS에서는 창 선택·캡처 기능을 사용할 수 없습니다.
 
 ## 저장소 구성
@@ -61,7 +61,7 @@ flowchart LR
 | [frontend](frontend/README.md) | Streamlit 준비·라이브·사후 검토 화면과 세션 실행 |
 | [video_recognition](video_recognition/README.md) | Windows 창 캡처, 얼굴 특징과 정면 보정 |
 | [engagement_model](engagement_model/README.md) | 머리·눈 관찰 점수 계산과 구간 집계 |
-| [sherpa_stt](sherpa_stt/README.md) · [faster_whisper_stt](faster_whisper_stt/README.md) | 선택 가능한 음성 입력과 전사 |
+| [faster_whisper_stt](faster_whisper_stt/README.md) | 음성 입력(루프백·마이크)과 faster-whisper 전사 |
 | [ai_agent](ai_agent/README.md) | 강의 자료 검색, 수업 제안과 사후 피드백 |
 | `integration/` | 공통 세션 시계, 이벤트 검증과 JSON 관리 |
 | [공유용 데이터 계약](공유용_데이터_계약/README.md) | 모듈 간 이벤트·품질·시간 및 저장 형식 |
@@ -79,8 +79,6 @@ python -m venv video_recognition/.venv
 video_recognition/.venv/Scripts/python.exe -m pip install --upgrade pip
 video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-integrated.txt
 video_recognition/.venv/Scripts/python.exe -m pip install -r frontend/requirements.txt
-video_recognition/.venv/Scripts/python.exe -m pip install -r sherpa_stt/requirements.txt
-video_recognition/.venv/Scripts/python.exe -m sherpa_stt.download_model
 video_recognition/.venv/Scripts/python.exe -m pip install -r faster_whisper_stt/requirements.txt
 # 강의 조교 자료 읽기
 video_recognition/.venv/Scripts/python.exe -m pip install -r ai_agent/requirements.txt
@@ -112,7 +110,7 @@ Windows 데모는 프런트 개발자 모드와 같은 패널과 다인 Gaussian
 
 프런트와 Windows 웹캠 데모는 `video_recognition/group_developer_view.py`의 모델 생성·개발자 패널을 공유합니다. 진단 페이지에서 관측 중인 임시 트랙별 총점, 머리·눈 점수와 보정 각도·보류 사유를 확인할 수 있습니다. 개인별 값은 화면의 임시 진단 정보이며 세션 결과에 저장하지 않습니다.
 
-자세한 사용법은 [프런트 안내](frontend/README.md), [음성 전사 안내](sherpa_stt/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md), [강의 조교 안내](ai_agent/README.md)를 참고하세요.
+자세한 사용법은 [프런트 안내](frontend/README.md), [음성 전사 안내](faster_whisper_stt/README.md), [영상 분석 안내](video_recognition/README.md), [점수 모델 안내](engagement_model/README.md), [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 
 ## 개발·진단 테스트 명령어
 

@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import numpy as np
 
 from faster_whisper_stt.direct_demo import DirectTranscriber
-from faster_whisper_stt.capture import DemoLoopbackCapture
+from faster_whisper_stt.loopback import LoopbackCapture as DemoLoopbackCapture
 from integration import IntegrationService
-from sherpa_stt.audio import AudioChunk
+from faster_whisper_stt.audio import AudioChunk
 
 
 class FakeModel:

@@ -1,4 +1,4 @@
-# 별도 가상환경에서 설치: faster-whisper의 의존성을 프로젝트 환경과 분리합니다.
+# 프런트와 같은 환경(video_recognition/.venv)에 설치합니다. 전사 모델은 첫 사용 시 내려받습니다.
 faster-whisper==1.2.1
 sounddevice==0.5.6
 SoundCard==0.4.6

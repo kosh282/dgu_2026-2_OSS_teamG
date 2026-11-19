@@ -27,27 +27,31 @@ _stt_engines = {}
 
 
 def _load_stt_engine(config):
-    """STT 모델은 설정별로 한 번만 불러와 이후 수업과 재시작에서 재사용한다(첫 로드 약 5초).
+    """faster-whisper 모델은 설정별로 한 번만 불러와 이후 수업과 재시작에서 재사용한다.
 
-    인식기 상태는 스트림마다 따로 있으므로 엔진 하나를 여러 세션이 순서대로 써도 된다.
+    구간마다 독립적으로 인식하므로 모델 하나를 여러 세션이 순서대로 써도 된다.
     """
     with _stt_engine_lock:
         engine = _stt_engines.get(config)
         if engine is None:
-            from faster_whisper_stt.runner import WhisperConfig, load_whisper
-            if isinstance(config, WhisperConfig):
-                engine = _stt_engines[config] = load_whisper(config)
-            else:
-                from sherpa_stt.engine import SherpaEngine
-                engine = _stt_engines[config] = SherpaEngine(config)
+            from faster_whisper_stt.runner import load_whisper
+            engine = _stt_engines[config] = load_whisper(config)
         return engine
+
+
+STT_MODELS = ('whisper-small', 'whisper-base')
+
+
+def _whisper_config(stt_model):
+    from faster_whisper_stt.runner import WhisperConfig
+    return WhisperConfig(model=stt_model.removeprefix('whisper-'))
 
 
 class LiveSession:
     """선택한 창과 실제 수업 세션의 시작 시점을 분리해서 관리한다."""
 
     def __init__(self, hwnd, audio_source=None, *, video_enabled=True, model_enabled=True,
-                 reidentification_enabled=False, recovery_root=None, stt_model='sherpa', stt_hint_terms=()):
+                 reidentification_enabled=False, recovery_root=None, stt_model='whisper-small', stt_hint_terms=()):
         # 창 연결만으로는 분석기·카메라 캡처·세션 타이머를 시작하지 않는다.
         # 교수자가 '수업 시작'을 눌렀을 때에만 start()가 실제 세션을 만든다.
         self.service = IntegrationService()
@@ -63,7 +67,7 @@ class LiveSession:
         if self.video_enabled and hwnd is None:
             raise ValueError('영상 분석을 사용하려면 수업 창을 선택하세요.')
         self.audio_source = audio_source
-        if stt_model not in ('sherpa', 'whisper-base', 'whisper-small'):
+        if stt_model not in STT_MODELS:
             raise ValueError('지원하지 않는 전사 모델입니다.')
         self.stt_model = stt_model
         # 강의 자료에서 고른 용어. faster-whisper 전사 힌트로만 쓰고 세션 JSON에는 넣지 않는다.
@@ -113,12 +117,7 @@ class LiveSession:
         self._stt_engine = None
         if self.audio_source is not None:
             try:
-                if self.stt_model == 'sherpa':
-                    from sherpa_stt.config import SttConfig
-                    stt_config = SttConfig()
-                else:
-                    from faster_whisper_stt.runner import WhisperConfig
-                    stt_config = WhisperConfig(model=self.stt_model.removeprefix('whisper-'))
+                stt_config = _whisper_config(self.stt_model)
                 # 수업 시계가 시작되기 전에 모델을 불러, 로드 시간 동안 수업 앞부분 음성을 놓치지 않게 한다.
                 # 실패하면 기존처럼 STT 작업이 스스로 로드를 시도하고 unavailable/재시작을 알린다.
                 self._stt_engine = _load_stt_engine(stt_config)
@@ -290,16 +289,8 @@ class LiveSession:
             runner = None
             try:
                 if self._stt_config is None:
-                    if self.stt_model == 'sherpa':
-                        from sherpa_stt.config import SttConfig
-                        self._stt_config = SttConfig()
-                    else:
-                        from faster_whisper_stt.runner import WhisperConfig
-                        self._stt_config = WhisperConfig(model=self.stt_model.removeprefix('whisper-'))
-                if self.stt_model == 'sherpa':
-                    from sherpa_stt.runner import LiveTranscription
-                else:
-                    from faster_whisper_stt.runner import WhisperLiveTranscription as LiveTranscription
+                    self._stt_config = _whisper_config(self.stt_model)
+                from faster_whisper_stt.runner import WhisperLiveTranscription
                 if self._stt_engine is None:
                     # 시작 전 로드에 실패했으면 재시도마다 다시 불러 본다.
                     try:
@@ -307,9 +298,9 @@ class LiveSession:
                     except Exception:
                         pass  # 아래 runner.start()가 같은 오류를 unavailable로 알린다.
                 # 오디오는 선택한 영상 창과 무관하게 기본 출력 장치 전체를 받는다.
-                extra = {} if self.stt_model == 'sherpa' else {'hint_terms': self.stt_hint_terms}
-                runner = LiveTranscription(self.service, self.sid, self._stt_config,
-                                           source=self.audio_source, engine=self._stt_engine, **extra)
+                runner = WhisperLiveTranscription(self.service, self.sid, self._stt_config,
+                                                  source=self.audio_source, engine=self._stt_engine,
+                                                  hint_terms=self.stt_hint_terms)
                 with self.lock:
                     self.transcription = runner
                 if not runner.start():

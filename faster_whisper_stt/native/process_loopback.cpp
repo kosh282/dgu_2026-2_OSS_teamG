@@ -1,4 +1,4 @@
-// Process-tree WASAPI loopback helper for sherpa_stt.
+// Process-tree WASAPI loopback helper for faster_whisper_stt.
 // Writes mono 16 kHz signed PCM16 to stdout; never creates an audio file.
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00

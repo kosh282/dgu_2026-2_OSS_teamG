@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from faster_whisper_stt.live_demo import RollingWhisper
-from sherpa_stt.audio import AudioChunk
+from faster_whisper_stt.audio import AudioChunk
 
 
 class FakeModel:

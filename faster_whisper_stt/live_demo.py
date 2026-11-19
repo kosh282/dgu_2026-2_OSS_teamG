@@ -16,8 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from integration import IntegrationService
-from sherpa_stt.config import SttConfig
-from sherpa_stt.audio import to_mono_float32
+from faster_whisper_stt.audio import to_mono_float32
 from faster_whisper_stt.overlap import OverlapMerger
 
 
@@ -125,7 +124,6 @@ def main(argv=None):
                          compute_type=args.compute_type, cpu_threads=args.cpu_threads,
                          download_root=args.model_dir)
     from faster_whisper_stt.capture import make_capture
-    config = SttConfig()
     service = IntegrationService()
     sid = service.start_session("faster-whisper 비교", {
         "config_version": "faster-whisper-demo", "participation_model": None,

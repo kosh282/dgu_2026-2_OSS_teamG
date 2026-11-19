@@ -33,7 +33,7 @@ class ProcessLoopbackRecorder:
         helper = Path(__file__).resolve().parent / "native" / "process_loopback.exe"
         if not helper.is_file():
             raise RuntimeError(
-                "창 오디오 캡처 도우미가 없습니다. sherpa_stt/native/build_process_loopback.ps1을 실행하세요"
+                "창 오디오 캡처 도우미가 없습니다. faster_whisper_stt/native/build_process_loopback.ps1을 실행하세요"
             )
         self._process = subprocess.Popen(
             [str(helper), str(self.process_id)], stdin=subprocess.DEVNULL,
@@ -178,8 +178,8 @@ class LoopbackCapture:
             try:
                 import soundcard  # noqa: F401
             except ImportError as error:
-                raise ImportError("SoundCard가 설치되지 않았습니다. sherpa_stt/requirements.txt를 설치하세요") from error
-        self._thread = threading.Thread(target=self._run, name="sherpa-stt-loopback", daemon=True)
+                raise ImportError("SoundCard가 설치되지 않았습니다. faster_whisper_stt/requirements.txt를 설치하세요") from error
+        self._thread = threading.Thread(target=self._run, name="stt-loopback", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout):
             self.stop()
