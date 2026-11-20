@@ -13,14 +13,15 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, score_band, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
 files = SessionFiles(os.environ.get('LECTURER_SESSION_DIR', str(Path.home() / 'lecturer_dashboard' / 'sessions')))
 for key, value in {'page':'세션 시작 준비','live':None,'review':None,'saved_sid':None,'hidden_suggestions':set(),
                    'assistant':None,'assistant_error':None,'material_cache':{},'material_index':None,
-                   'assistant_result':None,'live_manual_suggestion':None,'live_writer_options':{}}.items():
+                   'assistant_result':None,'live_manual_suggestion':None,'live_writer_options':{},
+                   'live_score_thresholds':{},'notified_suggestions':{},'pending_manual_notice':None}.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -53,6 +54,10 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 .st-key-live-note-text [data-testid="stChatInput"] > div:focus-within{border-color:#365f91}
 /* 요약 카드 안의 점수에는 중첩 테두리·여백을 더하지 않는다. */
 .st-key-live-overview [data-testid="stMetric"]{border:0;padding:0;background:transparent}
+.st-key-score-band-red [data-testid="stMetric"]{background:#ffebee;border-radius:8px;padding:6px 10px}
+.st-key-score-band-yellow [data-testid="stMetric"]{background:#fff4cc;border-radius:8px;padding:6px 10px}
+.st-key-score-band-green [data-testid="stMetric"]{background:#e1f3e5;border-radius:8px;padding:6px 10px}
+.st-key-score-band-unknown [data-testid="stMetric"]{background:#eef0f2;border-radius:8px;padding:6px 10px}
 /* 라이브 제목과 버튼의 가로 배치 */
 .st-key-live-page-header [data-testid="stHorizontalBlock"]{align-items:center;gap:8px}
 .st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]{width:auto!important;flex:0 0 auto!important}
@@ -375,8 +380,8 @@ def preparation():
                 st.caption('전사 힌트 용어 (처리 시간 증가): '+', '.join(hint_terms))
             writer_options, writer_ready = assistant_options('live-assistant', disabled=running)
             st.caption('외부 AI 사용 시 전사·관련 자료가 제공자에 전달되며, AI가 검색어를 제안하면 한국어 위키백과에도 검색어가 전송됩니다. 검색 결과 제목만 참고하므로 링크 내용을 직접 확인하세요.')
-            score_threshold=st.slider('제안 시작 실험 점수 (이하)', 0, 100, 60, key='assistant_score_threshold', disabled=running)
-            st.caption('현재 점수는 단일 얼굴 실험값입니다. 점수가 없거나 오래되면 제안하지 않습니다. 외부 AI 선택 시 자료 없이도 전사 기반 제안을 받을 수 있습니다. '
+            score_threshold=st.slider('제안·화면 알림 기준 실험 점수 (이하)', 0, 100, 60, key='assistant_score_threshold', disabled=running)
+            st.caption('현재 점수는 관측 가능한 얼굴의 실험 집계값입니다. 점수가 없거나 오래되면 제안하지 않습니다. 외부 AI 선택 시 자료 없이도 전사 기반 제안을 받을 수 있습니다. '
                        '자료는 현재 브라우저 세션 메모리에만 두며 파일로 저장하지 않습니다. 세션 JSON에는 자료 이름·페이지 번호만 남습니다.')
         with st.container(border=True):
             st.subheader('4  동의·저장 안내')
@@ -411,11 +416,14 @@ def preparation():
                                      recovery_root=files.root / '.recovery')
                     live.start(title)
                     st.session_state.live=live
+                    st.session_state.live_score_thresholds[live.sid]=score_threshold
+                    st.session_state.notified_suggestions[live.sid]=set()
                     st.session_state.live_writer_options={live.sid:dict(writer_options)}
                     st.session_state.hidden_suggestions=set()
                     st.session_state.assistant=None
                     st.session_state.assistant_error=None
                     st.session_state.live_manual_suggestion=None
+                    st.session_state.pending_manual_notice=None
                     # 업로더 상태는 페이지를 옮기면 사라지므로 사후 검토에서 쓸 색인을 따로 보관한다(메모리 전용).
                     st.session_state.material_index=index
                     try:
@@ -590,6 +598,19 @@ def live_page():
                and not (running and model_status=='stopped') else None)
         display_score=live_score_display(windows,duration,running=running,
             model_enabled=getattr(live,'model_enabled',False),model_status=model_status)
+        threshold=st.session_state.live_score_thresholds.get(live.sid,60)
+        manual_notice=st.session_state.pop('pending_manual_notice',None)
+        if manual_notice:
+            st.toast('새 강의 제안: '+manual_notice, icon=':material/notifications:')
+        current_value=display_score['value'] if display_score['state']=='current' else None
+        low_score=current_value is not None and current_value <= threshold
+        seen=st.session_state.notified_suggestions.setdefault(live.sid,set())
+        new_suggestions=[event for event in snapshot['suggestions']+snapshot.get('teaching_suggestions',[])
+                         if event['event_id'] not in seen and event.get('created_ms') is not None]
+        if running and new_suggestions:
+            for event in new_suggestions:
+                st.toast('새 강의 제안: '+event['payload']['title'], icon=':material/notifications:')
+                seen.add(event['event_id'])
         previous_windows=[e for e in windows if score(e) is not None]
         previous_window=max(previous_windows,key=lambda e:(e['end_ms'],e.get('created_ms') or 0)) if previous_windows else None
         result,error,_=live.snapshot()
@@ -643,16 +664,19 @@ def live_page():
                 timeline_title,summary=st.columns(2,gap='small',**column_options)
                 timeline_title.subheader('공통 타임라인')
                 display_value=display_score['value']
-                summary.metric('최근 실험 구간 점수',f'{display_value:g}점' if display_value is not None else
-                               ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+                with summary, st.container(key='score-band-'+score_band(current_value,threshold)):
+                    st.metric('최근 실험 구간 점수',f'{display_value:g}점' if display_value is not None else
+                              ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
                 if display_score['state']=='held':
                     summary.caption(f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전")
+                if low_score:
+                    st.warning(f'최근 실험 점수가 설정 기준 {threshold}점 이하입니다. 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.')
                 st.caption(detail,help=detail,**caption_options)
                 chart_range=st.selectbox('그래프 범위',['최근 1분','최근 5분','최근 10분','전체 수업'],index=1,
                                          key='live-chart-range',label_visibility='collapsed')
                 range_ms={'최근 1분':60000,'최근 5분':300000,'최근 10분':600000}.get(chart_range)
                 start_ms=max(0,duration-range_ms) if range_ms else 0
-                chart_spec=live_chart_spec(); chart_spec['height']=125
+                chart_spec=live_chart_spec(low_score=low_score); chart_spec['height']=125
                 st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms,display_score=display_score),chart_spec,
                                    use_container_width=True,key='live-chart')
                 if display_score['state']=='held':
@@ -715,6 +739,8 @@ def live_page():
                             else:
                                 st.session_state.live_manual_suggestion={
                                 'error':'관련 강의자료가 없어 로컬 제안을 만들 수 없습니다.'}
+                        if st.session_state.live_manual_suggestion.get('result'):
+                            st.session_state.pending_manual_notice=st.session_state.live_manual_suggestion['result']['title']
                         st.rerun(scope='fragment')
                     if visible:
                         resources(live.service,live.sid,snapshot,show_empty=False,inline_details=True)
@@ -734,13 +760,12 @@ def live_page():
             left,right=st.columns(2,gap='small',**column_options)
             with left, st.container(height=210,border=True,key='live-transcript',**card_options):
                 st.subheader('실시간 전사 · 분석 상태')
+                if snapshot['transcripts']:
+                    st.text('\n'.join(f"[{clock(event['start_ms'])}] {event['payload']['text']}"
+                                      for event in snapshot['transcripts']))
                 for event in snapshot['partial_transcripts'][-1:]: st.caption('인식 중: '+event['payload']['text'])
-                for event in reversed(snapshot['transcripts'][-3:]): event_text(event)
                 if not snapshot['transcripts'] and not snapshot['partial_transcripts']:
                     st.caption('전사 모듈의 입력을 기다립니다.')
-                if len(snapshot['transcripts'])>3:
-                    with st.expander('이전 전사 보기'):
-                        for event in reversed(snapshot['transcripts'][:-3]): event_text(event)
             with right, st.container(height=210,border=True,key='live-health',**card_options):
                 st.subheader('분석 상태 · 개발자 도구')
                 state_labels={'running':'실행 중','ready':'준비됨','unavailable':'확인 필요','stopped':'꺼짐'}
@@ -835,43 +860,47 @@ def review_page():
             transcripts=[e for e in snapshot['transcripts'] if visible(e) and query.casefold() in e['payload']['text'].casefold()]
             st.caption(f'{len(transcripts)}개 문장 · 전사 종료 시점까지 확정된 최근 점수와 연결합니다.')
             st.caption('점수는 해당 문장만의 결과가 아닌 이전 분석 구간의 참고값입니다. 점수와 전사의 관계는 인과관계를 뜻하지 않습니다.')
-            for event in transcripts:
-                payload=event['payload']
-                linked_score=transcript_score_link(event, windows)
-                with st.container(border=True):
-                    transcript_col,score_col=st.columns([3,1], gap='medium')
-                    with transcript_col:
-                        st.caption(f"전사 · {clock(event['start_ms'])}–{clock(event['end_ms'])}")
-                        st.write(payload['text'])
-                        with st.expander('전사 수정 · 연결된 제안'):
-                            for suggestion in related_suggestions(event, all_suggestions):
-                                st.caption(f"{suggestion_phase(suggestion)} · {clock(suggestion['start_ms'])} · {suggestion['payload']['title']}")
-                            with st.form('edit-'+event['event_id']):
-                                text=st.text_area('전사 수정',payload['text'])
-                                if st.form_submit_button('수정 저장'):
-                                    try:
-                                        updated=dict(payload,text=text,revision=payload['revision']+1,is_edited=True,replaces_event_id=event['event_id'])
-                                        change=service.make_event(sid,'transcript_edited',updated,event['start_ms'],event['end_ms'],'ui')
-                                        service.receive_event(change)
-                                        files.save(service,sid)
-                                        st.rerun()
-                                    except Exception as exc:
-                                        st.error(f'전사를 수정하지 못했습니다: {exc}')
-                    with score_col:
-                        st.caption('실험 점수')
-                        score_value=linked_score['value']
-                        st.write(f'{score_value:.1f}점' if score_value is not None else linked_score['reason'])
-                        window=linked_score['window']
-                        if window:
-                            st.caption(f"{clock(window['start_ms'])}–{clock(window['end_ms'])}")
-                            if linked_score['delta'] is not None:
-                                st.caption(f"직전 구간 대비 {linked_score['delta']:+.1f}점")
-                            elif score_value is None:
-                                reasons=window.get('quality',{}).get('reason_codes',[])
-                                if reasons:
-                                    st.caption('사유: '+', '.join(reasons))
-                            st.button('구간 보기', key='score-window-'+event['event_id'],
-                                      on_click=select_score_window, args=(window['start_ms'], window['end_ms']))
+            if transcripts:
+                st.text('\n'.join(f"[{clock(event['start_ms'])}–{clock(event['end_ms'])}] {event['payload']['text']}"
+                                  for event in transcripts))
+                with st.expander('구간별 점수 · 전사 수정 · 연결된 제안'):
+                    for event in transcripts:
+                        payload=event['payload']
+                        linked_score=transcript_score_link(event, windows)
+                        with st.container():
+                            transcript_col,score_col=st.columns([3,1], gap='medium')
+                            with transcript_col:
+                                st.caption(f"전사 · {clock(event['start_ms'])}–{clock(event['end_ms'])}")
+                                st.write(payload['text'])
+                                with st.container():
+                                    for suggestion in related_suggestions(event, all_suggestions):
+                                        st.caption(f"{suggestion_phase(suggestion)} · {clock(suggestion['start_ms'])} · {suggestion['payload']['title']}")
+                                    with st.form('edit-'+event['event_id']):
+                                        text=st.text_area('전사 수정',payload['text'])
+                                        if st.form_submit_button('수정 저장'):
+                                            try:
+                                                updated=dict(payload,text=text,revision=payload['revision']+1,is_edited=True,replaces_event_id=event['event_id'])
+                                                change=service.make_event(sid,'transcript_edited',updated,event['start_ms'],event['end_ms'],'ui')
+                                                service.receive_event(change)
+                                                files.save(service,sid)
+                                                st.rerun()
+                                            except Exception as exc:
+                                                st.error(f'전사를 수정하지 못했습니다: {exc}')
+                            with score_col:
+                                st.caption('실험 점수')
+                                score_value=linked_score['value']
+                                st.write(f'{score_value:.1f}점' if score_value is not None else linked_score['reason'])
+                                window=linked_score['window']
+                                if window:
+                                    st.caption(f"{clock(window['start_ms'])}–{clock(window['end_ms'])}")
+                                    if linked_score['delta'] is not None:
+                                        st.caption(f"직전 구간 대비 {linked_score['delta']:+.1f}점")
+                                    elif score_value is None:
+                                        reasons=window.get('quality',{}).get('reason_codes',[])
+                                        if reasons:
+                                            st.caption('사유: '+', '.join(reasons))
+                                    st.button('구간 보기', key='score-window-'+event['event_id'],
+                                              on_click=select_score_window, args=(window['start_ms'], window['end_ms']))
             if not transcripts:
                 st.caption('이 구간 또는 검색어에 해당하는 확정 전사가 없습니다.')
     with right:

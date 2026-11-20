@@ -204,6 +204,30 @@ class LiveLayoutTests(unittest.TestCase):
         self.assertEqual(sum(event['payload']['text'] == '첫 줄\n둘째 줄' for event in notes), 1)
         self.assertTrue(any(item.value == '첫 줄\n둘째 줄' for item in self.app.text))
 
+    def test_current_score_warning_and_suggestion_notification_are_not_repeated(self):
+        snapshot = self.live.service.get_dashboard_snapshot(self.live.sid)
+        suggestion = dict(snapshot['suggestions'][0], created_ms=1000)
+        snapshot['suggestions'] = [suggestion]
+        snapshot['teaching_suggestions'] = []
+        current = {'state': 'current', 'value': 55, 'window': None, 'age_ms': 0}
+        self.app.session_state['live_score_thresholds'] = {self.live.sid: 55}
+        with patch.object(self.live.service, 'get_dashboard_snapshot', return_value=snapshot), \
+             patch('frontend.dashboard_data.live_score_display', return_value=current) as display, \
+             patch('streamlit.toast') as toast:
+            self.app.run()
+            self.assertFalse(self.app.exception)
+            self.assertTrue(any('설정 기준 55점 이하' in item.value for item in self.app.warning))
+            self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-score-band-red')
+                                for item in self.app))
+            self.app.run()
+            self.assertEqual(toast.call_count, 1)
+            display.return_value = {'state': 'held', 'value': 55, 'window': {'end_ms': 0}, 'age_ms': 6000}
+            self.app.run()
+            self.assertFalse(self.app.exception)
+            self.assertFalse(any('설정 기준 55점 이하' in item.value for item in self.app.warning))
+            self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-score-band-unknown')
+                                for item in self.app))
+
     def test_long_content_and_empty_content_keep_the_same_card_geometry(self):
         self.app.run()
         cards = self.cards()

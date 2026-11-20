@@ -160,7 +160,16 @@ def live_chart_data(windows, notes, duration, *, start_ms=0, display_score=None)
     return pd.DataFrame(rows, columns=['kind', 'time', 'end', 'value', 'sequence', 'time_label', 'text'])
 
 
-def live_chart_spec():
+def score_band(value, threshold):
+    """사용자가 정한 기준을 바탕으로 화면 표시용 색상만 결정한다."""
+    if value is None:
+        return 'unknown'
+    if value <= threshold:
+        return 'red'
+    return 'yellow' if value <= min(100, threshold + 20) else 'green'
+
+
+def live_chart_spec(*, low_score=False):
     """데이터와 분리된 고정 차트 설정으로 실시간 갱신 시 요소를 유지한다."""
     time_axis = {
         'title': None, 'grid': False, 'tickCount': 7,
@@ -169,6 +178,7 @@ def live_chart_spec():
     x = {'field': 'time', 'type': 'quantitative', 'scale': {'zero': False, 'nice': False}, 'axis': time_axis}
     y = {'field': 'value', 'type': 'quantitative', 'scale': {'domain': [-20, 105]},
          'axis': {'title': None, 'values': [0, 50, 100], 'gridColor': '#e6e9ed'}}
+    line_color = '#c62828' if low_score else '#2457d6'
     return {
         'height': 175, 'background': 'white',
         'layer': [
@@ -178,13 +188,13 @@ def live_chart_spec():
              'mark': {'type': 'rect', 'color': '#e6e9ed', 'opacity': 0.7},
              'encoding': {'x': x, 'x2': {'field': 'end'}}},
             {'transform': [{'filter': "datum.kind === 'score'"}],
-             'mark': {'type': 'line', 'color': '#2457d6', 'strokeWidth': 2,
+             'mark': {'type': 'line', 'color': line_color, 'strokeWidth': 2,
                       'point': {'size': 16}, 'invalid': 'break-paths-show-domains'},
              'encoding': {'x': x, 'y': y, 'order': {'field': 'sequence', 'type': 'quantitative'},
                           'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
                                       {'field': 'value', 'type': 'quantitative', 'title': '실험 점수'}]}},
             {'transform': [{'filter': "datum.kind === 'current'"}],
-             'mark': {'type': 'point', 'filled': True, 'color': '#2457d6', 'size': 90},
+             'mark': {'type': 'point', 'filled': True, 'color': line_color, 'size': 90},
              'encoding': {'x': x, 'y': y,
                           'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '표시 시각'},
                                       {'field': 'value', 'type': 'quantitative', 'title': '현재 표시 점수'},

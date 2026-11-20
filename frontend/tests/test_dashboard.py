@@ -2,13 +2,20 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_score_display, live_score_unavailable_reason, overlap, score, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, score_band, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
 SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
 
 class DashboardTests(unittest.TestCase):
+    def test_score_band_boundaries_and_graph_color(self):
+        self.assertEqual([score_band(value, 60) for value in (None, 0, 60, 61, 80, 81, 100)],
+                         ['unknown', 'red', 'red', 'yellow', 'yellow', 'green', 'green'])
+        self.assertEqual(score_band(100, 100), 'red')
+        self.assertEqual(live_chart_spec(low_score=True)['layer'][2]['mark']['color'], '#c62828')
+        self.assertEqual(live_chart_spec(low_score=False)['layer'][2]['mark']['color'], '#2457d6')
+
     def test_live_score_reason_prioritizes_failure_and_explains_observation(self):
         rows = [{'calibration_status': 'collecting', 'reason_codes': ['eye_observation_unavailable']}]
         self.assertEqual(live_score_unavailable_reason('unavailable', True, True, rows, None, '입력 오류'), '입력 오류')
