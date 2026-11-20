@@ -861,46 +861,53 @@ def review_page():
             st.caption(f'{len(transcripts)}개 문장 · 전사 종료 시점까지 확정된 최근 점수와 연결합니다.')
             st.caption('점수는 해당 문장만의 결과가 아닌 이전 분석 구간의 참고값입니다. 점수와 전사의 관계는 인과관계를 뜻하지 않습니다.')
             if transcripts:
-                st.text('\n'.join(f"[{clock(event['start_ms'])}–{clock(event['end_ms'])}] {event['payload']['text']}"
-                                  for event in transcripts))
-                with st.expander('구간별 점수 · 전사 수정 · 연결된 제안'):
-                    for event in transcripts:
-                        payload=event['payload']
-                        linked_score=transcript_score_link(event, windows)
-                        with st.container():
-                            transcript_col,score_col=st.columns([3,1], gap='medium')
-                            with transcript_col:
-                                st.caption(f"전사 · {clock(event['start_ms'])}–{clock(event['end_ms'])}")
-                                st.write(payload['text'])
-                                with st.container():
-                                    for suggestion in related_suggestions(event, all_suggestions):
-                                        st.caption(f"{suggestion_phase(suggestion)} · {clock(suggestion['start_ms'])} · {suggestion['payload']['title']}")
-                                    with st.form('edit-'+event['event_id']):
-                                        text=st.text_area('전사 수정',payload['text'])
-                                        if st.form_submit_button('수정 저장'):
-                                            try:
-                                                updated=dict(payload,text=text,revision=payload['revision']+1,is_edited=True,replaces_event_id=event['event_id'])
-                                                change=service.make_event(sid,'transcript_edited',updated,event['start_ms'],event['end_ms'],'ui')
-                                                service.receive_event(change)
-                                                files.save(service,sid)
-                                                st.rerun()
-                                            except Exception as exc:
-                                                st.error(f'전사를 수정하지 못했습니다: {exc}')
-                            with score_col:
-                                st.caption('관찰 점수')
-                                score_value=linked_score['value']
-                                st.write(f'{score_value:.1f}점' if score_value is not None else linked_score['reason'])
-                                window=linked_score['window']
-                                if window:
-                                    st.caption(f"{clock(window['start_ms'])}–{clock(window['end_ms'])}")
-                                    if linked_score['delta'] is not None:
-                                        st.caption(f"직전 구간 대비 {linked_score['delta']:+.1f}점")
-                                    elif score_value is None:
-                                        reasons=window.get('quality',{}).get('reason_codes',[])
-                                        if reasons:
-                                            st.caption('사유: '+', '.join(reasons))
-                                    st.button('구간 보기', key='score-window-'+event['event_id'],
-                                              on_click=select_score_window, args=(window['start_ms'], window['end_ms']))
+                for event in transcripts:
+                    payload=event['payload']
+                    linked_score=transcript_score_link(event, windows)
+                    with st.container(border=True,key='review-transcript-'+event['event_id']):
+                        score_col,transcript_col=st.columns([1,3],gap='medium',vertical_alignment='top')
+                        with score_col:
+                            st.caption(f"{clock(event['start_ms'])}–{clock(event['end_ms'])}")
+                            score_value=linked_score['value']
+                            st.markdown(f"### {score_value:.1f}점" if score_value is not None else f"**{linked_score['reason']}**")
+                            window=linked_score['window']
+                            if linked_score['delta'] is not None:
+                                st.caption(f"직전 대비 {linked_score['delta']:+.1f}점")
+                            elif score_value is not None:
+                                st.caption('직전 비교 없음')
+                            if window:
+                                quality=window.get('quality',{}).get('status')
+                                st.caption({'valid':'관측 가능','partial':'일부 관측',
+                                            'not_observable':'관측 불가'}.get(quality,'품질 확인 필요'))
+                                reasons=window.get('quality',{}).get('reason_codes',[])
+                                if score_value is None and reasons:
+                                    st.caption('사유: '+', '.join(reasons))
+                                st.button('점수 구간 보기',key='score-window-'+event['event_id'],
+                                          on_click=select_score_window,args=(window['start_ms'],window['end_ms']),
+                                          width='stretch')
+                        with transcript_col:
+                            st.write(payload['text'])
+                            suggestions=related_suggestions(event,all_suggestions)
+                            if suggestions:
+                                st.markdown('**연결 제안**')
+                                for suggestion in suggestions:
+                                    suggestion_payload=suggestion['payload']
+                                    st.markdown(
+                                        f"**{suggestion_phase(suggestion)} · {suggestion_payload['title']}**  \n"
+                                        f"{suggestion_payload['description']}"
+                                    )
+                            with st.expander('전사 수정'):
+                                with st.form('edit-'+event['event_id']):
+                                    text=st.text_area('수정할 전사',payload['text'])
+                                    if st.form_submit_button('수정 저장'):
+                                        try:
+                                            updated=dict(payload,text=text,revision=payload['revision']+1,is_edited=True,replaces_event_id=event['event_id'])
+                                            change=service.make_event(sid,'transcript_edited',updated,event['start_ms'],event['end_ms'],'ui')
+                                            service.receive_event(change)
+                                            files.save(service,sid)
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(f'전사를 수정하지 못했습니다: {exc}')
             if not transcripts:
                 st.caption('이 구간 또는 검색어에 해당하는 확정 전사가 없습니다.')
     with right:

@@ -283,6 +283,12 @@ class DashboardTests(unittest.TestCase):
         next(b for b in app.button if b.label=='공통 계약 예제로 확인').click().run()
         self.assertFalse(app.exception)
         self.assertEqual(app.metric[0].value,'점수 없음')
+        self.assertFalse(any(e.label=='구간별 점수 · 전사 수정 · 연결된 제안' for e in app.expander))
+        self.assertTrue(any(e.label=='전사 수정' for e in app.expander))
+        self.assertTrue(any(item.type=='flex_container' and '-review-transcript-' in item.proto.id
+                            for item in app))
+        self.assertTrue(any('라이선스 비교 예시' in item.value and '관련 강의 자료의 비교 구간' in item.value
+                            for item in app.markdown))
         app.text_input[0].set_value('없는문장검색어').run()
         self.assertFalse(app.exception)
 
