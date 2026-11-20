@@ -160,14 +160,13 @@ def live_chart_data(windows, notes, duration, *, start_ms=0, display_score=None)
     return pd.DataFrame(rows, columns=['kind', 'time', 'end', 'value', 'sequence', 'time_label', 'text'])
 
 
-def score_band(value, threshold):
-    """사용자가 정한 기준을 바탕으로 화면 표시용 색상만 결정한다."""
+def score_band(value):
+    """점수를 경고 기준과 무관한 고정 표시 구간으로 분류한다."""
     if value is None:
         return 'unknown'
-    if value <= threshold:
+    if value < 60:
         return 'red'
-    yellow_ceiling = threshold + (100 - threshold) / 2
-    return 'yellow' if value <= yellow_ceiling else 'green'
+    return 'yellow' if value < 80 else 'green'
 
 
 def live_chart_spec(*, low_score=False):

@@ -10,11 +10,8 @@ SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
 
 class DashboardTests(unittest.TestCase):
     def test_score_band_boundaries_and_graph_color(self):
-        self.assertEqual([score_band(value, 60) for value in (None, 0, 60, 61, 80, 81, 100)],
+        self.assertEqual([score_band(value) for value in (None, 0, 59.9, 60, 79.9, 80, 100)],
                          ['unknown', 'red', 'red', 'yellow', 'yellow', 'green', 'green'])
-        self.assertEqual([score_band(value, 85) for value in (85, 86, 92.5, 93, 100)],
-                         ['red', 'yellow', 'yellow', 'green', 'green'])
-        self.assertEqual(score_band(100, 100), 'red')
         self.assertEqual(live_chart_spec(low_score=True)['layer'][2]['mark']['color'], '#c62828')
         self.assertEqual(live_chart_spec(low_score=False)['layer'][2]['mark']['color'], '#2457d6')
 

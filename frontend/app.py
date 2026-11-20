@@ -664,7 +664,7 @@ def live_page():
                 timeline_title,summary=st.columns(2,gap='small',**column_options)
                 timeline_title.subheader('공통 타임라인')
                 display_value=display_score['value']
-                with summary, st.container(key='score-band-'+score_band(current_value,threshold)):
+                with summary, st.container(key='score-band-'+score_band(current_value)):
                     st.metric('최근 실험 구간 점수',f'{display_value:g}점' if display_value is not None else
                               ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
                 if display_score['state']=='held':
