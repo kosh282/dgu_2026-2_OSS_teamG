@@ -2,13 +2,22 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, score_band, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link,
                                      related_suggestions, suggestion_anchors, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
 SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
 
 class DashboardTests(unittest.TestCase):
+    def test_review_range_options_keep_exact_boundaries_and_long_times(self):
+        options = review_range_options(7_200_500)
+        self.assertEqual((options[0], options[-1]), (0, 7_200_500))
+        self.assertEqual(len(options), len({clock(option) for option in options}))
+        self.assertEqual(clock(options[-1]), '02:00:00')
+        long_options = review_range_options(90_000_000)
+        self.assertLessEqual(len(long_options), 10_002)
+        self.assertEqual(clock(long_options[-1]), '25:00:00')
+
     def test_score_band_boundaries_and_graph_color(self):
         self.assertEqual([score_band(value) for value in (None, 0, 59.9, 60, 79.9, 80, 100)],
                          ['unknown', 'red', 'red', 'yellow', 'yellow', 'green', 'green'])
@@ -299,6 +308,16 @@ class DashboardTests(unittest.TestCase):
         next(b for b in app.button if b.label=='공통 계약 예제로 확인').click().run()
         self.assertFalse(app.exception)
         self.assertEqual(app.metric[0].value,'점수 없음')
+        selector=next(item for item in app.select_slider if item.label=='검토 구간')
+        self.assertEqual(selector.options[0], '00:00:00')
+        self.assertTrue(all(':' in option for option in selector.options))
+        selector.set_range(10_000,20_000).run()
+        self.assertFalse(app.exception)
+        sid=app.session_state['review'][1]
+        self.assertEqual(app.session_state[f'range-{sid}'], (10_000,20_000))
+        next(b for b in app.button if b.label=='선택 해제 · 전체 보기').click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(tuple(app.select_slider[0].value), (0,60_000))
         self.assertFalse(any(e.label=='구간별 점수 · 전사 수정 · 연결된 제안' for e in app.expander))
         self.assertTrue(any(e.label=='전사 수정' for e in app.expander))
         self.assertTrue(any(item.type=='flex_container' and '-review-transcript-' in item.proto.id

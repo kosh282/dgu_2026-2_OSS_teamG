@@ -12,6 +12,16 @@ def clock(ms):
     return f'{seconds // 3600:02}:{seconds // 60 % 60:02}:{seconds % 60:02}'
 
 
+def review_range_options(duration_ms):
+    """초 단위 표시가 중복되지 않는 검토 선택기 눈금을 제공한다."""
+    end = max(1000, duration_ms)
+    step = max(1000, ((end + 9_999_999) // 10_000_000) * 1000)
+    options = list(range(0, end, step))
+    if options[-1] // 1000 == end // 1000:
+        options.pop()
+    return options + [end]
+
+
 def live_score_unavailable_reason(model_status, model_enabled, stale, rows, latest_window, status_message=None):
     """점수가 없을 때 화면에 표시할 관측 가능한 사유를 우선순위대로 고른다."""
     reason_codes = latest_window.get('quality', {}).get('reason_codes', []) if latest_window else []
