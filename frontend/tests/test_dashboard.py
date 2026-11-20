@@ -246,10 +246,10 @@ class DashboardTests(unittest.TestCase):
             app.session_state['saved_sid']=sid
             app.run()
             self.assertFalse(app.exception)
-            self.assertEqual(next(m for m in app.metric if m.label=='최근 실험 구간 점수').value,'측정 불가')
+            self.assertEqual(next(m for m in app.metric if m.label=='최근 관찰 점수').value,'측정 불가')
             self.assertTrue(any('수업 종료 · 진행 시간' in caption.value for caption in app.caption))
             elements=list(app)
-            score_index=next(i for i, element in enumerate(elements) if element.type=='metric' and element.label=='최근 실험 구간 점수')
+            score_index=next(i for i, element in enumerate(elements) if element.type=='metric' and element.label=='최근 관찰 점수')
             timeline_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and '공통 타임라인' in element.value)
             note_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='교수자 메모')
             transcript_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='실시간 전사 · 분석 상태')

@@ -81,7 +81,7 @@ class LiveAssistant:
         self.window_ms = window_ms
         self.cooldown_ms = cooldown_ms
         if isinstance(score_threshold, bool) or not isinstance(score_threshold, (int, float)) or not math.isfinite(score_threshold) or not 0 <= score_threshold <= 100:
-            raise ValueError('실험 점수 기준은 0~100이어야 합니다')
+            raise ValueError('관찰 점수 기준은 0~100이어야 합니다')
         self.score_threshold = float(score_threshold)
         self.max_score_age_ms = max_score_age_ms
         self._last_score_event_id = None
@@ -245,9 +245,9 @@ def _overlaps(event, start, end):
 
 
 def _engagement_line(windows):
-    """실험 점수 요약. 관측 불가를 0점으로 바꾸지 않는다."""
+    """관찰 점수 요약. 관측 불가를 0점으로 바꾸지 않는다."""
     if not windows:
-        return "실험 참여 점수 기록이 없습니다."
+        return "관찰 점수 기록이 없습니다."
     values = []
     unobservable = 0
     for event in windows:
@@ -258,12 +258,12 @@ def _engagement_line(windows):
         else:
             values.append(float(value))
     if not values:
-        return f"실험 참여 점수: 이 구간은 관측 불가({unobservable}개 구간)로 점수가 없습니다."
+        return f"관찰 점수: 이 구간은 관측 불가({unobservable}개 구간)로 점수가 없습니다."
     ordered = sorted(windows, key=lambda event: (event['start_ms'], event['end_ms']))
     overlapping = any(b['start_ms'] < a['end_ms'] for a, b in zip(ordered, ordered[1:]))
     summary = (f"구간별 범위 {min(values):.0f}~{max(values):.0f}점 (구간 중첩으로 평균 미산출)"
                if overlapping else f"구간 평균 {sum(values) / len(values):.0f}점")
-    return (f"실험 참여 점수(참고): {summary}, 점수 있는 구간 {len(values)}개·관측 불가 {unobservable}개. "
+    return (f"관찰 점수(참고): {summary}, 점수 있는 구간 {len(values)}개·관측 불가 {unobservable}개. "
             "집중도·이해도를 뜻하지 않습니다.")
 
 
@@ -282,7 +282,7 @@ def generate_post_session(service, session_id, index, writer=None, *, section_ms
     """
     writer = writer or LocalWriter()
     if isinstance(score_threshold, bool) or not isinstance(score_threshold, (int, float)) or not math.isfinite(score_threshold) or not 0 <= score_threshold <= 100:
-        raise ValueError('실험 점수 기준은 0~100이어야 합니다')
+        raise ValueError('관찰 점수 기준은 0~100이어야 합니다')
     if selected_range is not None and (len(selected_range) != 2 or selected_range[0] < 0 or selected_range[0] >= selected_range[1]):
         raise ValueError('선택 구간은 시작보다 끝이 커야 합니다')
     snapshot = service.get_dashboard_snapshot(session_id)

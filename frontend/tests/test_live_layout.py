@@ -182,7 +182,7 @@ class LiveLayoutTests(unittest.TestCase):
                          ['정면 기준 재보정', '수업 종료'])
         self.assertTrue(any(item.type == 'caption' and '진행 시간' in item.value for item in header.children.values()))
         self.assertTrue(any(item.type == 'subheader' and item.value == '공통 타임라인' for item in timeline_columns[0]))
-        self.assertTrue(any(item.type == 'metric' and item.label == '최근 실험 구간 점수' for item in timeline_columns[1]))
+        self.assertTrue(any(item.type == 'metric' and item.label == '최근 관찰 점수' for item in timeline_columns[1]))
         footer = next(item for item in overview.children.values()
                       if item.type == 'caption' and '점수 상태:' in item.value)
         self.assertFalse(footer.proto.wrap)

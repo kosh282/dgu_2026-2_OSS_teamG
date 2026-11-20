@@ -248,7 +248,7 @@ def resources(service, sid, snapshot, readonly=False, *, offset=0, limit=None, s
     suggestions.sort(key=lambda e: (e['start_ms'], e['event_id']), reverse=True)
     suggestions = suggestions[offset:offset + limit if limit is not None else None]
     if not suggestions and show_empty:
-        st.caption('선택한 구간에 연결된 제안이 없습니다.' if readonly else '설정한 실험 점수 이하의 최근 구간과 확정 전사가 있으면 제안을 생성합니다.')
+        st.caption('선택한 구간에 연결된 제안이 없습니다.' if readonly else '설정한 관찰 점수 이하의 최근 구간과 확정 전사가 있으면 제안을 생성합니다.')
     for event in suggestions:
         payload = event['payload']
         with st.container(border=True):
@@ -271,7 +271,7 @@ def resources(service, sid, snapshot, readonly=False, *, offset=0, limit=None, s
                 else:
                     source = payload['source']
                     st.caption(f"출처: {source['document_name']} · {source.get('page') or '페이지 미지정'}쪽 · {by}")
-                st.caption('실험 점수는 제안 시점의 참고 신호이며 학습자의 집중도·이해도를 뜻하지 않습니다.')
+                st.caption('관찰 점수는 제안 시점의 참고 신호이며 학습자의 집중도·이해도를 뜻하지 않습니다.')
                 ids = set(payload.get('evidence_event_ids', []))
                 evidence = [t for t in snapshot['transcripts'] if t['event_id'] in ids]
                 for transcript in evidence:
@@ -295,11 +295,11 @@ def preparation():
             st.subheader('1  영상 분석 설정')
             title = st.text_input('수업 제목',key='lesson_title',disabled=running,placeholder='예: 오픈소스 소프트웨어 8주차')
             video_enabled=st.checkbox('영상 분석 사용',value=True,key='video_enabled',disabled=running)
-            model_enabled=st.checkbox('실험 행동 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
+            model_enabled=st.checkbox('관찰 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
             reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
                 key='reidentification_enabled',disabled=running or not video_enabled)
             st.caption('점수는 Gaussian 모델입니다. 재식별을 켜면 임시 ID별로, 끄면 단기 위치 트랙별로 계산합니다. 위치 트랙은 사람을 식별하지 않습니다.')
-            st.caption('실험 구간 점수는 머리 방향을 사용합니다. 눈 관측값은 별도로 표시하며 점수에 결합하지 않습니다.')
+            st.caption('관찰 점수는 머리 방향을 사용합니다. 눈 관측값은 별도로 표시하며 점수에 결합하지 않습니다.')
             if reidentification_enabled and video_enabled:
                 st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
                 if importlib.util.find_spec('insightface') is None:
@@ -380,8 +380,8 @@ def preparation():
                 st.caption('전사 힌트 용어 (처리 시간 증가): '+', '.join(hint_terms))
             writer_options, writer_ready = assistant_options('live-assistant', disabled=running)
             st.caption('외부 AI 사용 시 전사·관련 자료가 제공자에 전달되며, AI가 검색어를 제안하면 한국어 위키백과에도 검색어가 전송됩니다. 검색 결과 제목만 참고하므로 링크 내용을 직접 확인하세요.')
-            score_threshold=st.slider('제안·화면 알림 기준 실험 점수 (이하)', 0, 100, 60, key='assistant_score_threshold', disabled=running)
-            st.caption('현재 점수는 관측 가능한 얼굴의 실험 집계값입니다. 점수가 없거나 오래되면 제안하지 않습니다. 외부 AI 선택 시 자료 없이도 전사 기반 제안을 받을 수 있습니다. '
+            score_threshold=st.slider('제안·화면 알림 기준 관찰 점수 (이하)', 0, 100, 60, key='assistant_score_threshold', disabled=running)
+            st.caption('현재 점수는 관측 가능한 얼굴의 관찰 집계값입니다. 점수가 없거나 오래되면 제안하지 않습니다. 외부 AI 선택 시 자료 없이도 전사 기반 제안을 받을 수 있습니다. '
                        '자료는 현재 브라우저 세션 메모리에만 두며 파일로 저장하지 않습니다. 세션 JSON에는 자료 이름·페이지 번호만 남습니다.')
         with st.container(border=True):
             st.subheader('4  동의·저장 안내')
@@ -443,7 +443,7 @@ def preparation():
 def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, value, stale, on_calibrate):
     """라이브 카드와 같은 시점의 관측값으로 상세 상태를 그린다."""
     model_status=snapshot['status'].get('model')
-    st.caption('관측 가능한 얼굴 기준의 실험 점수 · 집중도나 이해도가 아닙니다.')
+    st.caption('관측 가능한 얼굴 기준의 관찰 점수 · 집중도나 이해도가 아닙니다.')
     if value is None:
         reason=live_score_unavailable_reason(model_status, getattr(live, 'model_enabled', False), stale, rows, latest_window,
                                              snapshot.get('status_messages', {}).get('model'))
@@ -520,7 +520,7 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
     if result:
         st.caption(f"영상 품질 {result['quality']['status']} · 얼굴 후보 {len(result['features']['faces'])}개 (참가자 수·참여 점수가 아닙니다)")
     if latest_window:
-        st.caption(f"구간 {clock(latest_window['start_ms'])}~{clock(latest_window['end_ms'])} · 실험 점수는 집중도나 이해도를 나타내지 않습니다.")
+        st.caption(f"구간 {clock(latest_window['start_ms'])}~{clock(latest_window['end_ms'])} · 관찰 점수는 집중도나 이해도를 나타내지 않습니다.")
         if model_status == 'unavailable':
             st.caption('모델 또는 영상 입력이 중단되어 최근 점수를 현재 점수로 표시하지 않습니다.')
         elif value is None:
@@ -636,7 +636,7 @@ def live_page():
                 'collecting':f"정면 기준 수집 중 · {calibration.get('progress',0)*100:.0f}%",
                 'ready':'정면 기준 수집 완료'}.get(state,'정면 기준 확인 중')
         else:
-            calibration_text='영상·실험 점수 사용 안 함'
+            calibration_text='영상·관찰 점수 사용 안 함'
         # 제목과 버튼도 같은 주기 갱신 영역에 두어 보정 상태를 함께 갱신한다.
         with st.container(key='live-page-header',**({'gap':None} if card_options else {})):
             with st.container(horizontal=True, horizontal_alignment='distribute', vertical_alignment='center', gap='xsmall'):
@@ -665,12 +665,12 @@ def live_page():
                 timeline_title.subheader('공통 타임라인')
                 display_value=display_score['value']
                 with summary, st.container(key='score-band-'+score_band(current_value)):
-                    st.metric('최근 실험 구간 점수',f'{display_value:g}점' if display_value is not None else
+                    st.metric('최근 관찰 점수',f'{display_value:g}점' if display_value is not None else
                               ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
                 if display_score['state']=='held':
                     summary.caption(f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전")
                 if low_score:
-                    st.warning(f'최근 실험 점수가 설정 기준 {threshold}점 이하입니다. 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.')
+                    st.warning(f'최근 관찰 점수가 설정 기준 {threshold}점 이하입니다. 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.')
                 st.caption(detail,help=detail,**caption_options)
                 chart_range=st.selectbox('그래프 범위',['최근 1분','최근 5분','최근 10분','전체 수업'],index=1,
                                          key='live-chart-range',label_visibility='collapsed')
@@ -822,12 +822,12 @@ def review_page():
     average=sum(s*w for s,w in measured)/sum(w for _,w in measured) if measured else None
     valid_scores=[score(e) for e in windows if score(e) is not None]
     columns=st.columns(4)
-    for column,label,value in zip(columns,['롤링 구간 점수 평균' if has_overlap else '수업 전체 실험 점수','점수 있는 구간','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '점수 없음',f'{len(valid_scores)} / {len(windows)}개',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
+    for column,label,value in zip(columns,['롤링 구간 점수 평균' if has_overlap else '수업 전체 관찰 점수','점수 있는 구간','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '점수 없음',f'{len(valid_scores)} / {len(windows)}개',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
         column.metric(label,value)
     if has_overlap:
         st.caption('겹치는 롤링 구간의 유효 점수를 이벤트마다 한 번씩 평균합니다. 수업 시간 전체의 관측률이나 참여도를 뜻하지 않습니다.')
     if valid_scores:
-        st.caption(f'유효 구간 점수 범위 {min(valid_scores):.1f}~{max(valid_scores):.1f}점 · 실험 점수는 집중도나 이해도를 뜻하지 않습니다.')
+        st.caption(f'유효 구간 점수 범위 {min(valid_scores):.1f}~{max(valid_scores):.1f}점 · 관찰 점수는 집중도나 이해도를 뜻하지 않습니다.')
     else:
         st.caption('유효한 구간 점수가 없습니다. 타임라인에서 관측 불가 구간을 확인하세요.')
     range_key=f'range-{sid}'
@@ -887,7 +887,7 @@ def review_page():
                                             except Exception as exc:
                                                 st.error(f'전사를 수정하지 못했습니다: {exc}')
                             with score_col:
-                                st.caption('실험 점수')
+                                st.caption('관찰 점수')
                                 score_value=linked_score['value']
                                 st.write(f'{score_value:.1f}점' if score_value is not None else linked_score['reason'])
                                 window=linked_score['window']
@@ -913,7 +913,7 @@ def review_page():
                 st.caption('저장된 메모가 없습니다.')
         with st.container(border=True):
             st.subheader('AI 강의 조교 · 사후 분석')
-            st.caption('확정 전사로 구간별 피드백을 만들고, 낮은 실험 점수 또는 교수자 메모가 있는 5분 구간에 제안을 추가합니다. 전사가 없거나 기존 제안이 있는 구간은 새 제안을 만들지 않습니다.')
+            st.caption('확정 전사로 구간별 피드백을 만들고, 낮은 관찰 점수 또는 교수자 메모가 있는 5분 구간에 제안을 추가합니다. 전사가 없거나 기존 제안이 있는 구간은 새 제안을 만들지 않습니다.')
             st.caption('이미 조교 사후 피드백을 생성한 수업은 중복 방지를 위해 다시 생성하지 않습니다. 점수는 집중도나 이해도를 의미하지 않습니다.')
             extra=st.file_uploader('강의 자료 추가 (수업 시작 때 올린 자료는 다시 올리지 않아도 됩니다)',type=['pdf','ppt','pptx'],
                                    accept_multiple_files=True,key=f'review-materials-{sid}')
@@ -924,7 +924,7 @@ def review_page():
             review_index=MaterialIndex(known.values())
             material_summary(review_index,errors)
             if not review_index.materials:
-                st.caption('자료가 없으면 전사·메모·실험 점수만으로 피드백을 만듭니다.')
+                st.caption('자료가 없으면 전사·메모·관찰 점수만으로 피드백을 만듭니다.')
             saved_options=st.session_state.live_writer_options.get(sid)
             use_live_options=(st.checkbox('라이브 수업의 AI 설정 사용',value=True,key=f'review-use-live-ai-{sid}',
                 help='이 브라우저 세션에 보관된 제공자·모델·키를 사용합니다. 키는 세션 JSON에 저장하지 않습니다.')
@@ -934,7 +934,7 @@ def review_page():
                 st.caption(f"라이브 설정 사용 · {saved_options['provider']} / {saved_options['model']} · 이 브라우저 세션에서만 유지")
             else:
                 review_options, review_ready=assistant_options(f'review-assistant-{sid}')
-            review_threshold=st.slider('사후 제안 실험 점수 기준 (이하)', 0, 100, 60, key=f'review-threshold-{sid}')
+            review_threshold=st.slider('사후 제안 관찰 점수 기준 (이하)', 0, 100, 60, key=f'review-threshold-{sid}')
             include_selected=st.checkbox('현재 검토 구간에도 제안 생성', key=f'review-selected-{sid}')
             if include_selected:
                 st.caption(f'선택 구간 {clock(selected[0])}–{clock(selected[1])}과 겹치는 5분 구간을 추가합니다. 전체 구간이 선택되어 있으면 전 구간이 대상입니다.')

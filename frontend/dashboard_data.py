@@ -18,7 +18,7 @@ def live_score_unavailable_reason(model_status, model_enabled, stale, rows, late
     if model_status == 'unavailable':
         return status_message or '모델 또는 영상 입력을 확인하세요.'
     if model_status == 'stopped' or not model_enabled:
-        return '실험 점수 모델이 꺼져 있습니다.'
+        return '관찰 점수 모델이 꺼져 있습니다.'
     if stale:
         return '최근 점수 구간이 5초 이상 갱신되지 않았습니다.'
     if any(row.get('calibration_status') == 'collecting' for row in rows):
@@ -192,7 +192,7 @@ def live_chart_spec(*, low_score=False):
                       'point': {'size': 16}, 'invalid': 'break-paths-show-domains'},
              'encoding': {'x': x, 'y': y, 'order': {'field': 'sequence', 'type': 'quantitative'},
                           'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
-                                      {'field': 'value', 'type': 'quantitative', 'title': '실험 점수'}]}},
+                                      {'field': 'value', 'type': 'quantitative', 'title': '관찰 점수'}]}},
             {'transform': [{'filter': "datum.kind === 'current'"}],
              'mark': {'type': 'point', 'filled': True, 'color': line_color, 'size': 90},
              'encoding': {'x': x, 'y': y,

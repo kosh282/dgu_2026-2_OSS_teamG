@@ -3,7 +3,7 @@
 [현재 구현·실행 안내](../README.md) · [실험 해석](experiments.md)
 
 수식의 구현 근거는 `scoring.py`, `input_adapter.py`, `runtime.py`, `gaussian.py`입니다.
-점수는 방향·시간에 대한 실험 지표이며 실제 집중도 확률이 아닙니다. 현재 실행 모델은 Gaussian만 남기고 Legacy/Huang은 제거했습니다.
+점수는 방향·시간에 대한 관찰 지표이며 실제 집중도 확률이 아닙니다. 현재 실행 모델은 Gaussian만 남기고 Legacy/Huang은 제거했습니다.
 
 ## 공통 입력과 각도 완화
 

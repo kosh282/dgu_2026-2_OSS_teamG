@@ -136,7 +136,7 @@ class LiveSession:
         if not self.video_enabled:
             self._component_status('vision', 'stopped', '영상 분석을 사용하지 않습니다.', 'vision')
         if not self.model_enabled:
-            self._model_status('stopped', '실험 점수 모델을 사용하지 않습니다.')
+            self._model_status('stopped', '관찰 점수 모델을 사용하지 않습니다.')
         if self.audio_source is None:
             self._component_status('stt', 'stopped', '음성 전사를 사용하지 않습니다.', 'speech')
         self._stt_config = stt_config
@@ -685,7 +685,7 @@ class LiveSession:
             return self.latest, self.error, self.thread is not None and self.thread.is_alive()
 
     def model_snapshot(self):
-        """현재 분석 특징에서 계산한 최신 실험 점수의 복사본을 반환한다."""
+        """현재 분석 특징에서 계산한 최신 관찰 점수의 복사본을 반환한다."""
         with self.lock:
             return dict(self.model_latest)
 
