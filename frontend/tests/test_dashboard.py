@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 from frontend.dashboard_data import (SessionFiles, chart, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, score_band, suggestion_phase, transcript_score_link,
-                                     related_suggestions, suggestion_in_range)
+                                     related_suggestions, suggestion_anchors, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
 SAMPLE=ROOT/'공유용_데이터_계약'/'examples'/'session.json'
@@ -190,6 +190,22 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(suggestion_in_range(live, 100, 200, [transcript]))
         self.assertFalse(suggestion_in_range(live, 100, 200, []))
         self.assertTrue(suggestion_in_range(live, 300, 400, []))
+
+    def test_suggestion_with_multiple_evidence_transcripts_is_shown_once_at_arrival(self):
+        transcripts = [
+            {'event_id':'first','start_ms':0,'end_ms':1000},
+            {'event_id':'second','start_ms':1000,'end_ms':2000},
+            {'event_id':'third','start_ms':2000,'end_ms':3000},
+        ]
+        live = {'event_id':'live','start_ms':0,'end_ms':3000,'created_ms':2500,
+                'payload':{'evidence_event_ids':['first','second','third']}}
+        post = {'event_id':'post','start_ms':0,'end_ms':3000,'created_ms':None,
+                'payload':{'evidence_event_ids':['first','second','third']}}
+        anchored = suggestion_anchors(transcripts,[live,post])
+        self.assertEqual([event['event_id'] for event in anchored['first']], ['post'])
+        self.assertEqual([event['event_id'] for event in anchored['second']], ['live'])
+        self.assertEqual(anchored['third'], [])
+        self.assertEqual(sum(len(events) for events in anchored.values()), 2)
 
     def test_edit_save_reload_and_notes_do_not_duplicate(self):
         with tempfile.TemporaryDirectory() as directory:

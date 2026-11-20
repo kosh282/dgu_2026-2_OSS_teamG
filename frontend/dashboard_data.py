@@ -103,6 +103,27 @@ def related_suggestions(transcript, suggestions):
             if transcript['event_id'] in event['payload'].get('evidence_event_ids', [])]
 
 
+def suggestion_anchors(transcripts, suggestions):
+    """근거가 여러 개인 제안도 도착 시점에 가장 가까운 근거 전사 한 곳에만 배치한다."""
+    ordered = sorted(transcripts, key=lambda event: (event['start_ms'], event['end_ms'], event['event_id']))
+    by_id = {event['event_id']: event for event in ordered}
+    result = {event['event_id']: [] for event in ordered}
+    for suggestion in suggestions:
+        evidence = [by_id[event_id] for event_id in suggestion['payload'].get('evidence_event_ids', [])
+                    if event_id in by_id]
+        if not evidence:
+            continue
+        arrival = suggestion.get('created_ms')
+        if arrival is not None:
+            completed = [event for event in evidence if event['end_ms'] <= arrival]
+            anchor = (max(completed, key=lambda event: (event['end_ms'], event['start_ms']))
+                      if completed else min(evidence, key=lambda event: (event['start_ms'], event['end_ms'])))
+        else:
+            anchor = min(evidence, key=lambda event: (event['start_ms'], event['end_ms']))
+        result[anchor['event_id']].append(suggestion)
+    return result
+
+
 def suggestion_in_range(event, start, end, transcripts):
     """제안 시각 또는 명시적 근거 전사가 범위에 있으면 표시한다."""
     if overlap(event, start, end):

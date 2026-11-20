@@ -14,7 +14,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, score_band, suggestion_phase, transcript_score_link,
-                                     related_suggestions, suggestion_in_range)
+                                     suggestion_anchors, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
 files = SessionFiles(os.environ.get('LECTURER_SESSION_DIR', str(Path.home() / 'lecturer_dashboard' / 'sessions')))
@@ -852,6 +852,7 @@ def review_page():
     def visible(event):
         return overlap(event,*selected)
     all_suggestions=snapshot['suggestions'] + snapshot.get('teaching_suggestions', [])
+    anchored_suggestions=suggestion_anchors(snapshot['transcripts'],all_suggestions)
     left,right=st.columns([2,1])
     with left:
         with st.container(border=True):
@@ -864,7 +865,7 @@ def review_page():
                 for event in transcripts:
                     payload=event['payload']
                     linked_score=transcript_score_link(event, windows)
-                    with st.container(border=True,key='review-transcript-'+event['event_id']):
+                    with st.container(key='review-transcript-'+event['event_id']):
                         score_col,transcript_col=st.columns([1,3],gap='medium',vertical_alignment='top')
                         with score_col:
                             st.caption(f"{clock(event['start_ms'])}–{clock(event['end_ms'])}")
@@ -887,7 +888,7 @@ def review_page():
                                           width='stretch')
                         with transcript_col:
                             st.write(payload['text'])
-                            suggestions=related_suggestions(event,all_suggestions)
+                            suggestions=anchored_suggestions.get(event['event_id'],[])
                             if suggestions:
                                 st.markdown('**연결 제안**')
                                 for suggestion in suggestions:
@@ -908,6 +909,7 @@ def review_page():
                                             st.rerun()
                                         except Exception as exc:
                                             st.error(f'전사를 수정하지 못했습니다: {exc}')
+                    st.write('')
             if not transcripts:
                 st.caption('이 구간 또는 검색어에 해당하는 확정 전사가 없습니다.')
     with right:
