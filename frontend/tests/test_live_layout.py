@@ -18,7 +18,7 @@ from integration import IntegrationService
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / '공유용_데이터_계약' / 'examples' / 'session.json'
 CARD_HEIGHTS = {'live-overview': 'stretch', 'live-health': 210,
-                'live-transcript': 210, 'live-notes': 210, 'live-assistant': 210}
+                'live-transcript': 210, 'live-notes': 280, 'live-assistant': 'stretch'}
 
 
 class FakeMonitor:
@@ -126,23 +126,29 @@ class LiveLayoutTests(unittest.TestCase):
         self.assertEqual([event['payload']['text'] for event in service.get_dashboard_snapshot(sid)['transcripts']],
                          ['첫 문장', '중간 문장', '최신 문장', '새로 들어온 문장'])
 
-    def test_overview_and_timeline_share_a_card_beside_assistant_and_notes(self):
+    def test_assistant_beside_timeline_notes_above_transcript_and_health(self):
         self.app.run()
         self.assertFalse(self.app.exception)
         self.assertEqual({key: height for key, (_, height) in self.cards().items()}, CARD_HEIGHTS)
         root = next(item for item in self.app if item.type == 'flex_container'
                     and item.proto.id.endswith('-live-dashboard'))
-        rows = [item for item in root.children.values() if item.type == 'flex_container']
+        children = list(root.children.values())
+        rows = [item for item in children if item.type == 'flex_container'
+                and not item.proto.id.endswith('-live-notes')]
         self.assertEqual(len(rows), 2)
         for row in rows:
             self.assertEqual([item.proto.weight for item in row.children.values()], [0.5, 0.5])
-        expected = [(('live-overview',), ('live-assistant', 'live-notes')),
+        expected = [(('live-overview',), ('live-assistant',)),
                     (('live-transcript',), ('live-health',))]
         for row, column_keys in zip(rows, expected):
             for column, keys in zip(row.children.values(), column_keys):
                 for key in keys:
                     self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-' + key)
                                         for item in column.children.values()))
+        notes = next(item for item in children if item.type == 'flex_container'
+                     and item.proto.id.endswith('-live-notes'))
+        self.assertLess(children.index(rows[0]), children.index(notes))
+        self.assertLess(children.index(notes), children.index(rows[1]))
         overview = next(item for item in self.app if item.type == 'flex_container'
                         and item.proto.id.endswith('-live-overview'))
         self.assertTrue(any(item.type == 'selectbox' and item.key == 'live-chart-range' for item in overview))

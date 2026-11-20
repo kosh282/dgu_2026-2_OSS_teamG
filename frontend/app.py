@@ -66,9 +66,18 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 .st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]:has(.st-key-page-title),
 .st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]:has([data-testid="stBaseButton-primary"]){width:max-content!important;flex:0 0 auto!important}
 .st-key-live-page-header [data-testid="stBaseButton-primary"]{position:relative;z-index:2;flex:0 0 auto;width:auto;margin:0!important;pointer-events:auto}
-.st-key-live-dashboard [data-testid="stColumn"]{min-width:0}
-@media(max-width:540px){.st-key-live-dashboard [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}
-.st-key-live-dashboard [data-testid="stColumn"]{flex:1 1 100%!important}}
+/* 좁은 화면에서도 카드 열이 한 줄을 유지하며 사용 가능한 폭에 맞춰 줄어든다. */
+.st-key-live-dashboard [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]){flex-wrap:nowrap!important}
+.st-key-live-dashboard [data-testid="stColumn"]{min-width:0!important;flex:1 1 0!important;width:0!important}
+/* 타임라인 카드가 좁으면 제목과 점수를 카드 안에서 위아래로 놓는다. */
+.st-key-live-overview{container-type:inline-size}
+@container (max-width: 300px){
+  .st-key-live-overview [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]){flex-wrap:wrap!important}
+  .st-key-live-overview [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]{flex:1 1 100%!important;width:100%!important}
+  .st-key-live-overview h3{font-size:clamp(11px, 8cqw, 16px)!important;white-space:nowrap}
+  .st-key-live-overview [data-testid="stMetricLabel"] p{font-size:clamp(11px, 7cqw, 14px)!important;white-space:normal!important;overflow-wrap:anywhere}
+  .st-key-live-overview [data-testid="stMetricValue"]{font-size:clamp(15px, 10cqw, 22px)!important}
+}
 @media(max-width:400px){
   body:has(.st-key-page-title) [data-testid="stMain"] .block-container{padding-top:64px}
   .st-key-page-title{left:0;margin-left:0;margin-right:0}
@@ -685,7 +694,7 @@ def live_page():
                     st.caption('첫 점수 구간 집계 대기 중입니다.' if model_status not in ('stopped','unavailable')
                                else '실험 모델이 꺼져 있거나 사용할 수 없습니다.')
 
-            with right, st.container(height=210,border=True,key='live-assistant',**card_options):
+            with right, st.container(height='stretch',border=True,key='live-assistant',**card_options):
                 st.subheader('강의 조교 · 자료 제안')
                 assistant_message=snapshot.get('status_messages',{}).get('assistant')
                 manual_assistant=st.session_state.assistant
@@ -746,7 +755,7 @@ def live_page():
                         resources(live.service,live.sid,snapshot,show_empty=False,inline_details=True)
 
 
-            with right, st.container(height=210,border=True,key='live-notes',**card_options):
+            with st.container(height=280,border=True,key='live-notes',**card_options):
                 st.subheader('교수자 메모')
                 st.chat_input('메모를 입력하세요',key='live-note-text',on_submit=save_note)
                 if snapshot['notes']:
