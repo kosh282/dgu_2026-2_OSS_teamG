@@ -16,14 +16,6 @@ from .segmenter import PauseSegmenter
 COMPONENT = 'stt'
 SOURCES = {'loopback', 'microphone'}
 
-# Whisper가 무음·잡음 구간에서 자주 만들어 내는 문장. 구간 전체가 이 문장 하나일 때만 버린다.
-HALLUCINATED_PHRASES = frozenset(re.sub(r'[^0-9a-z가-힣]', '', text.lower()) for text in (
-    '시청해주셔서 감사합니다', '시청해 주셔서 감사합니다', '시청해주셔서 고맙습니다', '오늘도 시청해주셔서 감사합니다',
-    '구독과 좋아요', '구독과 좋아요 부탁드립니다', '다음 영상에서 만나요', '고맙습니다', '감사합니다',
-    'MBC 뉴스', '자막 제공', '한국어 자막',
-))
-
-
 def _normalized(text):
     return re.sub(r'[^0-9a-z가-힣]', '', text.lower())
 
@@ -38,14 +30,14 @@ def _copies_hints(text, hint_terms):
 
 
 def segment_text(segment, hint_terms=()):
-    """Whisper 구간 결과에서 쓸 텍스트. 지어낸 문장·힌트 복사로 보이면 빈 문자열(실험 기준).
+    """Whisper 구간 결과에서 쓸 텍스트. 불안정하거나 힌트 복사로 보이면 빈 문자열(실험 기준).
 
     실제로 같은 말을 반복했을 수 있으므로 텍스트는 고치지 않고 인식한 그대로 쓴다.
     구간 전체가 반복으로 채워진 경우(압축률 2.4 초과, faster-whisper의 반복 판정 기준)만 버린다.
     """
     text = (getattr(segment, 'text', '') or '').strip()
     normalized = _normalized(text)
-    if not normalized or normalized in HALLUCINATED_PHRASES:
+    if not normalized:
         return ''
     if getattr(segment, 'compression_ratio', 0.0) > 2.4:
         return ''
@@ -156,7 +148,7 @@ class WhisperLiveTranscription:
     사용 순서: `start()` → (수업 진행) → `stop()` → `service.stop_session()`.
     `stop()`이 남은 구간을 처리하므로 세션 종료보다 먼저 호출한다.
 
-    말소리가 없는 구간은 인식하지 않고, 지어낸 문장으로 보이는 결과는 버린다(`segment_text`).
+    말소리가 없는 구간은 인식하지 않고, 모델 지표상 불안정한 결과는 버린다(`segment_text`).
     `hint_terms`(강의 자료 용어 목록)를 주면 faster-whisper `hotwords`로 넣어 전문용어 인식을 돕는다.
     데모 영상 4분에서 핵심 용어 55회 중 맞힌 수가 39→52회로 늘었지만 처리 시간이 약 1.6배가 됐다.
     자료에 없는 말을 용어로 바꿔 적을 수 있다.

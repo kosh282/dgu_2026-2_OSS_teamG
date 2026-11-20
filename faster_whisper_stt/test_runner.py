@@ -94,7 +94,7 @@ class WhisperRunnerTests(unittest.TestCase):
         self.assertEqual(stats['capture_level_dbfs'], -200.0)
         self.assertEqual(snapshot['transcripts'], [])
 
-    def test_hallucinated_and_unreliable_segments_are_dropped(self):
+    def test_spoken_phrases_are_kept_and_unreliable_segments_are_dropped(self):
         class Model:
             def transcribe(self, audio, **kwargs):
                 return [SimpleNamespace(text=' 인터페이스는 추상 메서드를 가집니다.'),
@@ -105,9 +105,9 @@ class WhisperRunnerTests(unittest.TestCase):
         t = np.arange(16000 * 4) / 16000
         audio = np.concatenate([(np.sin(2 * np.pi * 220 * t) * 0.1).astype(np.float32), np.zeros(16000, np.float32)])
         snapshot, stats = self.run_chunks(audio, Model())
-        # 구간 전체가 반복으로 채워진 결과(압축률 2.4 초과)만 버린다.
+        # 문장 내용은 손대지 않고 모델의 확률·압축률 기준으로 불안정한 결과만 버린다.
         self.assertEqual([e['payload']['text'] for e in snapshot['transcripts']],
-                         ['인터페이스는 추상 메서드를 가집니다.'])
+                         ['인터페이스는 추상 메서드를 가집니다. 시청해 주셔서 감사합니다!'])
 
     def test_real_repetition_is_kept_and_hint_copy_is_dropped(self):
         from faster_whisper_stt.runner import segment_text
@@ -122,6 +122,7 @@ class WhisperRunnerTests(unittest.TestCase):
 
     def test_decoding_is_bounded(self):
         options = WhisperConfig().transcribe_options('', None, 20.0)
+        self.assertFalse(options['condition_on_previous_text'])
         self.assertEqual(options['temperature'], [0.0])
         self.assertEqual(options['max_new_tokens'], 130)
         self.assertNotIn('no_repeat_ngram_size', options)
