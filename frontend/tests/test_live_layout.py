@@ -16,7 +16,7 @@ from integration import IntegrationService
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / '공유용_데이터_계약' / 'examples' / 'session.json'
-CARD_HEIGHTS = {'live-overview': 'content', 'live-health': 210,
+CARD_HEIGHTS = {'live-overview': 'stretch', 'live-health': 210,
                 'live-transcript': 210, 'live-notes': 250, 'live-assistant': 170}
 
 
@@ -84,7 +84,9 @@ class LiveLayoutTests(unittest.TestCase):
 
     def cards(self):
         return {key: (item.proto.id, item.proto.height_config.pixel_height
-                      if item.proto.height_config.WhichOneof('height_spec') == 'pixel_height' else 'content')
+                      if item.proto.height_config.WhichOneof('height_spec') == 'pixel_height'
+                      else 'stretch' if item.proto.height_config.WhichOneof('height_spec') == 'use_stretch'
+                      else 'content')
                 for item in self.app if item.type == 'flex_container'
                 for key in CARD_HEIGHTS if item.proto.id.endswith('-' + key)}
 
@@ -152,7 +154,7 @@ class LiveLayoutTests(unittest.TestCase):
                       if item.type == 'caption' and '점수 상태:' in item.value)
         self.assertFalse(footer.proto.wrap)
         self.assertEqual(footer.proto.help, footer.value)
-        self.assertEqual(overview.proto.height_config.WhichOneof('height_spec'), 'use_content')
+        self.assertEqual(overview.proto.height_config.WhichOneof('height_spec'), 'use_stretch')
 
     def test_overview_collecting_and_long_title_keep_controls_and_footer(self):
         title = '긴 수업 제목 ' * 30
@@ -167,7 +169,7 @@ class LiveLayoutTests(unittest.TestCase):
         header = next(item for item in self.app.caption if '진행 시간' in item.value)
         self.assertFalse(header.proto.wrap)
         self.assertEqual(header.proto.help, title)
-        self.assertEqual(self.cards()['live-overview'][1], 'content')
+        self.assertEqual(self.cards()['live-overview'][1], 'stretch')
 
     def test_preview_and_log_toggles_preserve_cards_range_and_session(self):
         self.app.run()

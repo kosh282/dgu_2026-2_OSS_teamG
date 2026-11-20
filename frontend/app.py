@@ -650,7 +650,7 @@ def live_page():
                        help=snapshot['session']['title'],**caption_options)
         with st.container(key='live-dashboard'):
             left,right=st.columns(2,gap='small',**column_options)
-            with left, st.container(border=True,key='live-overview',**overview_options):
+            with left, st.container(height='stretch',border=True,key='live-overview',**overview_options):
                 if value is None:
                     reason=live_score_unavailable_reason(model_status,getattr(live,'model_enabled',False),stale,rows,
                                                         latest_window,snapshot.get('status_messages',{}).get('model'))
@@ -676,7 +676,7 @@ def live_page():
                                          key='live-chart-range',label_visibility='collapsed')
                 range_ms={'최근 1분':60000,'최근 5분':300000,'최근 10분':600000}.get(chart_range)
                 start_ms=max(0,duration-range_ms) if range_ms else 0
-                chart_spec=live_chart_spec(low_score=low_score); chart_spec['height']=125
+                chart_spec=live_chart_spec(low_score=low_score); chart_spec['height']=225
                 st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms,display_score=display_score),chart_spec,
                                    use_container_width=True,key='live-chart')
                 if display_score['state']=='held':
