@@ -5,6 +5,7 @@ import re
 import tempfile
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 from streamlit.testing.v1 import AppTest
 from streamlit.proto.GapSize_pb2 import GapSize
@@ -17,7 +18,7 @@ from integration import IntegrationService
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / '공유용_데이터_계약' / 'examples' / 'session.json'
 CARD_HEIGHTS = {'live-overview': 'stretch', 'live-health': 210,
-                'live-transcript': 210, 'live-notes': 250, 'live-assistant': 170}
+                'live-transcript': 210, 'live-notes': 210, 'live-assistant': 210}
 
 
 class FakeMonitor:
@@ -92,6 +93,38 @@ class LiveLayoutTests(unittest.TestCase):
 
     def button(self, label):
         return next(item for item in self.app.button if item.label == label)
+
+    def test_live_transcripts_show_newest_first_after_updates_without_reordering_storage(self):
+        service = IntegrationService()
+        sid = service.start_session('전사 표시 순서 검사')
+        service.elapsed_ms = lambda _: 60000
+        self.live.service, self.live.sid = service, sid
+        self.app.session_state['saved_sid'] = sid
+
+        def say(start, text):
+            service.receive_event(service.make_event(sid, 'transcript_final',
+                {'utterance_id': str(uuid4()), 'revision': 1, 'text': text, 'is_edited': False},
+                start, start + 500, 'speech'))
+
+        # 도착 순서와 달라도 공통 시간축의 최신 문장이 먼저 표시되어야 한다.
+        for start, text in ((3000, '최신 문장'), (1000, '첫 문장'), (2000, '중간 문장')):
+            say(start, text)
+        self.app.run()
+        self.assertFalse(self.app.exception)
+
+        def displayed_lines():
+            card = next(item for item in self.app if item.type == 'flex_container'
+                        and item.proto.id.endswith('-live-transcript'))
+            return next(item.value for item in card if item.type == 'text').splitlines()
+
+        self.assertEqual(displayed_lines(), ['[00:00:03] 최신 문장', '[00:00:02] 중간 문장', '[00:00:01] 첫 문장'])
+        say(4000, '새로 들어온 문장')
+        self.app.run()
+        self.assertFalse(self.app.exception)
+        self.assertEqual(displayed_lines()[0], '[00:00:04] 새로 들어온 문장')
+        self.assertEqual(len(displayed_lines()), 4)
+        self.assertEqual([event['payload']['text'] for event in service.get_dashboard_snapshot(sid)['transcripts']],
+                         ['첫 문장', '중간 문장', '최신 문장', '새로 들어온 문장'])
 
     def test_overview_and_timeline_share_a_card_beside_assistant_and_notes(self):
         self.app.run()

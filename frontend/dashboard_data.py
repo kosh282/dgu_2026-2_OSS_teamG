@@ -166,7 +166,8 @@ def score_band(value, threshold):
         return 'unknown'
     if value <= threshold:
         return 'red'
-    return 'yellow' if value <= min(100, threshold + 20) else 'green'
+    yellow_ceiling = threshold + (100 - threshold) / 2
+    return 'yellow' if value <= yellow_ceiling else 'green'
 
 
 def live_chart_spec(*, low_score=False):

@@ -685,7 +685,7 @@ def live_page():
                     st.caption('첫 점수 구간 집계 대기 중입니다.' if model_status not in ('stopped','unavailable')
                                else '실험 모델이 꺼져 있거나 사용할 수 없습니다.')
 
-            with right, st.container(height=170,border=True,key='live-assistant',**card_options):
+            with right, st.container(height=210,border=True,key='live-assistant',**card_options):
                 st.subheader('강의 조교 · 자료 제안')
                 assistant_message=snapshot.get('status_messages',{}).get('assistant')
                 manual_assistant=st.session_state.assistant
@@ -746,7 +746,7 @@ def live_page():
                         resources(live.service,live.sid,snapshot,show_empty=False,inline_details=True)
 
 
-            with right, st.container(height=250,border=True,key='live-notes',**card_options):
+            with right, st.container(height=210,border=True,key='live-notes',**card_options):
                 st.subheader('교수자 메모')
                 st.chat_input('메모를 입력하세요',key='live-note-text',on_submit=save_note)
                 if snapshot['notes']:
@@ -762,7 +762,7 @@ def live_page():
                 st.subheader('실시간 전사 · 분석 상태')
                 if snapshot['transcripts']:
                     st.text('\n'.join(f"[{clock(event['start_ms'])}] {event['payload']['text']}"
-                                      for event in snapshot['transcripts']))
+                                      for event in reversed(snapshot['transcripts'])))
                 for event in snapshot['partial_transcripts'][-1:]: st.caption('인식 중: '+event['payload']['text'])
                 if not snapshot['transcripts'] and not snapshot['partial_transcripts']:
                     st.caption('전사 모듈의 입력을 기다립니다.')
