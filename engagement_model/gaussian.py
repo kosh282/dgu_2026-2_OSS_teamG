@@ -99,6 +99,7 @@ class GaussianRuntime(HeadOrientationState):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
+        self._reset_activity()
         self._eye_candidate = EyeCandidate(window_ms=round(config.window_seconds * 1000), max_gap_ms=round(config.max_observation_hold_seconds * 1000))
         super().__init__(config, **kwargs)
         self.model_id = 'gaussian-head-direction'
@@ -112,6 +113,7 @@ class GaussianRuntime(HeadOrientationState):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
+        self._reset_activity()
         self._eye_candidate.reset()
 
     def pause_observation(self):
@@ -119,6 +121,7 @@ class GaussianRuntime(HeadOrientationState):
         super()._reset_time_state()
         self._gaussian_sample = None
         self._down_confirm_start_ms = None
+        self._reset_activity()
         self._eye_candidate.previous_time = None
         self._eye_candidate.previous_closed = False
         self._eye_candidate.closed_since = None
@@ -127,7 +130,48 @@ class GaussianRuntime(HeadOrientationState):
     def _empty_result(self, reason):
         # 실행 중/미리보기 전용 값이다. JSON 이벤트의 score 의미는 변경하지 않는다.
         return {**super()._empty_result(reason), 'current_direction_score': None,
-                'downward_status': None}
+                'downward_status': None, 'activity_state': 'activity_unavailable',
+                'activity_down_start_ms': None, 'activity_down_duration_seconds': None}
+
+    def _reset_activity(self):
+        """점수 타이머와 별개인 에피소드 표식만 지운다. 별도 시간 누적은 하지 않는다."""
+        self._activity_down_start_ms = None
+        self._activity_return_ms = None
+        self._activity_completed = False
+
+    def _activity_fields(self, result, timestamp):
+        """기존 자세/지속시간으로 짧은 하향 후 복귀를 규칙상 필기로 간주한다.
+
+        실제 손·필기구를 관측한 판단이 아니다. 기존 점수·과거 집계는 수정하지 않는다.
+        복귀 확인에는 기존 front_seconds와 하향 확인 시간 설정을 재사용한다.
+        """
+        if result.get('angles') is None or self.downward_policy is not None:
+            self._reset_activity()
+            state = 'activity_unavailable'
+        elif result['orientation_state'] == 'looking_down':
+            if self._activity_completed:
+                self._reset_activity()
+            if self._activity_down_start_ms is None:
+                self._activity_down_start_ms = timestamp - round(self._down_seconds * 1000)
+            # 확인되지 않은 한 프레임 복귀는 에피소드를 끝내지 않는다.
+            self._activity_return_ms = None
+            state = ('downward_prolonged' if timestamp - self._activity_down_start_ms
+                     > self.config.down_grace_seconds * 1000 else 'downward_pending')
+        elif result['orientation_state'] == 'front' and self._activity_down_start_ms is not None:
+            if self._activity_return_ms is None:
+                self._activity_return_ms = timestamp
+            within_grace = (self._activity_return_ms - self._activity_down_start_ms
+                            <= self.config.down_grace_seconds * 1000)
+            self._activity_completed = (self._front_seconds
+                                        >= self.config.gaussian_down_confirm_seconds)
+            state = ('writing_assumed' if self._activity_completed else 'downward_pending') if within_grace else 'downward_prolonged'
+        else:
+            self._reset_activity()
+            state = None
+        end = self._activity_return_ms if self._activity_return_ms is not None else timestamp
+        return dict(activity_state=state, activity_down_start_ms=self._activity_down_start_ms,
+                    activity_down_duration_seconds=(round((end - self._activity_down_start_ms) / 1000, 3)
+                        if self._activity_down_start_ms is not None else None))
 
     def _thresholds(self):
         return {**super()._thresholds(),
@@ -148,6 +192,9 @@ class GaussianRuntime(HeadOrientationState):
     def __call__(self, feature_window):
         result = super().__call__(feature_window)
         if result['status'] == 'input_error':
+            self._reset_activity()
+            result.update(activity_state='activity_unavailable', activity_down_start_ms=None,
+                          activity_down_duration_seconds=None)
             self._eye_candidate.reset()
             self._last_display_score = self._last_display_score_ms = None
             result.update(self._display_fields(None))
@@ -230,4 +277,5 @@ class GaussianRuntime(HeadOrientationState):
         result.update(self._display_fields(timestamp, result['score']))
         # 비교 전용 후보는 메모리에만 두고 세션 점수나 이벤트를 변경하지 않는다.
         result['eye_candidate'] = self._eye_candidate.update(feature_window, result)
+        result.update(self._activity_fields(result, timestamp))
         return result
