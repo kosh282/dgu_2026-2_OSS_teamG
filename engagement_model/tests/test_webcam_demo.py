@@ -132,6 +132,27 @@ class GaussianWebcamRunnerTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['primary'], 'gaussian')
             self.assertEqual(run.call_args.kwargs['debug'], debug)
 
+    def test_activity_is_visible_in_normal_and_debug_screens(self):
+        from engagement_model.webcam_demo import render_panel
+        from engagement_model.gaussian import GaussianRuntime
+        import cv2
+        import numpy as np
+        model = GaussianRuntime()
+        feature = feature_window(0)
+        model(feature)
+        for debug in (False, True):
+            for state, duration in (('downward_pending', 3.0), ('writing_assumed', 4.9),
+                                    ('downward_prolonged', 8.0), ('activity_unavailable', None)):
+                model.latest.update(activity_state=state, activity_down_duration_seconds=duration)
+                with patch('engagement_model.webcam_demo.cv2.putText', wraps=cv2.putText) as draw:
+                    render_panel(np.zeros((480, 640, 3), dtype=np.uint8), feature,
+                                 {'gaussian': model}, overlay_smoother=None,
+                                 face=Mock(last_landmarks=[]), show_overlay=False, debug=debug)
+                texts = [call.args[1] for call in draw.call_args_list]
+                self.assertIn('ACTIVITY: ' + state, texts)
+                expected = f'{duration:.1f}s' if duration is not None else '--'
+                self.assertTrue(any(text.startswith('Down episode: ' + expected + ' |') for text in texts))
+
     def test_summary_fields_stay_fixed_and_debug_pages_preserve_lines(self):
         from engagement_model.webcam_demo import render_panel, _debug_pages
         from engagement_model.gaussian import GaussianRuntime
@@ -197,7 +218,7 @@ class GaussianWebcamRunnerTests(unittest.TestCase):
         camera.isOpened.return_value = True
         camera.read.return_value = (False, None)
         with patch('engagement_model.webcam_demo.cv2.VideoCapture', return_value=camera), \
-             patch('engagement_model.webcam_demo.FaceAnalyzer', return_value=face), \
+             patch('engagement_model.webcam_demo.FaceAnalyzer', return_value=face) as analyzer, \
              patch('engagement_model.webcam_demo.cv2.namedWindow'), \
              patch('engagement_model.webcam_demo.cv2.resizeWindow'), \
              patch('engagement_model.webcam_demo.cv2.setMouseCallback'), \
@@ -206,4 +227,5 @@ class GaussianWebcamRunnerTests(unittest.TestCase):
                 run()
         camera.release.assert_called_once()
         face.close.assert_called_once()
+        analyzer.assert_called_once_with(show_landmarks=True, full_frame_interval_ms=1)
 
