@@ -7,14 +7,50 @@ from engagement_model.window_publisher import WindowPublisher
 from integration import IntegrationService
 
 class DownwardPolicyTests(unittest.TestCase):
-    def test_five_second_grace_then_five_points_per_second_and_recovery(self):
+    def test_short_missing_frames_preserve_only_confirmed_down_time(self):
+        model = GaussianRuntime()
+        for t in range(0, 10100, 100): model(feature_window(t))
+        for t in range(10100, 21100, 100):
+            item = feature_window(t, pitch=20)
+            if t in (12000, 14500, 17000):
+                item['features']['faces'][0]['head_angles_relative_degrees'] = None
+            result = model(item)
+        self.assertGreater(result['looking_down_seconds'], 9)
+        self.assertLess(result['current_direction_score'], 80)
+        self.assertEqual(model(feature_window(21100))['looking_down_seconds'], 0)
+
+    def test_long_gap_does_not_continue_downward_penalty(self):
+        model = GaussianRuntime()
+        for t in range(0, 10100, 100): model(feature_window(t))
+        for t in range(10100, 18100, 100): result = model(feature_window(t, pitch=20))
+        self.assertGreater(result['looking_down_seconds'], 5)
+        result = model(feature_window(19000, pitch=20))
+        self.assertEqual(result['looking_down_seconds'], 0)
+        self.assertIsNone(result['current_direction_score'])
+
+    def test_group_score_reflects_downward_decay_after_brief_missing_face(self):
+        from engagement_model.position_tracks import PositionTrackGaussianRuntime
+        from engagement_model.tests.test_position_tracks import sample
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
+        for t in range(0, 24001, 100):
+            item = sample(t, (.5,))
+            if t >= 10000:
+                item['features']['faces'][0]['head_angles_degrees']['pitch'] = 20
+            if t in (12000, 15000, 18000):
+                item['features']['faces'] = []
+                item['quality'] = {'status': 'not_observable', 'reason_codes': ['face_not_found']}
+            result = model(item)
+        row = model.participants()[0]
+        self.assertGreater(row['looking_down_seconds'], 10)
+        self.assertLess(result['current_direction_score'], 80)
+    def test_five_second_grace_then_seven_points_per_second_and_recovery(self):
         model = GaussianRuntime()
         for t in range(0, 10100, 100): model(feature_window(t))
         scores = {}
         for t in range(10100, 25200, 100):
             result = model(feature_window(t, pitch=20))
             if t in (10100, 15100, 20100, 25100): scores[t] = result['current_direction_score']
-        self.assertEqual(scores, {10100:100.0, 15100:100.0, 20100:75.0, 25100:50.0})
+        self.assertEqual(scores, {10100:100.0, 15100:100.0, 20100:65.0, 25100:30.0})
         self.assertIn('looking_down_score_decay', result['reason_codes'])
         self.assertEqual(model(feature_window(25200))['current_direction_score'], 100)
 

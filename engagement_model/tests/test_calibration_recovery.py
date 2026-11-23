@@ -80,8 +80,8 @@ class RecoveryTests(unittest.TestCase):
         model.update_identities({1:'a',2:'b'})
         for t in range(0,3301,100): model(frame(t))
         original=deepcopy(model._people['b']['calibration'].baseline)
-        for t in range(3400, 6801, 100): model(frame(t, (0,)))
-        result=model(frame(6900))
+        for t in range(3400, 8501, 100): model(frame(t, (0,)))
+        result=model(frame(8600))
         rows={r['id']:r for r in model.participants()}
         self.assertEqual(rows['a']['calibration_status'],'ready')
         self.assertEqual(rows['b']['calibration_status'],'collecting')

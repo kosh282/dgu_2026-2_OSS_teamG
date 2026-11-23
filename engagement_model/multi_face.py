@@ -16,7 +16,8 @@ class MultiFaceGaussianRuntime:
     model_version = 'multi-gaussian-0.2'
     max_participants = 32
     ttl_ms = 120000
-    calibration_grace_ms = 3000
+    calibration_grace_ms = 5000
+    component_hold_ms = 2000
 
     def __init__(self, config=None, *, eye_fusion=False):
         self.config = config or ModelConfig.gaussian()
@@ -54,9 +55,13 @@ class MultiFaceGaussianRuntime:
                 changed = True
                 person['calibration'].start()
                 person['runtime'].reset()
+                person['components'] = {}
                 person['row'].update(calibration_status='collecting', status='calibrating',
                                      current_direction_score=None, score=None,
                                      head_score=None, eye_score=None, current_head_score=None, current_eye_score=None,
+                                     effective_head_score=None, effective_eye_score=None, held_components=[], held_component_ages_ms={},
+                                     eye_state=None, eye_closed_seconds=None,
+                                     downward_status=None, looking_down_seconds=None,
                                      eye_coverage=None, relative_angles=None,
                                      reason_codes=['baseline_unavailable'])
         if changed:
@@ -67,7 +72,7 @@ class MultiFaceGaussianRuntime:
         calibration = HeadCalibration()
         calibration.start()
         return dict(calibration=calibration, runtime=GaussianRuntime(self.config),
-                    last_seen=timestamp, last_valid_ms=None, present=False, track=None,
+                    last_seen=timestamp, last_valid_ms=None, present=False, track=None, components={},
                     row=dict(id=identity, status='calibrating', calibration_status='collecting',
                              current_direction_score=None, score=None,
                              reason_codes=['baseline_unavailable']))
@@ -84,10 +89,14 @@ class MultiFaceGaussianRuntime:
         except (KeyError, TypeError, ValueError):
             for person in self._people.values():
                 person['runtime'].reset()
+                person['components'].clear()
                 person['present'] = False
                 person['row'].update(status='unavailable', score=None,
                                      current_direction_score=None, head_score=None, eye_score=None,
                                      current_head_score=None, current_eye_score=None, eye_coverage=None,
+                                     effective_head_score=None, effective_eye_score=None, held_components=[], held_component_ages_ms={},
+                                     eye_state=None, eye_closed_seconds=None,
+                                     downward_status=None, looking_down_seconds=None,
                                      relative_angles=None, reason_codes=['invalid_feature_window'])
             self.latest = self._empty('invalid_feature_window')
             self.latest['status'] = 'input_error'
@@ -111,8 +120,10 @@ class MultiFaceGaussianRuntime:
             person = self._people[identity]
             track = face.get('transient_track_key')
             if not person['present'] or track != person['track']:
+                if track != person['track'] or not person['present']:
+                    person['components'].clear()
                 short_gap = (not person['present'] and track == person['track']
-                             and 0 < timestamp - person['last_seen'] <= self.config.max_observation_hold_seconds * 1000)
+                             and 0 < timestamp - person['last_seen'] <= self.calibration_grace_ms)
                 if not short_gap:
                     person['runtime'].reset()
                 # 미완료 보정은 연속 관측만 수집한다. 완료 기준은 복귀 후 유지한다.
@@ -131,6 +142,7 @@ class MultiFaceGaussianRuntime:
                     (timestamp < last_valid or timestamp - last_valid > self.calibration_grace_ms)):
                 calibration.start()
                 person['runtime'].reset()
+                person['components'].clear()
             # 불량 입력으로 완료된 개인 기준을 삭제하지 않는다.
             if input_reason is None:
                 calibration.update([single_face], timestamp)
@@ -143,10 +155,26 @@ class MultiFaceGaussianRuntime:
             result = person['runtime'](single)
             eye = (result.get('eye_candidate') or {}).get('eye_score')
             eye_current = (result.get('eye_candidate') or {}).get('current_eye_score')
-            fused_current = (round(0.8 * result['current_direction_score'] + 0.2 * eye_current, 1)
-                             if self.eye_fusion and eye_current is not None
-                             and result.get('current_direction_score') is not None else None)
+            # 같은 추적에서 한 항목만 빠진 경우에 한해 최근 값을 제한적으로 사용한다.
+            head_current = result.get('current_direction_score')
+            components = person['components']
+            for name, value in (('head', head_current), ('eye', eye_current)):
+                if value is not None:
+                    components[name] = (value, timestamp)
+            held = []
+            effective = {'head': head_current, 'eye': eye_current}
+            if self.eye_fusion and (head_current is None) != (eye_current is None):
+                name = 'head' if head_current is None else 'eye'
+                previous = components.get(name)
+                if previous and 0 <= timestamp - previous[1] <= self.component_hold_ms:
+                    effective[name] = previous[0]
+                    held.append(name)
+            fused_current = (round(0.8 * effective['head'] + 0.2 * effective['eye'], 1)
+                             if self.eye_fusion and effective['head'] is not None
+                             and effective['eye'] is not None else None)
             fused_recent = (result.get('eye_candidate') or {}).get('candidate_total') if self.eye_fusion else None
+            if held and fused_current is not None:
+                fused_recent = fused_current
             person['row'].update(status=(('deferred' if self.eye_fusion and fused_current is None else result['status'])
                                          if calibration.status == 'ready' else 'calibrating'),
                                  calibration_status=calibration.status,
@@ -154,39 +182,47 @@ class MultiFaceGaussianRuntime:
                                  score=fused_recent if self.eye_fusion else result['score'],
                                  head_score=result.get('score'), eye_score=eye,
                                  current_head_score=result.get('current_direction_score'), current_eye_score=eye_current,
+                                 effective_head_score=effective['head'], effective_eye_score=effective['eye'],
+                                 held_components=held, held_component_ages_ms={name: timestamp-components[name][1] for name in held},
+                                 eye_diagnostics=person['runtime']._eye_candidate.diagnostics(),
+                                 eye_state=(result.get('eye_candidate') or {}).get('eye_state'),
+                                 eye_closed_seconds=(result.get('eye_candidate') or {}).get('continuous_closed_seconds'),
+                                 downward_status=result.get('downward_status'),
+                                 looking_down_seconds=result.get('looking_down_seconds'),
                                  eye_coverage=(result.get('eye_candidate') or {}).get('coverage'),
                                  relative_angles=result.get('angles'),
                                  reason_codes=list(result['reason_codes']) + (['eye_observation_unavailable']
                                      if self.eye_fusion and eye is None else []))
-            outputs.append(result)
+            outputs.append({**result, '_fused': fused_current, '_held': bool(held), '_recent': fused_recent})
         for identity, person in self._people.items():
             if identity not in active:
+                person['components'].clear()
                 was_present = person['present']
                 person['present'] = False
                 if counts[identity] > 1:
                     person['calibration'].start()
                     person['runtime'].reset()
-                elif timestamp - person['last_seen'] > self.config.max_observation_hold_seconds * 1000:
+                elif timestamp - person['last_seen'] > self.calibration_grace_ms:
                     person['runtime'].reset()
                 elif was_present:
                     person['runtime'].pause_observation()
                 person['row'].update(status='missing', score=None, current_direction_score=None,
                                      head_score=None, eye_score=None, current_head_score=None, current_eye_score=None,
+                                     effective_head_score=None, effective_eye_score=None, held_components=[], held_component_ages_ms={},
+                                     eye_state=None, eye_closed_seconds=None,
+                                     downward_status=None, looking_down_seconds=None,
+                                     eye_diagnostics={'reason': 'face_not_detected'},
                                      eye_coverage=None, relative_angles=None,
                                      reason_codes=['identity_not_observed'])
         if self.eye_fusion:
             # 같은 시각의 머리·눈 점수만 결합해 publisher에서 최근 구간을 한 번 집계한다.
-            primitives = [(None, None, 0.8 * r['current_direction_score'] + 0.2 * r['eye_candidate']['current_eye_score'])
-                          for r in outputs if r.get('current_direction_score') is not None
-                          and (r.get('eye_candidate') or {}).get('current_eye_score') is not None]
+            primitives = [(None, None, r['_fused'], r['_held']) for r in outputs if r['_fused'] is not None]
         else:
             primitives = [r['gaussian_observation'] for r in outputs if r.get('gaussian_observation') is not None]
-        observable_count = sum(r['angles'] is not None for r in outputs)
+        observable_count = sum((r['_fused'] is not None if self.eye_fusion else r['angles'] is not None) for r in outputs)
         current = ([p[2] for p in primitives] if self.eye_fusion else
                    [r['current_direction_score'] for r in outputs if r.get('current_direction_score') is not None])
-        recent = ([r['eye_candidate']['candidate_total'] for r in outputs
-                   if (r.get('eye_candidate') or {}).get('candidate_total') is not None
-                   and r.get('current_direction_score') is not None] if self.eye_fusion else
+        recent = ([r['_recent'] for r in outputs if r['_recent'] is not None] if self.eye_fusion else
                   [r['score'] for r in outputs if r['score'] is not None])
         self.latest = self._empty('no_scoreable_observation')
         self.latest.update(angles={} if observable_count else None,
@@ -229,7 +265,7 @@ class MultiFaceGaussianRuntime:
         window = round(self.config.window_seconds * 1000)
         if duration <= 0 or duration > window:
             raise ValueError('집계 구간은 설정한 양수 시간 범위 안이어야 합니다')
-        observable_ms = scoreable_ms = person_ms = 0
+        observable_ms = scoreable_ms = person_ms = held_ms = 0
         numerator = denominator = 0.0
         origin = end - window
         for left, right, observable, _, primitives in segments:
@@ -241,10 +277,12 @@ class MultiFaceGaussianRuntime:
             if not observable or not primitives:
                 continue
             scoreable_ms += right - left
+            if any(len(p) > 3 and p[3] for p in primitives):
+                held_ms += right - left
             u, v = (left - origin) / window, (right - origin) / window
             weight = (v - u) * (v + u) / 2
             for primitive in primitives:
-                score = (primitive[2] if len(primitive) == 3 else
+                score = (primitive[2] if len(primitive) >= 3 else
                          gaussian_angle_score(HeadAngles(primitive[0], primitive[1], 0), self.config))
                 numerator += weight * score
                 denominator += weight
@@ -258,4 +296,4 @@ class MultiFaceGaussianRuntime:
             reasons.append('no_scoreable_time')
         return dict(score=round(numerator / denominator, 1) if not reasons else None,
                     observable_duration_ms=observable_ms, scoreable_duration_ms=scoreable_ms,
-                    scoreable_person_duration_ms=person_ms, reason_codes=reasons)
+                    scoreable_person_duration_ms=person_ms, held_duration_ms=held_ms, reason_codes=reasons)

@@ -84,7 +84,7 @@ class EyeFusionTests(unittest.TestCase):
         self.assertLess(values[-1],max(values))
         extension=events[-1]['payload']['model_extensions']['position-track-gaussian']
         self.assertEqual((extension['head_weight'],extension['eye_weight']),(0.8,0.2))
-        self.assertEqual(extension['eye_penalty_per_second'], 10.0)
+        self.assertEqual(extension['eye_penalty_per_second'], 15.0)
         self.assertEqual(extension['eye_score_policy'], 'linear_penalty_after_bilateral_closure_grace')
         self.assertNotIn('eye_candidate',repr(events))
         self.assertNotIn('transient_track_key',repr(events))

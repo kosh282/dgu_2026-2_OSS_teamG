@@ -6,10 +6,12 @@ import math
 class EyeCandidate:
     """최근 구간의 장시간 눈 감김과 현재 관측 상태를 계산한다."""
     def __init__(self, window_ms=5000, max_gap_ms=300, min_coverage=0.7,
-                 closed_threshold=0.21, prolonged_ms=2000, penalty_per_second=10.0):
+                 closed_threshold=0.21, prolonged_ms=2000, penalty_per_second=10.0,
+                 closure_gap_ms=None):
         self.window_ms, self.max_gap_ms = window_ms, max_gap_ms
         self.min_coverage, self.threshold, self.prolonged_ms = min_coverage, closed_threshold, prolonged_ms
         self.penalty_per_second = penalty_per_second
+        self.closure_gap_ms = max_gap_ms if closure_gap_ms is None else closure_gap_ms
         self.reset()
 
     def reset(self):
@@ -17,7 +19,15 @@ class EyeCandidate:
         self.previous_time = None
         self.previous_closed = False
         self.closed_since = None
+        self.interrupted = False
         self.track = None
+        self.last_reason = 'waiting'
+        self.gap_count = 0
+        self.missing_eye_count = 0
+
+    def diagnostics(self):
+        return {'reason': self.last_reason, 'gap_count': self.gap_count,
+                'missing_eye_count': self.missing_eye_count}
 
     def update(self, feature, head_result):
         timestamp = feature.get('start_ms')
@@ -26,34 +36,60 @@ class EyeCandidate:
         track = face.get('transient_track_key')
         quality = face.get('quality') or {}
         left, right = face.get('eye_aspect_ratio_left'), face.get('eye_aspect_ratio_right')
+        def valid_eye(v):
+            return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+        eyes = (valid_eye(left), valid_eye(right))
         values_ok = all(isinstance(v, (int, float)) and not isinstance(v, bool)
                         and math.isfinite(v) and v >= 0 for v in (left, right))
         usable = (isinstance(timestamp, int) and not isinstance(timestamp, bool)
                   and isinstance(track, int) and not isinstance(track, bool)
                   and feature.get('quality', {}).get('status') in ('valid', 'partial')
-                  and quality.get('status') in ('valid', 'partial') and values_ok
-                  and head_result.get('angles') is not None)
+                  and quality.get('status') in ('valid', 'partial') and values_ok)
         if not usable:
-            self.previous_time = self.closed_since = None
-            self.previous_closed = False
+            if not all(eyes):
+                self.missing_eye_count += 1
+            self.last_reason = ('one_eye_missing' if any(eyes) else 'both_eyes_missing') if not all(eyes) else 'quality_or_track_unavailable'
+            # 일시적인 누락은 감김 이력을 보류한다. 누락 구간은 복귀 시 시간에서 뺀다.
+            self.interrupted = True
             return {'eye_score': None, 'current_eye_score': None, 'candidate_total': None, 'head_score': head_result.get('score'),
                     'coverage': None, 'closed_seconds': None, 'eye_state': 'unavailable',
                     'continuous_closed_seconds': None, 'status': 'eye_unavailable'}
-        if self.track is not None and self.track != track:
+        track_changed = self.track is not None and self.track != track
+        if track_changed:
+            self.reset()
+        if self.previous_time is not None and timestamp <= self.previous_time:
             self.reset()
         self.track = track
         closed = left < self.threshold and right < self.threshold
         previous = self.previous_time
         if previous is not None and 0 < timestamp - previous <= self.max_gap_ms:
-            closure_start = self.closed_since if self.previous_closed and closed else None
-            self.segments.append((previous, timestamp, closure_start))
+            delta = timestamp - previous
+            if delta > self.closure_gap_ms or self.interrupted:
+                # 공백은 감김 시간과 관측 시간에 더하지 않는다. 같은 눈 감김이
+                # 다시 확인되면 이전의 확인된 시간만 이어서 사용한다.
+                self.gap_count += 1
+                if self.previous_closed and closed and self.closed_since is not None:
+                    self.closed_since += delta
+                else:
+                    self.closed_since = None
+                self.last_reason = 'analysis_gap_partial'
+            else:
+                closure_start = self.closed_since if self.previous_closed and closed else None
+                self.segments.append((previous, timestamp, closure_start))
+                self.last_reason = 'both_eyes_valid'
         else:
+            if previous is not None:
+                self.gap_count += 1
+            self.last_reason = 'analysis_gap' if previous is not None else 'both_eyes_valid'
             self.closed_since = None
         if closed:
             if self.closed_since is None:
                 self.closed_since = timestamp
         else:
             self.closed_since = None
+        if track_changed:
+            self.last_reason = 'track_changed'
+        self.interrupted = False
         self.previous_time, self.previous_closed = timestamp, closed
         cutoff = timestamp - self.window_ms
         while self.segments and self.segments[0][1] <= cutoff:

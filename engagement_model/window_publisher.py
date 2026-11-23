@@ -91,8 +91,11 @@ class WindowPublisher:
         scoreable_ms = summary['scoreable_duration_ms']
         observable_ratio = observable_ms / duration
         scoreable_ratio = scoreable_ms / duration
-        value, reasons = summary['score'], summary['reason_codes']
-        quality = 'not_observable' if value is None else ('partial' if partial or scoreable_ms < duration else 'valid')
+        value, reasons = summary['score'], list(summary['reason_codes'])
+        held_ms = summary.get('held_duration_ms', 0)
+        if held_ms:
+            reasons.append('component_value_held')
+        quality = 'not_observable' if value is None else ('partial' if partial or scoreable_ms < duration or held_ms else 'valid')
         payload = {
             'model_output': None if value is None else {
                 'kind': 'continuous', 'value': value, 'scale_or_labels': '0-100',
@@ -125,6 +128,7 @@ class WindowPublisher:
                 'down_transition_pitch_degrees': self.config.gaussian_down_transition_pitch_degrees,
                 'down_confirm_seconds': self.config.gaussian_down_confirm_seconds,
                 'down_grace_seconds': self.config.down_grace_seconds,
+                'downward_gap_seconds': self.config.downward_gap_seconds,
                 'down_penalty_policy': 'linear_points_per_second_after_grace',
                 'down_penalty_per_second': self.config.down_penalty_per_second,
                 'window_seconds': self.config.window_seconds,
@@ -137,15 +141,18 @@ class WindowPublisher:
             payload['model_extensions'][self.model_id].update({
                 'aggregation': getattr(self.runtime, 'aggregation_label', 'reidentified-person-time-weighted-gaussian'),
                 'scoreable_person_duration_ms': summary['scoreable_person_duration_ms'],
+                'held_duration_ms': held_ms,
+                'component_hold_limit_ms': getattr(self.runtime, 'component_hold_ms', 0),
             })
         if getattr(self.runtime, 'eye_fusion', False):
             payload['model_extensions'][self.model_id].update({
                 'version': 'head-eye-time-window-3',
                 'head_weight': 0.8, 'eye_weight': 0.2,
-                'eye_window_seconds': self.config.window_seconds, 'eye_min_coverage': 0.7,
+                'eye_window_seconds': self.config.window_seconds, 'eye_min_coverage': self.config.eye_min_coverage,
+                'eye_max_gap_seconds': self.config.eye_max_gap_seconds,
                 'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,
                 'eye_score_policy': 'linear_penalty_after_bilateral_closure_grace',
-                'eye_penalty_per_second': 10.0,
+                'eye_penalty_per_second': self.config.eye_penalty_per_second,
             })
         event = self.service.make_event(
             self.session_id, 'engagement_window', payload, start, end, 'model',

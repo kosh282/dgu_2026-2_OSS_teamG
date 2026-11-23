@@ -46,7 +46,8 @@ class PositionTrackTests(unittest.TestCase):
     def test_longer_dropout_recalibrates_only_missing_face(self):
         model=self.ready()
         model(sample(3400, (0.25,)))
-        model(sample(4400))
+        for t in range(3500, 8501, 100): model(sample(t, (0.25,)))
+        model(sample(8600))
         rows={r['id']:r for r in model.participants()}
         self.assertEqual(rows['T1']['calibration_status'], 'ready')
         self.assertEqual(rows['T2']['calibration_status'], 'collecting')
@@ -79,10 +80,71 @@ class PositionTrackTests(unittest.TestCase):
         self.assertLess(returned['eye_coverage'], 1.0)
 
     def test_large_move_overlap_and_gap_reset(self):
-        for data in (sample(3400,(0.49,0.51)),sample(5000)):
+        for data in (sample(3400,(0.49,0.51)),sample(8500)):
             model=self.ready(); result=model(data)
             self.assertIsNone(result['current_direction_score'])
             self.assertTrue(all(r['calibration_status']=='collecting' for r in model.participants()))
+
+    def test_replacement_does_not_reset_unaffected_person(self):
+        model = self.ready()
+        changed = sample(3400)
+        changed['features']['faces'][1]['transient_track_key'] = 3
+        model(changed)
+        rows = {row['id']: row for row in model.participants()}
+        self.assertEqual(rows['T1']['calibration_status'], 'ready')
+        self.assertEqual(rows['T3']['calibration_status'], 'collecting')
+
+    def test_ambiguous_tracker_does_not_reuse_either_old_key(self):
+        from video_recognition.face_postprocessing import FacePostProcessor
+        tracker = FacePostProcessor()
+        old = tracker.process([{}, {}], [(0.45, 0.5), (0.55, 0.5)], 0)
+        old_keys = {face['transient_track_key'] for face in old}
+        new = tracker.process([{}], [(0.50, 0.5)], 100)
+        self.assertNotIn(new[0]['transient_track_key'], old_keys)
+
+    def test_eye_dropout_uses_only_same_track_and_expires(self):
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
+        for t in range(0, 10001, 100): model(sample(t))
+        for t in range(10100, 12301, 100):
+            feature = sample(t)
+            feature['features']['faces'][0]['eye_aspect_ratio_left'] = None
+            result = model(feature)
+            row = {r['id']: r for r in model.participants()}['T1']
+            if t <= 12000:
+                self.assertEqual(row['held_components'], ['eye'])
+                self.assertIsNotNone(row['current_direction_score'])
+            else:
+                self.assertEqual(row['held_components'], [])
+                self.assertIsNone(row['current_direction_score'])
+        self.assertEqual(result['scoreable_count'], 1)
+
+    def test_missing_head_can_use_recent_head_with_current_eye(self):
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
+        for t in range(0, 10001, 100): model(sample(t))
+        feature = sample(10100)
+        face = feature['features']['faces'][0]
+        face['head_angles_degrees'] = None
+        result = model(feature)
+        row = {r['id']: r for r in model.participants()}['T1']
+        self.assertEqual(row['held_components'], ['head'])
+        self.assertEqual(row['current_eye_score'], 100)
+        self.assertEqual(row['current_direction_score'], 100)
+        self.assertEqual(result['scoreable_count'], 2)
+
+    def test_held_component_is_marked_in_published_quality(self):
+        service = IntegrationService(); sid = service.start_session('test')
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
+        publisher = WindowPublisher(service, sid, model, start_ms=0)
+        for t in range(0, 12001, 100):
+            feature = sample(t); feature['session_id'] = sid
+            if 10500 <= t < 11500:
+                feature['features']['faces'][0]['eye_aspect_ratio_left'] = None
+            with patch.object(service, 'elapsed_ms', return_value=t): publisher(feature)
+        events = service.get_events_in_range(sid, 0, 12000)
+        held = [e for e in events if e['event_type'] == 'engagement_window'
+                and e['payload']['model_extensions']['position-track-gaussian'].get('held_duration_ms', 0)]
+        self.assertTrue(held)
+        self.assertTrue(all(e['quality']['status'] == 'partial' for e in held))
 
     def test_published_events_contain_only_anonymous_group_values(self):
         service=IntegrationService(); sid=service.start_session('test')

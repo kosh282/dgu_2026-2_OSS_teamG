@@ -6,10 +6,10 @@ from .multi_face import MultiFaceGaussianRuntime
 class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
     model_id = 'position-track-gaussian'
     model_version = 'position-gaussian-0.1'
-    association_gap_ms = 1500
+    association_gap_ms = 5000
     maximum_center_shift = 0.10
     minimum_separation = 0.12
-    calibration_retention_ms = 1000
+    calibration_retention_ms = 5000
     aggregation_label = 'position-track-time-weighted-gaussian'
 
     def __init__(self, config=None, *, eye_fusion=False):
@@ -46,20 +46,30 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
                 valid = False
                 break
             positions[key] = (x, y)
-        for i, a in enumerate(positions.values()):
-            for b in list(positions.values())[i+1:]:
+        uncertain = set()
+        pairs = list(positions.items())
+        for i, (key_a, a) in enumerate(pairs):
+            for key_b, b in pairs[i+1:]:
                 if math.dist(a, b) < self.minimum_separation:
-                    valid = False
+                    uncertain.update((key_a, key_b))
+        for key in uncertain:
+            positions.pop(key, None)
+            self._people.pop(f'T{key}', None)
+            self._position_seen.pop(key, None)
         old = self._positions
         gap = (self._position_time is not None and (timestamp is None or
                not 0 < timestamp-self._position_time <= self.association_gap_ms))
         removed, added = set(old) - set(positions), set(positions) - set(old)
-        # 동시 이탈·신규 등장이나 겹침은 교체 여부가 모호하므로 전원 재수집한다.
-        ambiguous = not valid or gap or bool(removed and added)
+        # 교체가 의심되는 트랙만 버리고 계속 관측된 다른 참가자는 유지한다.
+        ambiguous = not valid or gap
         association_reset = ambiguous and self._position_time is not None
         if ambiguous:
             self._people.clear()
         else:
+            if removed and added:
+                for key in removed:
+                    self._people.pop(f'T{key}', None)
+                    self._position_seen.pop(key, None)
             # 크게 이동한 트랙은 다른 얼굴과의 연결 가능성을 고려해 기준을 버린다.
             for key in set(old) & set(positions):
                 person = self._people.get(f'T{key}')
@@ -86,6 +96,6 @@ class PositionTrackGaussianRuntime(MultiFaceGaussianRuntime):
         result = super().__call__(feature)
         if association_reset:
             result['reason_codes'] = list(dict.fromkeys(result['reason_codes'] + ['position_association_reset']))
-        if not valid:
+        if not valid or uncertain:
             result['reason_codes'] = list(dict.fromkeys(result['reason_codes'] + ['position_association_uncertain']))
         return result

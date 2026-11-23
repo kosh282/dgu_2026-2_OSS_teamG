@@ -67,6 +67,13 @@ class GaussianFormulaTests(unittest.TestCase):
         insufficient = gaussian_window_score([(0, 1000, True, None, (0, 0))], 0, 10000, config)
         self.assertIsNone(insufficient['score'])
 
+    def test_default_coverage_gate_accepts_sixty_percent(self):
+        config = ModelConfig.gaussian(window_seconds=10)
+        good = gaussian_window_score([(0, 6000, True, None, (0, 0))], 0, 10000, config)
+        missing = gaussian_window_score([(0, 5900, True, None, (0, 0))], 0, 10000, config)
+        self.assertEqual(good['score'], 100)
+        self.assertIsNone(missing['score'])
+
 
 class GaussianRuntimeTests(unittest.TestCase):
 
@@ -84,7 +91,8 @@ class GaussianRuntimeTests(unittest.TestCase):
             rows.append([{key: result.get(key) for key in keys}
                          for result in (model(feature_window(ms, **options)) for model in models)])
         digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-        self.assertEqual(digest, 'aedce0b29a9b7f1c11b30e9bb8eebafcfa7c8ebde8cead03c3b1be8e7a01e9a6')
+        # 관측 불가 구간의 아래보기 이력을 최대 0.8초 보류하는 현재 정책 기준이다.
+        self.assertEqual(digest, '1d1c937d2196f3c8be6bcf9317a26657feafbf82f7fd7c1e17485c3518a7c070')
 
     def test_softening_improves_small_motion_without_changing_state_or_down_policy(self):
         for pitch, yaw in [(0, 10), (-5, 0), (5, 0), (0, 60), (12, 0), (20, 0)]:
@@ -219,9 +227,9 @@ class GaussianRuntimeTests(unittest.TestCase):
         runtime = GaussianRuntime()
         self.run_frames(runtime, 0, 10000)
         down = self.run_frames(runtime, 10100, 30100, pitch=20)
-        self.assertEqual(down['current_direction_score'], 25.0)
+        self.assertEqual(down['current_direction_score'], 0.0)
         boundary = runtime(feature_window(30200, pitch=12))
-        self.assertEqual(boundary['current_direction_score'], 24.5)
+        self.assertEqual(boundary['current_direction_score'], 0.0)
         front = runtime(feature_window(30300))
         self.assertEqual(front['current_direction_score'], 100)
         self.assertIsNotNone(front['score'])

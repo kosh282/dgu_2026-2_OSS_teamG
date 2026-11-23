@@ -88,12 +88,12 @@ class RuntimeTests(unittest.TestCase):
         for timestamp in range(11200, 16200, 100):
             result = runtime(feature_window(timestamp, pitch=20.0))
         self.assertLess(result["score"], 100.0)
-        self.assertGreater(result["score"], 80.0)
+        self.assertGreater(result["score"], 50.0)
         self.assertIn("looking_down_score_decay", result["reason_codes"])
 
         for timestamp in range(16200, 21201, 100):
             result = runtime(feature_window(timestamp, pitch=20.0))
-        self.assertEqual(result["current_direction_score"], 50.0)  # 5초 유예 후 초당 5점 감쇠
+        self.assertEqual(result["current_direction_score"], 30.0)  # 5초 유예 후 초당 7점 감쇠
         self.assertGreater(result["score"], result["current_direction_score"])
 
     def test_down_state_uses_hysteresis_near_threshold(self):

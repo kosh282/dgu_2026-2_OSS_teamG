@@ -38,6 +38,7 @@ class HeadOrientationState:
         self._down_start_score = None
         self._previous_stable_score = None
         self._last_track_key = None
+        self._observation_interrupted = False
 
     def reset(self):
         """새 데모 세션을 위해 자세·유지 시간 상태를 비운다."""
@@ -116,6 +117,7 @@ class HeadOrientationState:
         self._down_seconds = 0.0
         self._down_start_score = None
         self._last_track_key = None
+        self._observation_interrupted = False
         if clear_score:
             self._previous_stable_score = None
 
@@ -143,8 +145,10 @@ class HeadOrientationState:
             # 짧은 검출 공백은 기존 상태를 잠시 보존하되 새 점수로 표시하지 않는다.
             if (self._last_valid_ms is None
                     or timestamp_ms - self._last_valid_ms
-                    > self.config.max_observation_hold_seconds * 1000):
+                    > self.config.downward_gap_seconds * 1000):
                 self._reset_time_state()
+            else:
+                self._observation_interrupted = True
             self.latest = {
                 "model_id": self.model_id,
                 "model_version": self.model_version,
@@ -170,7 +174,7 @@ class HeadOrientationState:
         classification_previous_state = (
             self._previous_state
             if same_track and delta_from_previous is not None
-            and 0 < delta_from_previous <= self.config.max_observation_hold_seconds * 1000
+            and 0 < delta_from_previous <= self.config.downward_gap_seconds * 1000
             else None
         )
         state = classify_orientation(
@@ -190,8 +194,13 @@ class HeadOrientationState:
                 reset_reason = "non_monotonic_timestamp"
             elif delta_ms <= self.config.max_observation_hold_seconds * 1000:
                 if reset_reason is None:
-                    delta_seconds = delta_ms / 1000.0
+                    # 유효하지 않은 프레임을 사이에 두면 빈 구간은 지속 시간에 넣지 않는다.
+                    delta_seconds = 0.0 if self._observation_interrupted else delta_ms / 1000.0
                     continuous = True
+            elif (reset_reason is None and same_track and self._previous_state == 'looking_down'
+                  and delta_ms <= self.config.downward_gap_seconds * 1000):
+                # 감김과 마찬가지로 이전 관측 시간만 보존한다. 공백은 세지 않는다.
+                continuous = True
             else:
                 self._reset_time_state()
                 reset_reason = "observation_gap"
@@ -232,6 +241,7 @@ class HeadOrientationState:
         score = None
         reasons = [reset_reason] if reset_reason else []
 
+        self._observation_interrupted = False
         self._last_valid_ms = timestamp_ms
         self._previous_state = state
         self._last_track_key = observation.transient_track_key

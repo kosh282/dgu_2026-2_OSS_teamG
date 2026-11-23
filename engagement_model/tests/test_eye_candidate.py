@@ -18,6 +18,60 @@ def frame(t, ear=0.3, track=1):
 
 
 class EyeCandidateTests(unittest.TestCase):
+    def test_eye_history_survives_head_gap_and_explicit_reset_clears_it(self):
+        model = GaussianRuntime()
+        for t in range(0, 5001, 100):
+            model(frame(t))
+        item = frame(5100)
+        item['features']['faces'][0]['head_angles_relative_degrees'] = None
+        for t in range(5100, 6101, 100):
+            item['start_ms'] = item['end_ms'] = t
+            result = model(item)
+        self.assertGreater(result['eye_candidate']['coverage'], .7)
+        self.assertIsNotNone(result['eye_candidate']['eye_score'])
+        model.reset()
+        self.assertEqual(model(frame(6200))['eye_candidate']['coverage'], 0)
+
+    def test_long_eye_gap_never_continues_closed_penalty(self):
+        candidate = EyeCandidate(max_gap_ms=800, closure_gap_ms=500)
+        head = {'score': 100}
+        candidate.update(frame(0, .1), head)
+        candidate.update(frame(400, .1), head)
+        result = candidate.update(frame(1100, .1), head)
+        self.assertEqual(result['continuous_closed_seconds'], 0.4)
+        self.assertEqual(result['current_eye_score'], 100)
+        self.assertEqual(candidate.diagnostics()['reason'], 'analysis_gap_partial')
+        self.assertEqual(candidate.diagnostics()['gap_count'], 1)
+        self.assertEqual(result['coverage'], .08)
+        candidate.update(frame(1200, None), head)
+        self.assertEqual(candidate.diagnostics()['reason'], 'both_eyes_missing')
+
+    def test_brief_missing_eye_does_not_erase_confirmed_closure(self):
+        candidate = EyeCandidate(max_gap_ms=800, closure_gap_ms=500)
+        head = {'score': 100}
+        for t in range(0, 2001, 100): candidate.update(frame(t, .1), head)
+        self.assertIsNone(candidate.update(frame(2100, None), head)['current_eye_score'])
+        resumed = candidate.update(frame(2200, .1), head)
+        self.assertEqual(resumed['continuous_closed_seconds'], 2.0)
+        self.assertLess(candidate.update(frame(2300, .1), head)['current_eye_score'], 100)
+        candidate.update(frame(2400, .3), head)
+        self.assertEqual(candidate.update(frame(2500, .1), head)['continuous_closed_seconds'], 0)
+
+    def test_group_score_falls_despite_intermittent_eye_dropout(self):
+        from engagement_model.position_tracks import PositionTrackGaussianRuntime
+        from engagement_model.tests.test_position_tracks import sample
+        model = PositionTrackGaussianRuntime(eye_fusion=True)
+        for t in range(0, 15001, 100):
+            item = sample(t, (.5,))
+            face = item['features']['faces'][0]
+            if t >= 9000:
+                face['eye_aspect_ratio_left'] = None if t in (10200, 11500) else .1
+                face['eye_aspect_ratio_right'] = .1
+            result = model(item)
+        row = model.participants()[0]
+        self.assertLess(row['current_eye_score'], 100)
+        self.assertLess(result['current_direction_score'], 100)
+
     def test_gradual_eye_penalty_and_recovery_or_missing(self):
         candidate = EyeCandidate()
         head = {'angles': {'pitch': 0}, 'score': 100}

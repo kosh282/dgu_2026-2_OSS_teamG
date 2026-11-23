@@ -502,7 +502,7 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
         reid = getattr(live, 'reidentification_enabled', False)
         st.subheader('세션 내 ID별 Gaussian 점수' if reid else '단기 위치 트랙별 Gaussian 점수')
         st.caption('결합 점수는 머리 방향 80%, 눈 감김 20%를 반영합니다. 관측이 부족한 요소는 0점으로 처리하지 않습니다.')
-        st.caption('표의 점수는 각 얼굴의 최신 유효 관측값입니다. 상단 그룹 점수는 최근 5초 사람·시간 가중 집계입니다.')
+        st.caption('일시적으로 한 항목을 놓치면 같은 트랙의 이전 값을 최대 2초 사용하며, 아래에 표시합니다. 상단 점수는 최근 5초 집계입니다.')
         st.caption('참고용 관찰 점수입니다. 표는 수업 중에만 표시되며, 저장·재열기 대상은 ID 없는 그룹 집계입니다.')
         if not reid:
             st.caption('위치 트랙은 사람을 식별하지 않으며, 얼굴이 끊기거나 배치가 바뀌면 보정을 다시 시작할 수 있습니다.')
@@ -516,7 +516,14 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
                 '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
                 '현재 결합 점수':row['current_direction_score'],
                 '현재 머리 점수':row.get('current_head_score'), '현재 눈 점수':row.get('current_eye_score'),
+                '결합에 사용한 머리':row.get('effective_head_score'), '결합에 사용한 눈':row.get('effective_eye_score'),
+                '이전 값 사용':', '.join(f"{name} ({age / 1000:.1f}초 전)" for name, age in row.get('held_component_ages_ms', {}).items()),
                 '눈 관측률':row.get('eye_coverage'),
+                '눈 상태':row.get('eye_state'), '눈 감김 확인 시간(초)':row.get('eye_closed_seconds'),
+                '아래보기 상태':row.get('downward_status'), '아래보기 관측 시간(초)':row.get('looking_down_seconds'),
+                '눈 진단':row.get('eye_diagnostics', {}).get('reason'),
+                '눈 공백 횟수':row.get('eye_diagnostics', {}).get('gap_count'),
+                '눈 누락 횟수':row.get('eye_diagnostics', {}).get('missing_eye_count'),
                 '보류 사유':', '.join(row.get('reason_codes', []))}
                 for row in rows],hide_index=True,use_container_width=True)
             active_ids=[row['id'] for row in rows if row['status'] not in ('missing','not_observable','unavailable')]

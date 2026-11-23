@@ -99,7 +99,11 @@ class GaussianRuntime(HeadOrientationState):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
-        self._eye_candidate = EyeCandidate(window_ms=round(config.window_seconds * 1000), max_gap_ms=round(config.max_observation_hold_seconds * 1000))
+        self._eye_candidate = EyeCandidate(window_ms=round(config.window_seconds * 1000),
+                                           max_gap_ms=round(config.eye_max_gap_seconds * 1000),
+                                           min_coverage=config.eye_min_coverage,
+                                           penalty_per_second=config.eye_penalty_per_second,
+                                           closure_gap_ms=round(config.max_observation_hold_seconds * 1000))
         super().__init__(config, **kwargs)
         self.model_id = 'gaussian-head-direction'
         self.model_version = 'angle-time-0.4'
@@ -112,11 +116,14 @@ class GaussianRuntime(HeadOrientationState):
         self._gaussian_sample = None
         self._gaussian_start_ms = None
         self._down_confirm_start_ms = None
+
+    def reset(self):
+        super().reset()
         self._eye_candidate.reset()
 
     def pause_observation(self):
         """짧은 누락은 관측 구간을 끊되 이미 관측한 이력은 보존한다."""
-        super()._reset_time_state()
+        self._observation_interrupted = True
         self._gaussian_sample = None
         self._down_confirm_start_ms = None
         self._eye_candidate.previous_time = None

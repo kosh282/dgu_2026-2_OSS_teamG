@@ -8,9 +8,9 @@ from engagement_model.position_tracks import PositionTrackGaussianRuntime
 
 def group_model_identity(reidentification_enabled=False):
     """실제 생성 모델과 세션 설정·상태 이벤트가 같은 버전을 사용한다."""
-    return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-1.1-head-eye-experimental'}
+    return ({'model_id': 'multi-face-gaussian', 'model_version': 'multi-gaussian-1.2-head-eye-experimental'}
             if reidentification_enabled else
-            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-1.2-head-eye-experimental'})
+            {'model_id': 'position-track-gaussian', 'model_version': 'position-gaussian-1.3-head-eye-experimental'})
 
 
 def make_group_runtime(reidentification_enabled=False):
@@ -54,6 +54,12 @@ def render_group_panel(image, result, face, runtime, diagnostics, overlay_smooth
     for row in active:
         lines.append(f"{row['id']}: {row['status']} combined={row.get('score')}")
         lines.append(f"  head={row.get('head_score')} eye={row.get('eye_score')}")
+        lines.append(f"  eye coverage={row.get('eye_coverage')} diagnostic={row.get('eye_diagnostics')}")
+        lines.append(f"  eye state={row.get('eye_state')} confirmed closed seconds={row.get('eye_closed_seconds')}")
+        lines.append(f"  down={row.get('downward_status')} observed seconds={row.get('looking_down_seconds')}")
+        if row.get('held_component_ages_ms'):
+            lines.append(f"  HELD previous values (ms): {row['held_component_ages_ms']}")
+            lines.append(f"  USED head={row.get('effective_head_score')} eye={row.get('effective_eye_score')}")
         lines.append(f"  relative P/Y/R: {row.get('relative_angles') or 'unavailable'}")
         if row.get('reason_codes'):
             lines.append(f"  reasons: {', '.join(row['reason_codes'])}")

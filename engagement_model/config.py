@@ -8,7 +8,7 @@ import math
 class ModelConfig:
     """각도는 도, 시간은 초입니다. 변경한 설정은 별도 버전으로 기록하세요."""
 
-    config_version: str = "gaussian-angle-time-0.9-experimental"
+    config_version: str = "gaussian-angle-time-1.1-experimental"
     feature_version: str = "experimental-0.9"
     window_seconds: float = 5.0
     output_interval_seconds: float = 1.0
@@ -24,10 +24,14 @@ class ModelConfig:
     down_grace_seconds: float = 5.0
     down_decay_seconds: float = 10.0
     down_penalty: float = 20.0
-    down_penalty_per_second: float = 5.0
+    down_penalty_per_second: float = 7.0
     max_observation_hold_seconds: float = 0.5
-    min_observable_ratio: float = 0.7
-    min_scoreable_ratio: float = 0.7
+    eye_max_gap_seconds: float = 0.8
+    downward_gap_seconds: float = 0.8
+    min_observable_ratio: float = 0.6
+    min_scoreable_ratio: float = 0.6
+    eye_min_coverage: float = 0.6
+    eye_penalty_per_second: float = 15.0
     scoring_method: str = "gaussian"
     gaussian_sigma_pitch_degrees: float = 15.0
     gaussian_sigma_yaw_degrees: float = 20.0
@@ -40,12 +44,12 @@ class ModelConfig:
     @classmethod
     def gaussian(cls, **overrides):
         """각도 공간 Gaussian의 실험 초기값. 논문의 시야 폭/높이 계수가 아니다."""
-        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-0.9-experimental",
+        values = dict(scoring_method="gaussian", config_version="gaussian-angle-time-1.1-experimental",
                       gaussian_angle_mode='softened',
                       window_seconds=5.0)
         values.update(overrides)
         if values['gaussian_angle_mode'] == 'relative' and 'config_version' not in overrides:
-            values['config_version'] = 'gaussian-angle-time-0.9-experimental-relative'
+            values['config_version'] = 'gaussian-angle-time-1.1-experimental-relative'
         return cls(**values)
 
     def __post_init__(self):
@@ -59,7 +63,7 @@ class ModelConfig:
             elif (isinstance(value, bool) or not isinstance(value, (int, float))
                   or not math.isfinite(value) or value < 0):
                 raise ValueError(f"{item.name}: 유한한 0 이상의 숫자가 필요합니다")
-        for name in ("window_seconds", "output_interval_seconds", "max_observation_hold_seconds",
+        for name in ("window_seconds", "output_interval_seconds", "max_observation_hold_seconds", "eye_max_gap_seconds", "downward_gap_seconds",
                      "gaussian_sigma_pitch_degrees", "gaussian_sigma_yaw_degrees"):
             if getattr(self, name) == 0:
                 raise ValueError(f"{name}: 0보다 커야 합니다")
@@ -81,7 +85,7 @@ class ModelConfig:
             raise ValueError("down_penalty는 100 이하여야 합니다")
         if self.output_interval_seconds > self.window_seconds:
             raise ValueError("출력 간격은 집계 구간 이하여야 합니다")
-        if max(self.min_observable_ratio, self.min_scoreable_ratio) > 1:
+        if max(self.min_observable_ratio, self.min_scoreable_ratio, self.eye_min_coverage) > 1:
             raise ValueError("관측률은 0~1이어야 합니다")
         if self.scoring_method != "gaussian":
             raise ValueError("scoring_method는 gaussian만 지원합니다")

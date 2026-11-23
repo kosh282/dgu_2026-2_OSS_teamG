@@ -189,7 +189,7 @@ class PostprocessingConfig:
     eye_closed_threshold: float = 0.21
     blink_min_closed_frames: int = 2
     track_max_distance: float = 0.12
-    track_max_gap_ms: int = 1000
+    track_max_gap_ms: int = 5000
     blink_rate_window_ms: int = 60_000
 
 
@@ -231,10 +231,23 @@ class FacePostProcessor:
                 if distance <= self.config.track_max_distance:
                     candidates.append((distance, face_index, key))
         candidates.sort()
+        # 여러 연결 후보의 거리가 비슷하면 이전 사람의 보정을 잘못 이어 붙이지 않는다.
+        ambiguous_faces = set()
+        ambiguous_keys = set()
+        for distance, face_index, key in candidates:
+            for other_distance, other_face, other_key in candidates:
+                if (abs(other_distance - distance) < 0.03 and
+                        ((face_index == other_face and key != other_key) or
+                         (key == other_key and face_index != other_face))):
+                    ambiguous_faces.update((face_index, other_face))
+                    ambiguous_keys.update((key, other_key))
+        for key in ambiguous_keys:
+            self._states.pop(key, None)
         assignments = {}
         used_keys = set()
         for _, face_index, key in candidates:
-            if face_index not in assignments and key not in used_keys:
+            if (face_index not in ambiguous_faces and key not in ambiguous_keys
+                    and face_index not in assignments and key not in used_keys):
                 assignments[face_index] = key
                 used_keys.add(key)
         for face_index in range(len(faces)):
