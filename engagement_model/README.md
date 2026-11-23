@@ -43,11 +43,11 @@ ID 이탈·재식별 불확실 구간은 현재/최근 점수 모두 null입니�
 현재 관측자 재보정, 최대32명/마지막 확인 후120초 수명, 수업 종료 시 삭제를 적용합니다.
 이름·ID·임베딩·개인별 점수 이력은 저장하지 않습니다.
 
-현재 프런트·Windows 데모의 그룹 provenance는 재식별 사용 시 `multi-face-gaussian` / `multi-gaussian-1.1-head-eye-experimental`,
-미사용 시 `position-track-gaussian` / `position-gaussian-1.2-head-eye-experimental`입니다. 머리 80%와 눈 20% 결합값을 집계합니다.
+현재 프런트·Windows 데모의 그룹 provenance는 재식별 사용 시 `multi-face-gaussian` / `multi-gaussian-1.3-head-eye-experimental`,
+미사용 시 `position-track-gaussian` / `position-gaussian-1.4-head-eye-experimental`입니다. 머리 70%와 눈 30% 결합값을 집계합니다.
 `group_developer_view.group_model_identity()`가 실제 생성기와 세션 설정·상태 이벤트의 모델 정보를 함께 제공합니다.
 `WindowPublisher`는 다인 런타임의 `aggregate_window()`를 사용합니다. 각 유효 관측의
-같은 시각의 머리 점수와 눈 상태 점수를 80/20으로 결합하고 최근 5초의 결합값을 선형 최근성 가중치로 집계합니다. 양쪽 눈을 2초 연속 감은 이후에는 눈 점수를 초당 15점씩 0점까지 낮추고 눈을 뜨면 100점으로 복귀합니다. 관측 공백은 점수화하지 않고 연속 감김 시간을 다시 계산합니다.
+같은 시각의 머리 점수와 눈 상태 점수를 70/30으로 결합하고 최근 5초의 결합값을 선형 최근성 가중치로 집계합니다. 양쪽 눈을 2초 연속 감은 이후에는 눈 점수를 초당 20점씩 0점까지 낮추고 눈을 뜨면 100점으로 복귀합니다. 관측 공백은 점수화하지 않고 연속 감김 시간을 다시 계산합니다.
 분자는 모든 유효한 사람·구간의 `시간가중치 × 결합 점수` 합,
 분모는 같은 사람·구간의 시간가중치 합입니다. 개인의 이동 평균을 다시 평균하지 않습니다.
 보류·미검출·보정 중인 사람은 0점을 넣지 않습니다. 이 값은 관측 가능한 사람들에 대한 참고 집계이며
@@ -115,9 +115,9 @@ P/Y는 `head_angles_relative_degrees`의 Pitch/Yaw(도)입니다.
 ```text
 h(a; d,k,b) = 0                                              if |a| <= d
              sign(a)*[k*(min(|a|,b)-d)+max(0,|a|-b)]          otherwise
-P_eff = h(P; 2, 0.75, 10)
+P_eff = h(P; 2, 0.75, 9)
 Y_eff = h(Y; 2, 0.75, 15)
-S_current = 100*exp(-0.5*((P_eff/15)^2+(Y_eff/20)^2))
+S_current = 100*exp(-0.5*((P_eff/15)^2+(Y_eff/16)^2))
 ```
 
 Yaw 완화는 `soften_angle()`을 사용합니다.
@@ -140,12 +140,12 @@ softened 0.4가 현재 기본이며, relative 모드도 동일한 아래 보기 
 
 | 설정 | 기본값 | 적용 |
 |---|---:|---|
-| `gaussian_sigma_pitch_degrees` / `gaussian_sigma_yaw_degrees` | 15 / 20° | Gaussian |
+| `gaussian_sigma_pitch_degrees` / `gaussian_sigma_yaw_degrees` | 15 / 16° | Gaussian |
 | `gaussian_angle_mode` | factory 기본 `softened` | 이전 방식은 `relative` |
 | `gaussian_pitch_deadband_degrees` / `gaussian_pitch_small_angle_scale` | 2° / 0.75 | Gaussian Pitch 완화 |
 | `yaw_neutral_deadband_degrees` / `yaw_small_angle_scale` | 2° / 0.75 | 공통 Yaw 완화 |
-| `yaw_full_scale_start_degrees` / `front_pitch_degrees` | 15° / 10° | Yaw/Pitch 완화 경계 |
-| `gaussian_down_transition_pitch_degrees` | 10° | Gaussian 하향 전이 |
+| `yaw_full_scale_start_degrees` / `front_pitch_degrees` | 15° / 9° | Yaw/Pitch 완화 경계 |
+| `gaussian_down_transition_pitch_degrees` | 9° | Gaussian 하향 전이 |
 | `gaussian_down_confirm_seconds` | 0.3초 | 아래 방향 확인 |
 | `window_seconds` | 5초 | 임시 집계 구간 |
 | `output_interval_seconds` | 1초 | publisher 발행 간격 |
@@ -180,16 +180,16 @@ JSON에는 현재 방향 점수·진단 각도·`downward_status`·임시 추적
 | 조건 | `orientation_state` |
 |---|---|
 | 유효 각도 없음 | `not_observable` |
-| Pitch ≥ +15°, 또는 직전 아래 보기이고 Pitch > +10° | `looking_down` |
-| Yaw 절댓값 ≤ 15°, Pitch 절댓값 ≤ 10° | `front` |
+| Pitch ≥ +10°, 또는 직전 아래 보기이고 Pitch > +7° | `looking_down` |
+| Yaw 절댓값 ≤ 15°, Pitch 절댓값 ≤ 9° | `front` |
 | Yaw 절댓값 ≥ 30°, 또는 Pitch ≤ −20° | `away` |
 | 나머지 | `ambiguous` |
 
 Gaussian은 이 상태 분류를 유지하며 별도 `downward_status`로 하향 불확실성을 표시합니다.
 
-- 상대 Pitch > 10°이고 아래 보기 상태가 아직 아니면 `transition_uncertain`으로 점수를 보류합니다.
-- 기존 아래 보기 상태: `looking_down_uncertain`, 연속 +15° 이상 0.3초면 `looking_down_confirmed`.
-- 아래 보기 진입 전 유효한 머리 집계 점수가 있으면 5초 유지하고, 이후 초당 7점씩 0점까지 감소합니다. 눈 점수는 별도 계산하므로 8:2 결합값의 감소량은 눈 상태와 최근 5초 집계에 따라 달라집니다. 유효한 기준 점수가 없으면 보류합니다. 임시 실험 정책이며 집중도 판단이 아닙니다.
+- 상대 Pitch > 9°이고 아래 보기 상태가 아직 아니면 `transition_uncertain`으로 점수를 보류합니다.
+- 기존 아래 보기 상태: `looking_down_uncertain`, 연속 +10° 이상 0.3초면 `looking_down_confirmed`.
+- 아래 보기 진입 전 유효한 머리 집계 점수가 있으면 5초 유지하고, 이후 초당 7점씩 0점까지 감소합니다. 눈 점수는 별도 계산하므로 7:3 결합값의 감소량은 눈 상태와 최근 5초 집계에 따라 달라집니다. 유효한 기준 점수가 없으면 보류합니다. 임시 실험 정책이며 집중도 판단이 아닙니다.
 - 확인은 머리 방향의 확인이며 필기·참여·미참여의 확인이 아닙니다.
 - 전이 관측은 처음부터 점수화 시간에서 제외합니다. 관측 가능 시간에는 포함할 수 있습니다.
 - 미검출·보정 실패·시간/추적 연속성 문제는 사유와 함께 보류 또는 시간 상태 초기화합니다.
@@ -228,7 +228,7 @@ Gaussian은 이 상태 분류를 유지하며 별도 `downward_status`로 하향
 점수는 5초 유예와 5초 초과분에 대한 초당 7점 감점을 사용합니다. 필기 간주에 대한
 추가 점수나 100점 보정, 과거 이벤트의 소급 변경은 없습니다. 정면 복귀 첫 유효 관측의
 Gaussian 재계산은 활동 확인 0.3초를 기다리지 않습니다. 눈 감김은 기존 EAR·2초 유예·
-80/20 결합을 독립적으로 유지하며 눈 특징 결측을 100점으로 대체하지 않습니다.
+70/30 결합을 독립적으로 유지하며 눈 특징 결측을 100점으로 대체하지 않습니다.
 
 다인 모델의 `participants()`와 프런트 `participant_snapshot()`에는 ID/위치 트랙별 선택 필드로
 전달됩니다. **현재 프런트 표는 이 필드를 표시하지 않으며 그룹 JSON 이벤트에도 넣지 않습니다.**
@@ -358,7 +358,7 @@ A/B/C ambiguous 보류·이탈 유예 비교는 분석 실험이며 Gaussian 기
 
 프런트의 다인 경로는 머리·눈 결합 점수를 익명 사람·시간 가중 점수로 발행합니다. 눈 관측이 부족하면 해당 얼굴의 결합 점수는 보류합니다. 개발자 창의 개인별 결합 점수 평균은 저장 구간 점수와 다를 수 있습니다.
 
-눈 상태는 양쪽 EAR이 0.21 미만으로 2초 이상 지속된 이후 초당 15점씩 감점하며, 짧은 깜빡임은 감점하지 않습니다. 유효한 각 시점의 머리·눈 상태를 80/20으로 결합한 뒤 최근 5초를 시간 가중 집계합니다. 관측 유지 상한은 0.5초, 구간 품질 기준은 60%입니다. 양쪽 EAR 또는 트랙을 얻지 못하면 해당 관측을 제외하며 관측 불량을 감김으로 취급하지 않습니다. 별도 눈 점수 진단은 최근 5초 유효 눈 점수의 시간 평균입니다. `0.21`, 2초, 초당 15점, 60%, 80/20은 검증 전 실험값입니다.
+눈 상태는 양쪽 EAR이 0.21 미만으로 2초 이상 지속된 이후 초당 20점씩 감점하며, 짧은 깜빡임은 감점하지 않습니다. 유효한 각 시점의 머리·눈 상태를 70/30으로 결합한 뒤 최근 5초를 시간 가중 집계합니다. 관측 유지 상한은 0.5초, 구간 품질 기준은 60%입니다. 양쪽 EAR 또는 트랙을 얻지 못하면 해당 관측을 제외하며 관측 불량을 감김으로 취급하지 않습니다. 별도 눈 점수 진단은 최근 5초 유효 눈 점수의 시간 평균입니다. `0.21`, 2초, 초당 20점, 60%, 70/30은 검증 전 실험값입니다.
 
 다인 그룹 점수는 머리와 눈을 모두 관측한 사람·시간만 집계합니다. 따라서 전체 수강생의 평균이나 참여율이 아니며, 눈이 보이지 않는 얼굴은 집계에서 빠집니다. 이 점수는 눈 동작의 관찰 후보이며 졸음·집중도·이해도를 뜻하지 않습니다. 얼굴 크기·프레임 주기·안경·조명에 따른 성능과 사람 주석을 이용한 평가가 필요합니다. 얼굴별 눈 특징과 개인 점수는 최종 세션에 저장하지 않습니다. 결합된 그룹 구간 점수와 배점 설정만 저장합니다.
 

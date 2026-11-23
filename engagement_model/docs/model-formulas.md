@@ -17,7 +17,7 @@ h(a; d,k,b) = 0                                              if |a| <= d
 ```
 
 - 상태 분류 Yaw: `d=2°, k=0.75, b=15°`.
-- Gaussian softened 점수 Pitch: `d=2°, k=0.75, b=10°`.
+- Gaussian softened 점수 Pitch: `d=2°, k=0.75, b=9°`.
 - Gaussian softened 점수 Yaw: 상태 분류와 같은 설정.
 - 큰 각도에서는 기울기가 1이며 완화 구간에서 생긴 오프셋만 남습니다.
 - 홀함수이므로 동일 Pitch에서 ±동일 Yaw의 점수는 같습니다.
@@ -52,7 +52,7 @@ Sensors 24(5), 1365, §3.3 식(8)~(10).
 
 ```text
 relative 모드: P_eff=P, Y_eff=Y
-softened 모드: P_eff=h(P;2,0.75,10), Y_eff=h(Y;2,0.75,15)
+softened 모드: P_eff=h(P;2,0.75,9), Y_eff=h(Y;2,0.75,15)
 S_angle=100*exp(-0.5*((P_eff/sigma_pitch)^2+(Y_eff/sigma_yaw)^2))
 ```
 
