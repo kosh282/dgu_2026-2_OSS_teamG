@@ -214,7 +214,7 @@ class GroupWritingActivityTests(unittest.TestCase):
                         self.assertIsNone(a['current_direction_score'])
                     else:
                         self.assertLess(a['current_eye_score'], 100)
-                        self.assertEqual(a['current_direction_score'], round(.8 * 100 + .2 * a['current_eye_score'], 1))
+                        self.assertEqual(a['current_direction_score'], round(.7 * 100 + .3 * a['current_eye_score'], 1))
                     self.assertEqual(b['current_direction_score'], 100)
 
     def test_missing_and_changed_identity_do_not_inherit_episode(self):

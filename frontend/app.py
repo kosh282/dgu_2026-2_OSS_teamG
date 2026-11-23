@@ -502,7 +502,7 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
     if live.model_enabled:
         reid = getattr(live, 'reidentification_enabled', False)
         st.subheader('세션 내 ID별 Gaussian 점수' if reid else '단기 위치 트랙별 Gaussian 점수')
-        st.caption('결합 점수는 머리 방향 80%, 눈 감김 20%를 반영합니다. 관측이 부족한 요소는 0점으로 처리하지 않습니다.')
+        st.caption('결합 점수는 머리 방향 70%, 눈 감김 30%를 반영합니다. 관측이 부족한 요소는 0점으로 처리하지 않습니다.')
         st.caption('일시적으로 한 항목을 놓치면 같은 트랙의 이전 값을 최대 2초 사용하며, 아래에 표시합니다. 상단 점수는 최근 5초 집계입니다.')
         st.caption('참고용 관찰 점수입니다. 표는 수업 중에만 표시되며, 저장·재열기 대상은 ID 없는 그룹 집계입니다.')
         if not reid:

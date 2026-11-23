@@ -568,8 +568,8 @@ class GaussianDiagnostics:
             (f'{100*p_term/total:.1f}/{100*y_term/total:.1f}%' if total else '0/0% (neutral)'),
         ])
         candidates = [gaussian_angle_score(HeadAngles(pitch, yaw, 0),
-                      replace(config, gaussian_sigma_yaw_degrees=sigma)) for sigma in (20, 30, 40)]
-        self.lines.append('SAME INPUT sigmaYaw 20/30/40: ' + '/'.join(f'{s:.2f}' for s in candidates))
+                      replace(config, gaussian_sigma_yaw_degrees=sigma)) for sigma in (16, 20, 30)]
+        self.lines.append('SAME INPUT sigmaYaw 16/20/30: ' + '/'.join(f'{s:.2f}' for s in candidates))
         previous = self.previous
         if (previous is not None and track == previous[1]
                 and 0 < timestamp - previous[0] <= config.max_observation_hold_seconds * 1000):
@@ -887,7 +887,7 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, show_overlay
     label(f"State: {result.get('orientation_state', 'not_observable')} | Down: {result.get('downward_status') or '--'}"[:80], 660, 375, .52)
     candidate = result.get('eye_candidate') or {}
     label('EYE + HEAD (FUSED)' if fused else 'EYE + HEAD COMPARISON ONLY - NOT SAVED', 12, 590, .48, (100, 215, 255))
-    label('80/20 COMBINED' if fused else '80/20 CANDIDATE', 12, 630, .43)
+    label('70/30 COMBINED' if fused else '70/30 CANDIDATE', 12, 630, .43)
     label(f'HEAD {window:g}s', 215, 630, .43)
     label(f'EYE {window:g}s', 420, 630, .43)
     label(_score_label(candidate.get('candidate_total')), 12, 685, 1.05, (245, 245, 245), 2)
@@ -1146,7 +1146,7 @@ def main():
     parser.add_argument('--diagnostic-hold-seconds', type=float, default=3, help='각 구간 유지 표본 시간 (기본 3초)')
     parser.add_argument('--single-model', action='store_true', help='호환 옵션: 현재 Gaussian만 표시합니다')
     parser.add_argument('--sigma-pitch', type=float, default=15, help='Gaussian sigma pitch (도, 실험 초기값)')
-    parser.add_argument('--sigma-yaw', type=float, default=20, help='Gaussian sigma yaw (도, 실험 초기값)')
+    parser.add_argument('--sigma-yaw', type=float, default=16, help='Gaussian sigma yaw (도, 실험 초기값)')
     parser.add_argument('--gaussian-angle-mode', choices=('relative', 'softened'), default='softened',
                         help='relative: 이전 Gaussian 입력, softened: 중립 부근 완화 (기본)')
     parser.add_argument('--front-stability', action='store_true', help='정면 고정·작은 몸 이동·정면 복귀 안내 추가')

@@ -104,6 +104,7 @@ class GaussianRuntime(HeadOrientationState):
                                            max_gap_ms=round(config.eye_max_gap_seconds * 1000),
                                            min_coverage=config.eye_min_coverage,
                                            penalty_per_second=config.eye_penalty_per_second,
+                                           eye_weight=config.eye_weight,
                                            closure_gap_ms=round(config.max_observation_hold_seconds * 1000))
         super().__init__(config, **kwargs)
         self.model_id = 'gaussian-head-direction'

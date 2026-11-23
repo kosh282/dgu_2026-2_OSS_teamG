@@ -51,7 +51,7 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(config.scoring_method, 'gaussian')
                 self.assertEqual(config.gaussian_angle_mode, 'softened')
                 self.assertEqual(config.gaussian_sigma_pitch_degrees, 15)
-                self.assertEqual(config.gaussian_sigma_yaw_degrees, 20)
+                self.assertEqual(config.gaussian_sigma_yaw_degrees, 16)
 
     def test_configurable_window(self):
         """집계와 출력 간격을 바꾸고 기본 설정은 그대로 유지할 수 있습니다."""

@@ -24,7 +24,7 @@ class GaussianFormulaTests(unittest.TestCase):
         self.assertEqual(gaussian_angle_score(HeadAngles(0, 0, 0), config), 100)
         scores = [gaussian_angle_score(HeadAngles(0, angle, 0), config) for angle in (0, 10, 20, 60, 90)]
         self.assertEqual(scores, sorted(scores, reverse=True))
-        self.assertAlmostEqual(scores[2], 100 * math.exp(-.5))
+        self.assertAlmostEqual(scores[2], 100 * math.exp(-.5 * (20 / 16) ** 2))
         self.assertEqual(gaussian_angle_score(HeadAngles(2, -10, 0), config),
                          gaussian_angle_score(HeadAngles(-2, 10, 0), config))
         self.assertGreater(gaussian_angle_score(HeadAngles(2, 0, 0), config), 99)
@@ -53,7 +53,7 @@ class GaussianFormulaTests(unittest.TestCase):
         # 설정한 10초 구간 중 오래된 5초는 100, 최근 5초는 Gaussian(0,60)점.
         rows = [(0, 5000, True, 0, (0, 0)), (5000, 10000, True, 100, (0, 60))]
         result = gaussian_window_score(rows, 0, 10000, config)
-        expected = .25 * 100 + .75 * 100 * math.exp(-4.5)
+        expected = .25 * 100 + .75 * 100 * math.exp(-.5 * (60 / 16) ** 2)
         self.assertEqual(result['score'], round(expected, 1))
         split = [(ms, ms + 100, True, None, (0, 0 if ms < 5000 else 60)) for ms in range(0, 10000, 100)]
         self.assertEqual(result, gaussian_window_score(split, 0, 10000, config))
@@ -92,7 +92,7 @@ class GaussianRuntimeTests(unittest.TestCase):
                          for result in (model(feature_window(ms, **options)) for model in models)])
         digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
         # 관측 불가 구간의 아래보기 이력을 최대 0.8초 보류하는 현재 정책 기준이다.
-        self.assertEqual(digest, '1d1c937d2196f3c8be6bcf9317a26657feafbf82f7fd7c1e17485c3518a7c070')
+        self.assertEqual(digest, '60687c8b36acd09126d09a5af3ff4d09be4a084867e1c3a0d9b6d42ecbedfef6')
 
     def test_softening_improves_small_motion_without_changing_state_or_down_policy(self):
         for pitch, yaw in [(0, 10), (-5, 0), (5, 0), (0, 60), (12, 0), (20, 0)]:
@@ -137,7 +137,7 @@ class GaussianRuntimeTests(unittest.TestCase):
         self.run_frames(model, 0, 10000)
         small = model(feature_window(10100, pitch=5))
         self.assertIsNotNone(small['current_direction_score'])
-        for ms, pitch in [(10200, 11), (10300, 14)]:
+        for ms, pitch in [(10200, 9.2), (10300, 9.8)]:
             r = model(feature_window(ms, pitch=pitch))
             self.assertIsNone(r['current_direction_score'])
         for ms in (10400, 10500, 10600):
@@ -155,7 +155,7 @@ class GaussianRuntimeTests(unittest.TestCase):
     def test_transition_that_does_not_become_down_stays_unscored(self):
         model = GaussianRuntime()
         model(feature_window(0))
-        transition = model(feature_window(100, pitch=12))
+        transition = model(feature_window(100, pitch=9.5))
         self.assertEqual(transition['downward_status'], 'transition_uncertain')
         self.assertIn('downward_transition_uncertain', transition['reason_codes'])
         resumed = model(feature_window(200))
@@ -174,8 +174,8 @@ class GaussianRuntimeTests(unittest.TestCase):
         for bad in (0, 15, 20):
             with self.assertRaises(ValueError):
                 ModelConfig.gaussian(gaussian_down_transition_pitch_degrees=bad)
-        custom = GaussianRuntime(ModelConfig.gaussian(gaussian_down_transition_pitch_degrees=13))
-        self.assertIsNotNone(custom(feature_window(0, pitch=12))['current_direction_score'])
+        custom = GaussianRuntime(ModelConfig.gaussian(gaussian_down_transition_pitch_degrees=9.8))
+        self.assertIsNotNone(custom(feature_window(0, pitch=9.5))['current_direction_score'])
 
     def test_publisher_matches_exclusion_without_changing_json_contract(self):
         service = IntegrationService()
@@ -184,7 +184,7 @@ class GaussianRuntimeTests(unittest.TestCase):
         service.elapsed_ms = lambda sid: 20000
         publisher = WindowPublisher(service, sid, model)
         for ms in range(0, 10001, 100):
-            feature = feature_window(ms, pitch=12 if 2000 <= ms < 3000 else 0)
+            feature = feature_window(ms, pitch=9.5 if 2000 <= ms < 3000 else 0)
             feature['session_id'] = sid
             publisher(feature)
         event = service.get_dashboard_snapshot(sid)['engagement_windows'][0]
@@ -216,7 +216,7 @@ class GaussianRuntimeTests(unittest.TestCase):
         self.assertIsNone(first['score'])
         self.run_frames(runtime, 100, 10000)
         away = runtime(feature_window(10100, yaw=60))
-        self.assertEqual(away['current_direction_score'], 2.4)
+        self.assertEqual(away['current_direction_score'], 0.3)
         self.assertEqual(away['orientation_state'], 'away')
         self.assertGreater(away['score'], away['current_direction_score'])
         front = runtime(feature_window(10200))
@@ -254,7 +254,7 @@ class GaussianRuntimeTests(unittest.TestCase):
         short = self.run_frames(runtime, 10100, 11000, yaw=60)
         sustained = self.run_frames(runtime, 11100, 21100, yaw=60)
         self.assertGreater(short['score'], sustained['score'])
-        self.assertEqual(sustained['score'], 2.4)
+        self.assertEqual(sustained['score'], 0.3)
         recovered = self.run_frames(runtime, 21200, 31200)
         self.assertEqual(recovered['score'], 100)
 
@@ -299,12 +299,12 @@ class GaussianPublisherTests(unittest.TestCase):
                 feature['session_id'] = sid
                 publisher(feature)
             event = service.get_dashboard_snapshot(sid)['engagement_windows'][0]
-            self.assertEqual(event['payload']['model_output']['value'], 26.8)
+            self.assertEqual(event['payload']['model_output']['value'], 25.2)
             self.assertEqual(event['payload']['model_output']['value'], runtime.latest['score'])
             self.assertEqual(event['provenance']['model_id'], 'gaussian-head-direction')
             extension = event['payload']['model_extensions']['gaussian-head-direction']
             self.assertEqual(extension['sigma_pitch_degrees'], 15)
-            self.assertEqual(extension['sigma_yaw_degrees'], 20)
+            self.assertEqual(extension['sigma_yaw_degrees'], 16)
             self.assertEqual(extension['temporal_weighting'], 'linear-time-integral')
             self.assertIsNone(event['payload']['observation']['eligible_count'])
             service.stop_session(sid)

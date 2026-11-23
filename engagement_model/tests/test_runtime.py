@@ -101,9 +101,9 @@ class RuntimeTests(unittest.TestCase):
         runtime(feature_window(1000))
         down = runtime(feature_window(1100, pitch=16.0))
         self.assertEqual(down["orientation_state"], "looking_down")
-        still_down = runtime(feature_window(1200, pitch=12.0))
+        still_down = runtime(feature_window(1200, pitch=8.0))
         self.assertEqual(still_down["orientation_state"], "looking_down")
-        recovered = runtime(feature_window(1300, pitch=10.0))
+        recovered = runtime(feature_window(1300, pitch=7.0))
         self.assertEqual(recovered["orientation_state"], "front")
 
 

@@ -147,7 +147,7 @@ class WindowPublisher:
         if getattr(self.runtime, 'eye_fusion', False):
             payload['model_extensions'][self.model_id].update({
                 'version': 'head-eye-time-window-3',
-                'head_weight': 0.8, 'eye_weight': 0.2,
+                'head_weight': round(1 - self.config.eye_weight, 4), 'eye_weight': self.config.eye_weight,
                 'eye_window_seconds': self.config.window_seconds, 'eye_min_coverage': self.config.eye_min_coverage,
                 'eye_max_gap_seconds': self.config.eye_max_gap_seconds,
                 'eye_closed_ear_threshold': 0.21, 'eye_prolonged_seconds': 2,

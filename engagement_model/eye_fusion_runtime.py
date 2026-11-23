@@ -35,7 +35,8 @@ class EyeFusionGaussianRuntime(GaussianRuntime):
                 self._fusion_segments.append((before, end, observable, None, primitive))
         head = result.get('current_direction_score')
         eye = (result.get('eye_candidate') or {}).get('current_eye_score')
-        combined = 0.8 * head + 0.2 * eye if head is not None and eye is not None else None
+        combined = ((1 - self.config.eye_weight) * head + self.config.eye_weight * eye
+                    if head is not None and eye is not None else None)
         primitive = (None, None, combined) if combined is not None else None
         observable = result.get('angles') is not None
         self._fusion_sample = (timestamp, observable, primitive)

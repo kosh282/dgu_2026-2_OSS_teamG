@@ -7,10 +7,11 @@ class EyeCandidate:
     """최근 구간의 장시간 눈 감김과 현재 관측 상태를 계산한다."""
     def __init__(self, window_ms=5000, max_gap_ms=300, min_coverage=0.7,
                  closed_threshold=0.21, prolonged_ms=2000, penalty_per_second=10.0,
-                 closure_gap_ms=None):
+                 closure_gap_ms=None, eye_weight=0.3):
         self.window_ms, self.max_gap_ms = window_ms, max_gap_ms
         self.min_coverage, self.threshold, self.prolonged_ms = min_coverage, closed_threshold, prolonged_ms
         self.penalty_per_second = penalty_per_second
+        self.eye_weight = eye_weight
         self.closure_gap_ms = max_gap_ms if closure_gap_ms is None else closure_gap_ms
         self.reset()
 
@@ -116,7 +117,7 @@ class EyeCandidate:
         coverage = min(1.0, observed / self.window_ms)
         eye_score = round(eye_integral / observed, 1) if coverage >= self.min_coverage and observed else None
         head = head_result.get('score')
-        total = round(0.8 * head + 0.2 * eye_score, 1) if head is not None and eye_score is not None else None
+        total = round((1 - self.eye_weight) * head + self.eye_weight * eye_score, 1) if head is not None and eye_score is not None else None
         elapsed = max(0, timestamp - self.closed_since - self.prolonged_ms) if closed else 0
         current_eye_score = round(max(0.0, 100.0 - self.penalty_per_second * elapsed / 1000), 1)
         return {'eye_score': eye_score, 'current_eye_score': current_eye_score, 'candidate_total': total, 'head_score': head,

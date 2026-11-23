@@ -175,7 +175,7 @@ class MultiFaceGaussianRuntime:
                 if previous and 0 <= timestamp - previous[1] <= self.component_hold_ms:
                     effective[name] = previous[0]
                     held.append(name)
-            fused_current = (round(0.8 * effective['head'] + 0.2 * effective['eye'], 1)
+            fused_current = (round((1 - self.config.eye_weight) * effective['head'] + self.config.eye_weight * effective['eye'], 1)
                              if self.eye_fusion and effective['head'] is not None
                              and effective['eye'] is not None else None)
             fused_recent = (result.get('eye_candidate') or {}).get('candidate_total') if self.eye_fusion else None

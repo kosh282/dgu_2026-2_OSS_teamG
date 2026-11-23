@@ -7,6 +7,15 @@ from engagement_model.window_publisher import WindowPublisher
 from integration import IntegrationService
 
 class DownwardPolicyTests(unittest.TestCase):
+    def test_down_threshold_and_five_second_grace(self):
+        model = GaussianRuntime()
+        for t in range(0, 10100, 100): model(feature_window(t))
+        self.assertEqual(model(feature_window(10100, pitch=9))['orientation_state'], 'front')
+        first = model(feature_window(10200, pitch=10))
+        self.assertEqual(first['orientation_state'], 'looking_down')
+        for t in range(10300, 15201, 100): result = model(feature_window(t, pitch=10))
+        self.assertEqual(result['current_direction_score'], 100)
+        self.assertLess(model(feature_window(15300, pitch=10))['current_direction_score'], 100)
     def test_short_missing_frames_preserve_only_confirmed_down_time(self):
         model = GaussianRuntime()
         for t in range(0, 10100, 100): model(feature_window(t))
