@@ -5,6 +5,7 @@ import inspect
 import os
 import sys
 import tempfile
+from bisect import bisect_left
 from contextlib import nullcontext
 from urllib.parse import quote
 from pathlib import Path
@@ -13,7 +14,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, score, score_band, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link,
                                      suggestion_anchors, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
@@ -847,22 +848,38 @@ def review_page():
     else:
         st.caption('유효한 구간 점수가 없습니다. 타임라인에서 관측 불가 구간을 확인하세요.')
     range_key=f'range-{sid}'
+    range_slider_key=f'range-slider-{sid}'
     chart_key=f'review-chart-{sid}'
+    options=review_range_options(duration)
+    def set_review_range(start, end):
+        bounds=tuple(max(0,min(duration,value)) for value in (start,end))
+        st.session_state[range_key]=bounds
+        def closest(value):
+            index=bisect_left(options,value)
+            if index == len(options): return options[-1]
+            if index and value-options[index-1] <= options[index]-value: return options[index-1]
+            return options[index]
+        st.session_state[range_slider_key]=tuple(closest(value) for value in bounds)
+    def select_slider_range():
+        start,end=st.session_state[range_slider_key]
+        st.session_state[range_key]=(min(start,duration),min(end,duration))
     def select_chart_range():
         selection=st.session_state.get(chart_key, {}).get('selection', {})
         boxes=selection.get('box', [])
         if boxes and 'x' in boxes[0]:
             bounds=sorted(int(float(x)*1000) for x in boxes[0]['x'])
-            st.session_state[range_key]=tuple(max(0,min(duration,x)) for x in bounds)
+            set_review_range(*bounds)
     def select_score_window(start, end):
-        st.session_state[range_key]=(max(0, min(duration, start)), max(0, min(duration, end)))
+        set_review_range(start,end)
     with st.container(border=True):
         st.subheader('공통 타임라인')
         st.caption('아래에서 구간을 선택하면 전사·메모·자료·피드백이 함께 좁혀집니다.')
-        selected=st.slider('검토 구간 (밀리초)',0,max(1,duration),value=(0,max(1,duration)),key=range_key)
-        st.caption(f'{clock(selected[0])} – {clock(selected[1])}')
+        st.select_slider('검토 구간',options=options,value=(0,options[-1]),format_func=clock,
+                         key=range_slider_key,on_change=select_slider_range,disabled=duration<1000)
+        selected=st.session_state.get(range_key,(0,duration))
         if st.button('선택 해제 · 전체 보기'):
             st.session_state.pop(range_key,None)
+            st.session_state.pop(range_slider_key,None)
             st.rerun()
         st.plotly_chart(chart(windows,snapshot['notes'],duration,selected),use_container_width=True,key=chart_key,on_select=select_chart_range,selection_mode='box')
     def visible(event):

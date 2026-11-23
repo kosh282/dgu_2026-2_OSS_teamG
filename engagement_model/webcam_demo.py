@@ -898,6 +898,14 @@ def render_panel(frame, feature, models, *, overlay_smoother, face, show_overlay
           f"Prolonged closed: {candidate.get('closed_seconds', '--')}s", 12, 730, .37)
     label(f"Eye: {candidate.get('eye_state', '--')} | "
           f"Continuous closed: {candidate.get('continuous_closed_seconds', '--')}s", 12, 760, .37)
+    # 활동 판단은 실제 필기 검출이나 별도 점수가 아닌 규칙 기반 추정이다.
+    activity = result.get('activity_state')
+    activity_color = (100, 220, 120) if activity == 'writing_assumed' else (100, 215, 255)
+    label(f"ACTIVITY: {activity or '--'}", 12, 795, .48, activity_color)
+    down_duration = result.get('activity_down_duration_seconds')
+    duration_text = f'{down_duration:.1f}s' if down_duration is not None else '--'
+    label(f'Down episode: {duration_text} | Rule-based estimate, not visual writing detection',
+          12, 825, .33, activity_color)
     reason = cal_info.get('last_reason_code') or gaze_data.get('reason') or ', '.join(result.get('reason_codes') or [])
     label(('Reason: ' + str(reason or '--'))[:82], 660, 403, .48)
     if debug:
@@ -1003,7 +1011,9 @@ def run(camera_index=0, duration=0.0, *, primary='gaussian', gaussian_config=Non
                 'stt_model': None,
             })
             resources.callback(service.stop_session, sid)
-            face = FaceAnalyzer(show_landmarks=True)
+            # 단일 웹캠 중앙의 얼굴이 분할 경계에 걸려도 매 분석 시점에 검출한다.
+            # 강의 화면용 기본 4초 전체 검사 주기는 팀원 파이프라인에 그대로 둔다.
+            face = FaceAnalyzer(show_landmarks=True, full_frame_interval_ms=1)
             resources.callback(face.close)
             if gaze_estimator is not None:
                 from video_recognition.gaze_estimation import GazeFaceAnalyzer
@@ -1080,6 +1090,8 @@ def run(camera_index=0, duration=0.0, *, primary='gaussian', gaussian_config=Non
                                                 'relative': model.latest.get('source_angles'),
                                                 'away_seconds': model.latest.get('away_seconds'),
                                                 'state': model.latest['orientation_state'],
+                                                'activity_state': model.latest.get('activity_state'),
+                                                'activity_down_duration_seconds': model.latest.get('activity_down_duration_seconds'),
                                                 'reasons': model.latest['reason_codes']}
                                           for name, model in models.items()}), flush=True)
                         next_report = time.monotonic() + 2

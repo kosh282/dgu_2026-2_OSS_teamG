@@ -63,6 +63,8 @@ class MultiFaceGaussianRuntime:
                                      eye_state=None, eye_closed_seconds=None,
                                      downward_status=None, looking_down_seconds=None,
                                      eye_coverage=None, relative_angles=None,
+                                     activity_state='activity_unavailable', activity_down_start_ms=None,
+                                     activity_down_duration_seconds=None,
                                      reason_codes=['baseline_unavailable'])
         if changed:
             self.latest = self._empty('baseline_unavailable')
@@ -75,6 +77,8 @@ class MultiFaceGaussianRuntime:
                     last_seen=timestamp, last_valid_ms=None, present=False, track=None, components={},
                     row=dict(id=identity, status='calibrating', calibration_status='collecting',
                              current_direction_score=None, score=None,
+                             activity_state='activity_unavailable', activity_down_start_ms=None,
+                             activity_down_duration_seconds=None,
                              reason_codes=['baseline_unavailable']))
 
     def __call__(self, feature):
@@ -97,6 +101,8 @@ class MultiFaceGaussianRuntime:
                                      effective_head_score=None, effective_eye_score=None, held_components=[], held_component_ages_ms={},
                                      eye_state=None, eye_closed_seconds=None,
                                      downward_status=None, looking_down_seconds=None,
+                                     activity_state='activity_unavailable', activity_down_start_ms=None,
+                                     activity_down_duration_seconds=None,
                                      relative_angles=None, reason_codes=['invalid_feature_window'])
             self.latest = self._empty('invalid_feature_window')
             self.latest['status'] = 'input_error'
@@ -191,6 +197,9 @@ class MultiFaceGaussianRuntime:
                                  looking_down_seconds=result.get('looking_down_seconds'),
                                  eye_coverage=(result.get('eye_candidate') or {}).get('coverage'),
                                  relative_angles=result.get('angles'),
+                                 activity_state=result['activity_state'],
+                                 activity_down_start_ms=result['activity_down_start_ms'],
+                                 activity_down_duration_seconds=result['activity_down_duration_seconds'],
                                  reason_codes=list(result['reason_codes']) + (['eye_observation_unavailable']
                                      if self.eye_fusion and eye is None else []))
             outputs.append({**result, '_fused': fused_current, '_held': bool(held), '_recent': fused_recent})
@@ -213,6 +222,8 @@ class MultiFaceGaussianRuntime:
                                      downward_status=None, looking_down_seconds=None,
                                      eye_diagnostics={'reason': 'face_not_detected'},
                                      eye_coverage=None, relative_angles=None,
+                                     activity_state='activity_unavailable', activity_down_start_ms=None,
+                                     activity_down_duration_seconds=None,
                                      reason_codes=['identity_not_observed'])
         if self.eye_fusion:
             # 같은 시각의 머리·눈 점수만 결합해 publisher에서 최근 구간을 한 번 집계한다.
