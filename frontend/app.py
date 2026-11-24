@@ -55,10 +55,10 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 .st-key-live-note-text [data-testid="stChatInput"] > div:focus-within{border-color:#365f91}
 /* 요약 카드 안의 점수에는 중첩 테두리·여백을 더하지 않는다. */
 .st-key-live-overview [data-testid="stMetric"]{border:0;padding:0;background:transparent}
-.st-key-score-band-red [data-testid="stMetric"]{background:#ffebee;border-radius:8px;padding:6px 10px}
-.st-key-score-band-yellow [data-testid="stMetric"]{background:#fff4cc;border-radius:8px;padding:6px 10px}
-.st-key-score-band-green [data-testid="stMetric"]{background:#e1f3e5;border-radius:8px;padding:6px 10px}
-.st-key-score-band-unknown [data-testid="stMetric"]{background:#eef0f2;border-radius:8px;padding:6px 10px}
+.st-key-score-band-red [data-testid="stMetric"], [class*="st-key-review-score-red-"]{background:#ffebee;border-radius:8px;padding:6px 10px}
+.st-key-score-band-yellow [data-testid="stMetric"], [class*="st-key-review-score-yellow-"]{background:#fff4cc;border-radius:8px;padding:6px 10px}
+.st-key-score-band-green [data-testid="stMetric"], [class*="st-key-review-score-green-"]{background:#e1f3e5;border-radius:8px;padding:6px 10px}
+.st-key-score-band-unknown [data-testid="stMetric"], [class*="st-key-review-score-unknown-"]{background:#eef0f2;border-radius:8px;padding:6px 10px}
 /* 라이브 제목과 버튼의 가로 배치 */
 .st-key-live-page-header [data-testid="stHorizontalBlock"]{align-items:center;gap:8px}
 .st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]{width:auto!important;flex:0 0 auto!important}
@@ -898,11 +898,11 @@ def review_page():
                 for event in transcripts:
                     payload=event['payload']
                     linked_score=transcript_score_link(event, windows)
+                    score_value=linked_score['value']
                     with st.container(key='review-transcript-'+event['event_id']):
                         score_col,transcript_col=st.columns([1,3],gap='medium',vertical_alignment='top')
-                        with score_col:
+                        with score_col, st.container(key='review-score-'+score_band(score_value)+'-'+event['event_id']):
                             st.caption(f"{clock(event['start_ms'])}–{clock(event['end_ms'])}")
-                            score_value=linked_score['value']
                             st.markdown(f"### {score_value:.1f}점" if score_value is not None else f"**{linked_score['reason']}**")
                             window=linked_score['window']
                             if linked_score['delta'] is not None:
