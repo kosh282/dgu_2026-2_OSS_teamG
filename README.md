@@ -50,7 +50,8 @@ flowchart LR
 
 - 프런트는 Streamlit 기반이며 수업 제목 입력, 창 연결, 수업 시작·종료, 메모, 세션 JSON 내보내기 기능을 제공합니다.
 - 영상 분석은 MediaPipe로 얼굴 특징을 추출합니다. 개발자 모드에서는 캡처 화면, 랜드마크 오버레이, 후처리 특징과 관찰 점수를 확인할 수 있습니다.
-- 머리 방향 80%와 눈 감김 20%를 결합한 관찰 점수를 통합부 구간 이벤트로 전달합니다. 재식별을 켜면 ID별, 끄면 단기 위치 트랙별 점수를 익명으로 집계합니다. 관측 불가를 0점으로 처리하지 않으며 집중도·이해도 측정값으로 검증된 것은 아닙니다.
+- 머리 방향 70%와 눈 감김 30%를 결합한 관찰 점수를 통합부 구간 이벤트로 전달합니다. 재식별을 켜면 ID별, 끄면 단기 위치 트랙별로 계산한 유효 사람·시간 점수를 최근 5초 구간에서 가중 집계합니다. 관측 불가를 0점으로 처리하지 않으며 집중도·이해도 측정값으로 검증된 것은 아닙니다.
+- 라이브 점수 카드와 사후 검토 점수에는 60점 미만 빨강, 60~80점 노랑, 80점 이상 초록 구간을 표시합니다. 점수가 없거나 임시 유지 중이면 회색으로 표시하며, 색상은 관찰 점수 안내일 뿐 집중도 판정이 아닙니다.
 - 프런트는 faster-whisper(small 기본, base 선택)로 수업 음성을 말 멈춤 단위로 전사합니다. 강의 조교는 확정 전사와 유효 점수를 바탕으로 제안하며 PDF·PPTX 자료와 개인 API 사용은 선택 사항입니다. 출처 내용과 제안의 적합성은 교수자가 확인합니다. 실제 수업 자료에서의 정확도는 평가가 필요합니다. 자세한 내용은 [강의 조교 안내](ai_agent/README.md)를 참고하세요.
 - 창 단위 캡처는 현재 Windows용입니다. macOS에서는 창 선택·캡처 기능을 사용할 수 없습니다.
 
@@ -149,13 +150,18 @@ video_recognition/.venv/Scripts/python.exe -m video_recognition.integrated_analy
 
 먼저 수업 프로그램 창을 열고 첫 명령으로 표시된 번호를 확인한 뒤, `12345`를 실제 번호로 바꿉니다. 두 번째 명령은 별도의 분석을 실행하고 결과 JSON을 저장합니다. 자세한 안내는 [영상 분석 안내](video_recognition/README.md)를 참고하세요.
 
-### 자동 테스트
+### 자동 테스트와 CI
+
+GitHub Actions의 [Validate 워크플로](.github/workflows/validate.yml)는 Python 3.14에서 계약·통합, 모델, 프런트, 장치 없는 영상 회귀 검사를 나누어 실행합니다. 저장소 루트에서 같은 검사를 실행하려면 다음 명령을 사용합니다.
 
 ```powershell
+video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s integration/tests -t . -v
 video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s engagement_model/tests -v
 video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s frontend/tests -v
+video_recognition/.venv/Scripts/python.exe -B -m unittest video_recognition.test_window_enumeration video_recognition.test_layout_regions video_recognition.test_full_frame_schedule -v
+video_recognition/.venv/Scripts/python.exe -B -m unittest discover -s experimental_vision -v
 ```
 
-자동 테스트는 실제 카메라·수업 창·음성 장치에서의 동작 검증을 대신하지 않습니다.
+CI 검사는 실제 카메라·수업 창·마이크, 외부 AI API, 실제 수업 성능을 검증하지 않습니다. 장치·API 환경 검증은 별도로 기록해야 합니다.
 
 전체 코드 검토의 수정 내역, 우선순위와 검증 한계는 [코드베이스 검토 보고서](docs/codebase-review.md)를 참고하세요.

@@ -4,7 +4,7 @@
 >
 > 참여도 평가 모델, 점수 척도, 입력 특징과 집계식은 미정입니다. 이 문서는 모듈 연결을 위한 공통 틀을 정하며, 모델 선택이나 점수의 타당성을 확정하지 않습니다. 팀 회의에서 변경사항을 합의하고 버전을 갱신하세요.
 
-현재 프런트는 5초 Gaussian 실험 집계와 아래 보기 감점 정책을 사용합니다. 이는 계약의 점수 척도나 품질 상태 변경을 뜻하지 않습니다. 구현의 모델별 확장과 검증은 `integration/contracts.py` 및 [모델 안내](../engagement_model/README.md)를 함께 확인하세요.
+현재 프런트는 5초 Gaussian 실험 집계를 사용하며, 같은 시각의 머리·눈 점수를 70/30으로 결합합니다. 아래 보기는 5초 유예 뒤 초당 7점, 양쪽 눈 감김은 2초 유예 뒤 초당 20점 감점하는 설정입니다. 이 값은 구현 안내이며 계약의 점수 척도나 품질 상태를 확정하지 않습니다. 스키마와 구현별 확장·검증은 `integration/contracts.py` 및 [모델 안내](../engagement_model/README.md)를 확인하세요.
 
 ## 1. 목적과 사용법
 
@@ -133,13 +133,13 @@ flowchart LR
 - `signals`: 합의된 신호 이름을 키로 하는 객체. 신호별 `value`, `unit`, `status`를 포함합니다. 미정이면 `{}`입니다.
 - `model_extensions`: 선택적 객체. 모델 고유 출력은 `model_id`에 대응하는 이름 공간 아래에 담고 버전·단위·해석을 별도 명세합니다. 원본 랜드마크, 개인 ID, 개인별 이력은 포함하지 않습니다.
 
-현재 프런트의 다인 실험 provenance는 재식별 경로에서 `model_id=multi-face-gaussian`, `model_version=multi-gaussian-0.3+face-transform-eye`, 위치 기반 경로에서 `model_id=position-track-gaussian`, `model_version=position-gaussian-0.2+face-transform-eye`입니다.
+현재 프런트의 다인 실험 provenance는 재식별 경로에서 `model_id=multi-face-gaussian`, `model_version=multi-gaussian-1.3-head-eye-experimental`, 위치 기반 경로에서 `model_id=position-track-gaussian`, `model_version=position-gaussian-1.4-head-eye-experimental`입니다.
 `model_extensions.multi-face-gaussian`은 기존 Gaussian의 구간/관측/점수화 시간·sigma·최근성 설정과 함께
 `aggregation=reidentified-person-time-weighted-gaussian`을 기록합니다.
 `scoreable_person_duration_ms`는 점수화 가능한 사람·밀리초 합(2명을 각각10초 관측하면20000)이며,
 벽시계 구간 길이보다 클 수 있습니다. `observable_duration_ms`/`scoreable_duration_ms`와 그 비율은
 적어도 한 사람의 유효 관측/점수화가 있는 벽시계 시간입니다. 사람 수나 비율과 혼용하지 않습니다.
-그룹 점수는 각 유효한 얼굴의 같은 시각 머리 점수 80%와 눈 상태 점수 20%를 결합한 뒤 최근 5초를 시간 가중 집계한 실험값입니다. 눈을 관측하지 못한 얼굴은 0점으로 넣지 않고 해당 시점의 점수화 대상에서 제외합니다. 모델 확장에는 `head_weight`, `eye_weight`, `eye_window_seconds`, `eye_min_coverage`, `eye_closed_ear_threshold`, `eye_prolonged_seconds`, `eye_score_policy`, `eye_penalty_per_second`와 아래 보기 정책 `down_penalty_policy`, `down_penalty_per_second`를 기록합니다. 위치 기반 경로의 `scoreable_person_duration_ms`는 실제 사람 수가 아닌 점수화 가능한 위치 트랙·시간 합입니다. 이 확장은 검증 전 실험이며 전체 참여도나 사람 수를 의미하지 않습니다.
+그룹 점수는 각 얼굴의 같은 시각 머리 점수 70%와 눈 상태 점수 30%를 결합한 뒤 최근 5초를 시간 가중 집계한 실험값입니다. 한 구성요소가 일시 누락되면 같은 트랙의 직전 값을 최대 2초 사용하고 해당 구간을 `partial`로 표시합니다. 두 구성요소 모두 없거나 유지 시간이 지나면 점수에 넣지 않으며, 관측 불가를 0점으로 처리하지 않습니다. 모델 확장에는 `head_weight`, `eye_weight`, `eye_window_seconds`, `eye_min_coverage`, `eye_closed_ear_threshold`, `eye_prolonged_seconds`, `eye_score_policy`, `eye_penalty_per_second`와 아래 보기 정책 `down_penalty_policy`, `down_penalty_per_second`를 기록합니다. 위치 기반 경로의 `scoreable_person_duration_ms`는 실제 사람 수가 아닌 점수화 가능한 위치 트랙·시간 합입니다. 이 확장은 검증 전 실험이며 전체 참여도나 사람 수를 의미하지 않습니다.
 ID 미확정·개인 보정 중·미검출·아래 보기 보류를 0점으로 넣지 않으며,
 ID·개인별 점수 표·보정 기준·원시 각도는 이벤트나 최종 JSON에 포함하지 않습니다.
 이 확장은 기존 선택 model_extensions 이름 공간 안에 있으며 최상위 스키마는 바꾸지 않습니다.
