@@ -14,7 +14,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, sort_review_transcripts,
                                      suggestion_anchors, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
@@ -902,13 +902,16 @@ def review_page():
         with st.container(border=True):
             st.subheader('전사 · 선택 구간')
             query=st.text_input('전사 검색',key=f'search-{sid}')
+            sort_order=st.selectbox('전사 정렬', ['시간순','최신순','점수 오름차순','점수 내림차순'],
+                                    key=f'transcript-sort-{sid}')
             transcripts=[e for e in snapshot['transcripts'] if visible(e) and query.casefold() in e['payload']['text'].casefold()]
             st.caption(f'{len(transcripts)}개 문장 · 전사 종료 시점까지 확정된 최근 점수와 연결합니다.')
             st.caption('점수는 해당 문장만의 결과가 아닌 이전 분석 구간의 참고값입니다. 점수와 전사의 관계는 인과관계를 뜻하지 않습니다.')
+            if sort_order in ('점수 오름차순','점수 내림차순'):
+                st.caption('점수가 없는 문장은 맨 뒤에, 같은 점수는 시간순으로 표시합니다.')
             if transcripts:
-                for event in transcripts:
+                for event,linked_score in sort_review_transcripts(transcripts,windows,sort_order):
                     payload=event['payload']
-                    linked_score=transcript_score_link(event, windows)
                     score_value=linked_score['value']
                     with st.container(key='review-transcript-'+event['event_id']):
                         score_col,transcript_col=st.columns([1,3],gap='medium',vertical_alignment='top')

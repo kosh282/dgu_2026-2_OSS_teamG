@@ -93,6 +93,24 @@ def transcript_score_link(transcript, windows, *, max_age_ms=5000):
     return {'window': latest, 'value': value, 'delta': delta, 'reason': None}
 
 
+def sort_review_transcripts(transcripts, windows, order):
+    """화면에 표시할 점수 연결을 한 번 계산하고 전사와 함께 정렬한다."""
+    linked = [(event, transcript_score_link(event, windows)) for event in transcripts]
+
+    def key(item):
+        event, link = item
+        time = (event['start_ms'], event['end_ms'], event['event_id'])
+        if order == '최신순':
+            return (-time[0], -time[1], time[2])
+        if order in ('점수 오름차순', '점수 내림차순'):
+            value = link['value']
+            return (value is None, -value if value is not None and order == '점수 내림차순'
+                    else value if value is not None else 0, *time)
+        return time
+
+    return sorted(linked, key=key)
+
+
 def overlap(event, start, end):
     a, b = event['start_ms'], event['end_ms']
     return start <= a <= end if a == b else a < end and b > start

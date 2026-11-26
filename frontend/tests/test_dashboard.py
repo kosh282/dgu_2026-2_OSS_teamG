@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link, sort_review_transcripts,
                                      related_suggestions, suggestion_anchors, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -148,6 +148,25 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(transcript_score_link({'end_ms': 16000}, windows)['delta'])
         self.assertEqual(transcript_score_link({'end_ms': 22000}, windows)['reason'], '최근 점수 구간 없음')
         self.assertEqual(transcript_score_link({'end_ms': 9000}, windows)['reason'], '점수 구간 대기')
+
+    def test_review_transcript_sort_keeps_missing_scores_last_and_breaks_ties_by_time(self):
+        def transcript(eid, end):
+            return {'event_id': eid, 'start_ms': end - 1000, 'end_ms': end}
+        def window(end, value):
+            return {'start_ms': end - 1000, 'end_ms': end,
+                    'payload': {'model_output': {'value': value}},
+                    'quality': {'status': 'valid' if value is not None else 'not_observable'}}
+        transcripts = [transcript('missing', 25000), transcript('high', 15000),
+                       transcript('zero', 5000), transcript('equal', 35000)]
+        original = transcripts.copy()
+        windows = [window(5000, 0), window(15000, 80), window(25000, None), window(35000, 80)]
+        def ids(order):
+            return [event['event_id'] for event, _ in sort_review_transcripts(transcripts, windows, order)]
+        self.assertEqual(ids('시간순'), ['zero', 'high', 'missing', 'equal'])
+        self.assertEqual(ids('최신순'), ['equal', 'missing', 'high', 'zero'])
+        self.assertEqual(ids('점수 오름차순'), ['zero', 'high', 'equal', 'missing'])
+        self.assertEqual(ids('점수 내림차순'), ['high', 'equal', 'zero', 'missing'])
+        self.assertEqual(transcripts, original)
 
     def test_chart_does_not_join_missing_interval(self):
         def event(start, end, eid):
@@ -298,6 +317,43 @@ class DashboardTests(unittest.TestCase):
             self.assertTrue(any('정면 기준 수집 중' in c.value for c in app.caption))
             next(b for b in app.button if b.label=='정면 기준 재보정').click().run()
             self.assertEqual(app.session_state['live'].calibration_requests, 1)
+
+    def test_review_sort_selection_orders_filtered_transcripts(self):
+        from streamlit.testing.v1 import AppTest
+        service, sid = SessionFiles('.').load(SAMPLE)
+        snapshot = service.get_dashboard_snapshot(sid)
+        base = snapshot['transcripts'][0]
+        ids = ['11111111-1111-4111-8111-111111111111',
+               '22222222-2222-4222-8222-222222222222',
+               '33333333-3333-4333-8333-333333333333']
+        snapshot['transcripts'] = [dict(base, event_id=eid, start_ms=end-1000, end_ms=end,
+                                        payload={**base['payload'], 'text': text})
+                                   for eid, end, text in zip(ids, (10000, 20000, 30000),
+                                                             ('선택 낮음', '선택 높음', '점수 없음'))]
+        snapshot['engagement_windows'] = [
+            {'event_id': 'score-low', 'start_ms': 9000, 'end_ms': 10000,
+             'payload': {'model_output': {'value': 20}}, 'quality': {'status': 'valid'}},
+            {'event_id': 'score-high', 'start_ms': 19000, 'end_ms': 20000,
+             'payload': {'model_output': {'value': 90}}, 'quality': {'status': 'valid'}}]
+        app = AppTest.from_file(str(ROOT/'frontend'/'app.py'), default_timeout=20)
+        app.session_state['page'] = '사후 검토'
+        app.session_state['review'] = (service, sid)
+        def displayed_ids():
+            return [next(eid for eid in ids if item.proto.id.endswith(eid)) for item in app
+                    if item.type == 'flex_container' and '-review-transcript-' in item.proto.id]
+        with patch.object(service, 'get_dashboard_snapshot', return_value=snapshot):
+            app.run()
+            self.assertFalse(app.exception)
+            self.assertEqual(displayed_ids(), ids)
+            selector = app.selectbox(key=f'transcript-sort-{sid}')
+            selector.select('점수 내림차순').run()
+            self.assertFalse(app.exception)
+            self.assertEqual(displayed_ids(), [ids[1], ids[0], ids[2]])
+            app.text_input(key=f'search-{sid}').set_value('선택').run()
+            self.assertEqual(displayed_ids(), [ids[1], ids[0]])
+            app.selectbox(key=f'transcript-sort-{sid}').select('최신순').run()
+            self.assertEqual(displayed_ids(), [ids[1], ids[0]])
+            self.assertEqual([event['event_id'] for event in snapshot['transcripts']], ids)
 
     def test_empty_and_sample_ui(self):
         from streamlit.testing.v1 import AppTest
