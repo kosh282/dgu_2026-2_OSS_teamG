@@ -257,17 +257,27 @@ class LiveLayoutTests(unittest.TestCase):
              patch('streamlit.toast') as toast:
             self.app.run()
             self.assertFalse(self.app.exception)
-            self.assertTrue(any('설정 기준 55점 이하' in item.value for item in self.app.warning))
+            self.assertFalse(any('설정 기준 55점 이하' in item.value for item in self.app.warning))
+            self.assertEqual(toast.call_count, 2)
+            self.assertTrue(any('설정 기준 55점 이하' in call.args[0] for call in toast.call_args_list))
             self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-score-band-red')
                                 for item in self.app))
             self.app.run()
-            self.assertEqual(toast.call_count, 1)
+            self.assertEqual(toast.call_count, 2)
             display.return_value = {'state': 'held', 'value': 55, 'window': {'end_ms': 0}, 'age_ms': 6000}
             self.app.run()
             self.assertFalse(self.app.exception)
-            self.assertFalse(any('설정 기준 55점 이하' in item.value for item in self.app.warning))
             self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-score-band-unknown')
                                 for item in self.app))
+            display.return_value = current
+            self.app.run()
+            self.assertEqual(toast.call_count, 2)
+            display.return_value = {**current, 'value': 56}
+            self.app.run()
+            self.assertEqual(toast.call_count, 2)
+            display.return_value = current
+            self.app.run()
+            self.assertEqual(toast.call_count, 3)
 
     def test_long_content_and_empty_content_keep_the_same_card_geometry(self):
         self.app.run()

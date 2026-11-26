@@ -22,7 +22,8 @@ files = SessionFiles(os.environ.get('LECTURER_SESSION_DIR', str(Path.home() / 'l
 for key, value in {'page':'세션 시작 준비','live':None,'review':None,'saved_sid':None,'hidden_suggestions':set(),
                    'assistant':None,'assistant_error':None,'material_cache':{},'material_index':None,
                    'assistant_result':None,'live_manual_suggestion':None,'live_writer_options':{},
-                   'live_score_thresholds':{},'notified_suggestions':{},'pending_manual_notice':None}.items():
+                   'live_score_thresholds':{},'notified_suggestions':{},'low_score_notified':{},
+                   'pending_manual_notice':None}.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -33,6 +34,11 @@ st.markdown('''<style>
 [data-testid="stBaseButton-primary"]{background:#1f2328;border-color:#1f2328;color:white}
 [data-testid="stMetric"]{background:white;border:1px solid #c9ced4;border-radius:8px;padding:12px}
 [data-testid="stMetricValue"]{font-size:22px} button{min-height:42px} .stCaption{color:#57606a}
+/* 관찰 점수 알림만 화면 위쪽 가운데에 빨간색으로 표시한다. */
+[data-testid="stToastContainer"]:has([data-testid="stToastText"] strong){left:50%!important;right:auto!important;transform:translateX(-50%);margin:0!important}
+[data-testid="stToast"]:has([data-testid="stToastText"] strong){background:#b42318!important;color:#fff!important;filter:none!important;max-width:calc(100vw - 32px)}
+[data-testid="stToast"]:has([data-testid="stToastText"] strong) [data-testid="stToastDynamicIcon"],
+[data-testid="stToast"]:has([data-testid="stToastText"] strong) button{color:#fff!important}
 .st-key-calibration-card button{min-height:36px}
 @media(max-width:640px){.block-container{padding:64px 16px 16px}}
 /* 화면 제목을 사이드바 열기 버튼과 같은 줄에 배치한다. */
@@ -621,6 +627,13 @@ def live_page():
             st.toast('새 강의 제안: '+manual_notice, icon=':material/notifications:')
         current_value=display_score['value'] if display_score['state']=='current' else None
         low_score=current_value is not None and current_value <= threshold
+        low_score_notified=st.session_state.low_score_notified
+        if running and low_score and not low_score_notified.get(live.sid,False):
+            st.toast(f'**관찰 점수 알림**\n\n설정 기준 {threshold}점 이하입니다. 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.',
+                     icon=':material/warning:')
+            low_score_notified[live.sid]=True
+        elif current_value is not None and not low_score:
+            low_score_notified[live.sid]=False
         seen=st.session_state.notified_suggestions.setdefault(live.sid,set())
         new_suggestions=[event for event in snapshot['suggestions']+snapshot.get('teaching_suggestions',[])
                          if event['event_id'] not in seen and event.get('created_ms') is not None]
@@ -686,8 +699,6 @@ def live_page():
                               ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
                 if display_score['state']=='held':
                     summary.caption(f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전")
-                if low_score:
-                    st.warning(f'최근 관찰 점수가 설정 기준 {threshold}점 이하입니다. 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.')
                 st.caption(detail,help=detail,**caption_options)
                 chart_range=st.selectbox('그래프 범위',['최근 1분','최근 5분','최근 10분','전체 수업'],index=1,
                                          key='live-chart-range',label_visibility='collapsed')
