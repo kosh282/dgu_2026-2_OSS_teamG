@@ -117,7 +117,7 @@ class MultiFaceTests(unittest.TestCase):
         segments = [(0, 5000, True, 99, [(0, 0), (0, 60)]),
                     (5000, 10000, True, 0, [(0, 60)])]
         summary = runtime.aggregate_window(segments, 0, 10000)
-        low = 100 * math.exp(-4.5)
+        low = 100 * math.exp(-0.5 * (60 / 16) ** 2)
         self.assertEqual(summary['score'], round((.25 * (100 + low) + .75 * low) / 1.25, 1))
         self.assertEqual(summary['observable_duration_ms'], 10000)
         self.assertEqual(summary['scoreable_duration_ms'], 10000)
