@@ -65,6 +65,41 @@ MobileGaze 시선 실험은 포함하지 않습니다. [프런트 실행 안내]
 
 ## 2. 전체 데이터 처리 흐름
 
+### 하위 20% 평균 선택 지표
+
+다인 런타임의 `aggregate_window()`와 `WindowPublisher`는 기존 그룹 점수와 별도로
+하위 20% 평균을 제공합니다. 기존 `payload.model_output.value`와 그룹 점수식은 변경하지 않습니다.
+두 값을 가중 결합하는 기능은 없습니다.
+
+1. 이벤트의 동일한 `[start_ms, end_ms)` 구간(기본 최근 5초)에서 각 ID/위치 트랙의
+   유효 원시 점수를 기존 선형 시간 가중식으로 적분합니다. 개인 이동평균을 다시 평균하지 않습니다.
+2. 개인별 관측·점수화 시간 기준(기본 각각 60%)을 통과해야 하며, 구간 끝 직전 관측이
+   미검출·보류이거나 관측 유지 상한(기본 0.5초)을 넘으면 제외합니다. null을 0점으로 넣지 않습니다.
+   머리·눈 중 한 항목의 기존 최대 2초 유지 정책으로 유효한 결합 점수가 나오면 그대로 사용합니다.
+3. 유효 점수 N개를 오름차순 정렬하고 `K = max(1, ceil(N * 0.2))`개의 산술평균을 계산합니다.
+   N=0이면 평균은 null, 두 인원 필드는 0입니다. 유효한 0점은 제외하지 않습니다.
+
+프런트 담당자는 `service.get_dashboard_snapshot(sid)['engagement_windows']`의 각 이벤트에서
+`payload.model_extensions[event.provenance.model_id]`를 읽습니다. 재식별 사용 시 이름 공간은
+`multi-face-gaussian`, 미사용 시 `position-track-gaussian`입니다.
+
+| 선택 필드 | 의미 |
+|---|---|
+| `lower_20_mean_score` | 0~100 하위 평균 또는 null, 소수 첫째 자리 |
+| `lower_20_count` | 평균에 포함된 K개 ID/위치 트랙 수 |
+| `lower_20_valid_count` | 선정 분모 N: 위 기준을 통과한 ID/위치 트랙 수 |
+| `lower_20_fraction` | 0.2 |
+| `lower_20_policy` | `individual-window-ceil-v1`: 선택적 확장 정책 버전 |
+
+N=1/2/4/10이면 K=1/1/1/2입니다. 실제 수강생 수·출석률이 아니며 공통
+`observation.valid_count`/`eligible_count`는 계속 null입니다. 개인 키와 점수 이력은 저장하지 않고
+최대 한 집계 구간의 표본만 메모리에 둡니다. 학생별 정면 재보정 시 해당 표본을 비웁니다.
+
+기존 전체 점수는 유효 사람·시간을 합친 값이고, 새 값은 개인별 시간 집계 후 선정한 평균이므로
+현재 미검출자 처리와 분모가 다릅니다. 새 지표를 전체 점수의 대체값으로 사용하지 않습니다.
+단일 얼굴 독립 웹캠과 런타임의 `latest`에는 추가하지 않으며, 실제 프런트 표시는 담당자가 연결해야 합니다.
+이전 JSON에는 필드가 없으므로 `.get()`으로 읽고 **없음/null을 0점으로 표시하지 마세요.**
+
 ```text
 video_recognition: 얼굴 특징 → 스무딩 → 정면 보정 → FeatureWindow
   ↓ model_consumer 콜백
