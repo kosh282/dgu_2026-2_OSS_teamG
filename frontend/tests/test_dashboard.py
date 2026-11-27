@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link, sort_review_transcripts,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, lower_20_score, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link, sort_review_transcripts,
                                      related_suggestions, suggestion_anchors, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -76,6 +76,24 @@ class DashboardTests(unittest.TestCase):
     def test_contract_model_output_value(self):
         event = {'payload': {'model_output': {'kind': 'continuous', 'value': 73.5}}, 'quality': {'status': 'valid'}}
         self.assertEqual(score(event), 73.5)
+
+    def test_lower_score_reads_only_own_model_extension_and_preserves_missing(self):
+        event = {'payload': {'model_output': {'value': 80}, 'model_extensions': {
+            'position-track-gaussian': {'lower_20_mean_score': 0},
+            'other-model': {'lower_20_mean_score': 99}}},
+            'provenance': {'model_id': 'position-track-gaussian'}, 'quality': {'status': 'valid'}}
+        self.assertEqual((score(event), lower_20_score(event)), (80, 0))
+        for value in (None, True, float('nan'), -1, 101, '50'):
+            event['payload']['model_extensions']['position-track-gaussian']['lower_20_mean_score'] = value
+            self.assertIsNone(lower_20_score(event))
+        event['payload']['model_extensions']['position-track-gaussian']['lower_20_mean_score'] = 40
+        event['quality']['status'] = 'not_observable'
+        self.assertIsNone(lower_20_score(event))
+        event['quality']['status'] = 'valid'
+        event['provenance']['model_id'] = 'missing'
+        self.assertIsNone(lower_20_score(event))
+        event['payload'].pop('model_extensions')
+        self.assertIsNone(lower_20_score(event))
 
     def test_live_display_temporarily_holds_only_a_recent_valid_score(self):
         valid = {'event_id':'a','end_ms':10000,'payload':{'model_output':{'value':80}},'quality':{'status':'valid'}}
@@ -164,9 +182,25 @@ class DashboardTests(unittest.TestCase):
             return [event['event_id'] for event, _ in sort_review_transcripts(transcripts, windows, order)]
         self.assertEqual(ids('시간순'), ['zero', 'high', 'missing', 'equal'])
         self.assertEqual(ids('최신순'), ['equal', 'missing', 'high', 'zero'])
-        self.assertEqual(ids('점수 오름차순'), ['zero', 'high', 'equal', 'missing'])
-        self.assertEqual(ids('점수 내림차순'), ['high', 'equal', 'zero', 'missing'])
+        self.assertEqual(ids('평균점수 오름차순'), ['zero', 'high', 'equal', 'missing'])
+        self.assertEqual(ids('평균점수 내림차순'), ['high', 'equal', 'zero', 'missing'])
         self.assertEqual(transcripts, original)
+
+    def test_lower_score_sort_uses_linked_window_and_keeps_missing_last(self):
+        transcripts = [{'event_id': str(i), 'start_ms': end-1000, 'end_ms': end}
+                       for i, end in enumerate((5000, 10000, 15000, 20000))]
+        windows = [{'start_ms': t['start_ms'], 'end_ms': t['end_ms'],
+                    'payload': {'model_output': {'value': 90-i*10},
+                                'model_extensions': {'model': {'lower_20_mean_score': lower}}},
+                    'provenance': {'model_id': 'model'}, 'quality': {'status': 'valid'}}
+                   for i, (t, lower) in enumerate(zip(transcripts, (30, 0, None, 30)))]
+        def ids(order):
+            return [event['event_id'] for event, _ in sort_review_transcripts(transcripts, windows, order)]
+        self.assertEqual(ids('하위점수 오름차순'), ['1', '0', '3', '2'])
+        self.assertEqual(ids('하위점수 내림차순'), ['0', '3', '1', '2'])
+        self.assertEqual(transcript_score_link(transcripts[0], windows)['lower_20'], 30)
+        windows[0]['quality']['status'] = 'not_observable'
+        self.assertIsNone(transcript_score_link(transcripts[0], windows)['lower_20'])
 
     def test_chart_does_not_join_missing_interval(self):
         def event(start, end, eid):
@@ -290,10 +324,10 @@ class DashboardTests(unittest.TestCase):
             app.session_state['saved_sid']=sid
             app.run()
             self.assertFalse(app.exception)
-            self.assertEqual(next(m for m in app.metric if m.label=='최근 관찰 점수').value,'측정 불가')
+            self.assertEqual(next(m for m in app.metric if m.label=='최근 평균 관찰 점수').value,'측정 불가')
             self.assertTrue(any('수업 종료 · 진행 시간' in caption.value for caption in app.caption))
             elements=list(app)
-            score_index=next(i for i, element in enumerate(elements) if element.type=='metric' and element.label=='최근 관찰 점수')
+            score_index=next(i for i, element in enumerate(elements) if element.type=='metric' and element.label=='최근 평균 관찰 점수')
             timeline_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and '공통 타임라인' in element.value)
             note_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='교수자 메모')
             transcript_index=next(i for i, element in enumerate(elements) if element.type=='subheader' and element.value=='실시간 전사 · 분석 상태')
@@ -332,9 +366,11 @@ class DashboardTests(unittest.TestCase):
                                                              ('선택 낮음', '선택 높음', '점수 없음'))]
         snapshot['engagement_windows'] = [
             {'event_id': 'score-low', 'start_ms': 9000, 'end_ms': 10000,
-             'payload': {'model_output': {'value': 20}}, 'quality': {'status': 'valid'}},
+             'payload': {'model_output': {'value': 20}, 'model_extensions': {'model': {'lower_20_mean_score': 10}}},
+             'provenance': {'model_id': 'model'}, 'quality': {'status': 'valid'}},
             {'event_id': 'score-high', 'start_ms': 19000, 'end_ms': 20000,
-             'payload': {'model_output': {'value': 90}}, 'quality': {'status': 'valid'}}]
+             'payload': {'model_output': {'value': 90}, 'model_extensions': {'model': {'lower_20_mean_score': 40}}},
+             'provenance': {'model_id': 'model'}, 'quality': {'status': 'valid'}}]
         app = AppTest.from_file(str(ROOT/'frontend'/'app.py'), default_timeout=20)
         app.session_state['page'] = '사후 검토'
         app.session_state['review'] = (service, sid)
@@ -346,9 +382,18 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(displayed_ids(), ids)
             selector = app.selectbox(key=f'transcript-sort-{sid}')
-            selector.select('점수 내림차순').run()
+            selector.select('평균점수 내림차순').run()
             self.assertFalse(app.exception)
             self.assertEqual(displayed_ids(), [ids[1], ids[0], ids[2]])
+            self.assertTrue(any(item.value == '### 평균 90.0점' for item in app.markdown))
+            selector.select('하위점수 오름차순').run()
+            self.assertEqual(displayed_ids(), [ids[0], ids[1], ids[2]])
+            self.assertTrue(any(item.value == '### 하위 20% 10.0점' for item in app.markdown))
+            self.assertTrue(any(item.value == '**하위 20% 점수 없음**' for item in app.markdown))
+            self.assertTrue(any(item.value == '평균: 20.0점' for item in app.caption))
+            selector.select('하위점수 내림차순').run()
+            self.assertEqual(displayed_ids(), [ids[1], ids[0], ids[2]])
+            self.assertTrue(any(item.value == '### 하위 20% 40.0점' for item in app.markdown))
             app.text_input(key=f'search-{sid}').set_value('선택').run()
             self.assertEqual(displayed_ids(), [ids[1], ids[0]])
             app.selectbox(key=f'transcript-sort-{sid}').select('최신순').run()

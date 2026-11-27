@@ -54,6 +54,20 @@ def score(event):
     return value if 0 <= value <= 100 and event['quality']['status'] != 'not_observable' else None
 
 
+def lower_20_score(event):
+    """이벤트의 모델 네임스페이스에서 선택적 하위 평균만 읽는다."""
+    if not event or event.get('quality', {}).get('status') == 'not_observable':
+        return None
+    model_id = event.get('provenance', {}).get('model_id')
+    extensions = event.get('payload', {}).get('model_extensions')
+    if not isinstance(extensions, dict) or not isinstance(extensions.get(model_id), dict):
+        return None
+    value = extensions[model_id].get('lower_20_mean_score')
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
 def live_score_display(windows, now_ms, *, running, model_enabled, model_status, hold_ms=15000):
     """관측 구간은 유지하고 최근 유효값만 제한 시간 동안 화면에 표시한다."""
     if not windows:
@@ -79,18 +93,18 @@ def transcript_score_link(transcript, windows, *, max_age_ms=5000):
     completed = sorted((e for e in windows if e['end_ms'] <= end),
                        key=lambda e: (e['end_ms'], e['start_ms'], e.get('created_ms') or 0))
     if not completed:
-        return {'window': None, 'value': None, 'delta': None, 'reason': '점수 구간 대기'}
+        return {'window': None, 'value': None, 'lower_20': None, 'delta': None, 'reason': '점수 구간 대기'}
     latest = completed[-1]
     if end - latest['end_ms'] > max_age_ms:
-        return {'window': None, 'value': None, 'delta': None, 'reason': '최근 점수 구간 없음'}
+        return {'window': None, 'value': None, 'lower_20': None, 'delta': None, 'reason': '최근 점수 구간 없음'}
     value = score(latest)
     if value is None:
-        return {'window': latest, 'value': None, 'delta': None, 'reason': '점수 보류'}
+        return {'window': latest, 'value': None, 'lower_20': None, 'delta': None, 'reason': '점수 보류'}
     previous = completed[-2] if len(completed) > 1 else None
     previous_value = score(previous) if previous else None
     delta = (value - previous_value if previous_value is not None
              and 0 < latest['end_ms'] - previous['end_ms'] <= max_age_ms else None)
-    return {'window': latest, 'value': value, 'delta': delta, 'reason': None}
+    return {'window': latest, 'value': value, 'lower_20': lower_20_score(latest), 'delta': delta, 'reason': None}
 
 
 def sort_review_transcripts(transcripts, windows, order):
@@ -102,9 +116,9 @@ def sort_review_transcripts(transcripts, windows, order):
         time = (event['start_ms'], event['end_ms'], event['event_id'])
         if order == '최신순':
             return (-time[0], -time[1], time[2])
-        if order in ('점수 오름차순', '점수 내림차순'):
-            value = link['value']
-            return (value is None, -value if value is not None and order == '점수 내림차순'
+        if order in ('평균점수 오름차순', '평균점수 내림차순', '하위점수 오름차순', '하위점수 내림차순'):
+            value = link['lower_20'] if order.startswith('하위점수') else link['value']
+            return (value is None, -value if value is not None and order.endswith('내림차순')
                     else value if value is not None else 0, *time)
         return time
 

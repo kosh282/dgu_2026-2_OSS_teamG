@@ -14,7 +14,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, overlap, review_range_options, score, score_band, suggestion_phase, sort_review_transcripts,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, lower_20_score, overlap, review_range_options, score, score_band, suggestion_phase, sort_review_transcripts,
                                      suggestion_anchors, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
@@ -65,6 +65,11 @@ body:not(:has([data-testid="stExpandSidebarButton"])) .st-key-page-title{left:0;
 .st-key-score-band-yellow [data-testid="stMetric"], [class*="st-key-review-score-yellow-"]{background:#fff4cc;border-radius:8px;padding:6px 10px}
 .st-key-score-band-green [data-testid="stMetric"], [class*="st-key-review-score-green-"]{background:#e1f3e5;border-radius:8px;padding:6px 10px}
 .st-key-score-band-unknown [data-testid="stMetric"], [class*="st-key-review-score-unknown-"]{background:#eef0f2;border-radius:8px;padding:6px 10px}
+/* 하위 점수는 같은 구간을 조금 더 옅은 색으로 표시한다. */
+.st-key-lower-score-band-red [data-testid="stMetric"], [class*="st-key-lower-review-band-red-"]{background:#fff1f2;border-radius:8px;padding:6px 10px}
+.st-key-lower-score-band-yellow [data-testid="stMetric"], [class*="st-key-lower-review-band-yellow-"]{background:#fff8e1;border-radius:8px;padding:6px 10px}
+.st-key-lower-score-band-green [data-testid="stMetric"], [class*="st-key-lower-review-band-green-"]{background:#edf8ef;border-radius:8px;padding:6px 10px}
+.st-key-lower-score-band-unknown [data-testid="stMetric"], [class*="st-key-lower-review-band-unknown-"]{background:#eef0f2;border-radius:8px;padding:6px 10px}
 /* 라이브 제목과 버튼의 가로 배치 */
 .st-key-live-page-header [data-testid="stHorizontalBlock"]{align-items:center;gap:8px}
 .st-key-live-page-header [data-testid="stHorizontalBlock"] [data-testid="stElementContainer"]{width:auto!important;flex:0 0 auto!important}
@@ -695,9 +700,14 @@ def live_page():
                 timeline_title,summary=st.columns(2,gap='small',**column_options)
                 timeline_title.subheader('공통 타임라인')
                 display_value=display_score['value']
-                with summary, st.container(key='score-band-'+score_band(current_value)):
-                    st.metric('최근 관찰 점수',f'{display_value:g}점' if display_value is not None else
-                              ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+                with summary:
+                    with st.container(key='score-band-'+score_band(current_value)):
+                        st.metric('최근 평균 관찰 점수',f'{display_value:g}점' if display_value is not None else
+                                  ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+                    lower_value=lower_20_score(display_score['window']) if display_score['state'] in ('current','held') else None
+                    lower_band=score_band(lower_value if display_score['state']=='current' else None)
+                    with st.container(key='lower-score-band-'+lower_band):
+                        st.metric('하위 20% 평균', f'{lower_value:g}점' if lower_value is not None else '점수 없음')
                 if display_score['state']=='held':
                     summary.caption(f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전")
                 st.caption(detail,help=detail,**caption_options)
@@ -849,12 +859,17 @@ def review_page():
     measured=([(score(e),1) for e in ordered_windows if score(e) is not None] if has_overlap else
               [(score(e),max(1,e['end_ms']-e['start_ms'])) for e in windows if score(e) is not None])
     average=sum(s*w for s,w in measured)/sum(w for _,w in measured) if measured else None
+    lower_measured=[(lower_20_score(e), 1 if has_overlap else max(1,e['end_ms']-e['start_ms']))
+                    for e in windows if lower_20_score(e) is not None]
+    lower_average=(sum(s*w for s,w in lower_measured)/sum(w for _,w in lower_measured)
+                   if lower_measured else None)
     valid_scores=[score(e) for e in windows if score(e) is not None]
     columns=st.columns(4)
     for column,label,value in zip(columns,['롤링 구간 점수 평균' if has_overlap else '수업 전체 관찰 점수','점수 있는 구간','자료·수업 제안','교수자 메모'],[f'{average:.1f}' if average is not None else '점수 없음',f'{len(valid_scores)} / {len(windows)}개',f"{len(snapshot['suggestions']) + len(snapshot.get('teaching_suggestions', []))}건",f"{len(snapshot['notes'])}개"]):
         column.metric(label,value)
     if has_overlap:
         st.caption('겹치는 롤링 구간의 유효 점수를 이벤트마다 한 번씩 평균합니다. 수업 시간 전체의 관측률이나 참여도를 뜻하지 않습니다.')
+    st.caption('구간별 하위 20% 평균의 수업 요약: '+(f'{lower_average:.1f}점' if lower_average is not None else '점수 없음'))
     if valid_scores:
         st.caption(f'유효 구간 점수 범위 {min(valid_scores):.1f}~{max(valid_scores):.1f}점 · 관찰 점수는 집중도나 이해도를 뜻하지 않습니다.')
     else:
@@ -903,27 +918,39 @@ def review_page():
         with st.container(border=True):
             st.subheader('전사 · 선택 구간')
             query=st.text_input('전사 검색',key=f'search-{sid}')
-            sort_order=st.selectbox('전사 정렬', ['시간순','최신순','점수 오름차순','점수 내림차순'],
+            sort_order=st.selectbox('전사 정렬', ['시간순','최신순','평균점수 오름차순','평균점수 내림차순','하위점수 오름차순','하위점수 내림차순'],
                                     key=f'transcript-sort-{sid}')
             transcripts=[e for e in snapshot['transcripts'] if visible(e) and query.casefold() in e['payload']['text'].casefold()]
             st.caption(f'{len(transcripts)}개 문장 · 전사 종료 시점까지 확정된 최근 점수와 연결합니다.')
             st.caption('점수는 해당 문장만의 결과가 아닌 이전 분석 구간의 참고값입니다. 점수와 전사의 관계는 인과관계를 뜻하지 않습니다.')
-            if sort_order in ('점수 오름차순','점수 내림차순'):
+            if sort_order not in ('시간순','최신순'):
                 st.caption('점수가 없는 문장은 맨 뒤에, 같은 점수는 시간순으로 표시합니다.')
             if transcripts:
                 for event,linked_score in sort_review_transcripts(transcripts,windows,sort_order):
                     payload=event['payload']
                     score_value=linked_score['value']
+                    lower_value=linked_score['lower_20']
+                    lower_first=sort_order in ('하위점수 오름차순','하위점수 내림차순')
+                    primary_key=('lower-review-band-'+score_band(lower_value) if lower_first
+                                 else 'review-score-'+score_band(score_value))
                     with st.container(key='review-transcript-'+event['event_id']):
                         score_col,transcript_col=st.columns([1,3],gap='medium',vertical_alignment='top')
-                        with score_col, st.container(key='review-score-'+score_band(score_value)+'-'+event['event_id']):
+                        with score_col, st.container(key=primary_key+'-'+event['event_id']):
                             st.caption(f"{clock(event['start_ms'])}–{clock(event['end_ms'])}")
-                            st.markdown(f"### {score_value:.1f}점" if score_value is not None else f"**{linked_score['reason']}**")
+                            if lower_first:
+                                st.markdown(f'### 하위 20% {lower_value:.1f}점' if lower_value is not None else '**하위 20% 점수 없음**')
+                                with st.container(key='review-score-'+score_band(score_value)+'-'+event['event_id']):
+                                    st.caption('평균: '+(f'{score_value:.1f}점' if score_value is not None else (linked_score['reason'] or '점수 없음')))
+                            else:
+                                st.markdown(f"### 평균 {score_value:.1f}점" if score_value is not None else f"**{linked_score['reason']}**")
+                                with st.container(key='lower-review-band-'+score_band(lower_value)+'-'+event['event_id']):
+                                    st.caption('하위 20% 평균: '+(f'{lower_value:.1f}점' if lower_value is not None else '점수 없음'))
                             window=linked_score['window']
-                            if linked_score['delta'] is not None:
-                                st.caption(f"직전 대비 {linked_score['delta']:+.1f}점")
-                            elif score_value is not None:
-                                st.caption('직전 비교 없음')
+                            if sort_order in ('시간순','최신순'):
+                                if linked_score['delta'] is not None:
+                                    st.caption(f"평균 직전 대비 {linked_score['delta']:+.1f}점")
+                                elif score_value is not None:
+                                    st.caption('평균 직전 비교 없음')
                             if window:
                                 quality=window.get('quality',{}).get('status')
                                 st.caption({'valid':'관측 가능','partial':'일부 관측',

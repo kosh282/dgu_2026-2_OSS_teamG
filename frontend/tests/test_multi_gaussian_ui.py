@@ -75,7 +75,7 @@ class MultiGaussianUITests(unittest.TestCase):
     def test_live_prioritizes_summary_and_groups_diagnostics(self):
         app = self.app(live=True).run()
         self.assertFalse(app.exception)
-        self.assertTrue(any(metric.label == '최근 관찰 점수' for metric in app.metric))
+        self.assertTrue(any(metric.label == '최근 평균 관찰 점수' for metric in app.metric))
         self.assertTrue(any(item.label == '분석 상세 상태' for item in app.expander))
         self.assertTrue(any(button.label == '수업 종료' for button in app.button))
 
