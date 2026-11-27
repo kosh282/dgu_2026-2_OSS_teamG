@@ -144,6 +144,13 @@ class WindowPublisher:
                 'held_duration_ms': held_ms,
                 'component_hold_limit_ms': getattr(self.runtime, 'component_hold_ms', 0),
             })
+            if 'lower_20_mean_score' in summary:
+                payload['model_extensions'][self.model_id].update({
+                    'lower_20_policy': 'individual-window-ceil-v1',
+                    'lower_20_fraction': 0.2,
+                    **{key: summary[key] for key in
+                       ('lower_20_mean_score', 'lower_20_count', 'lower_20_valid_count')},
+                })
         if getattr(self.runtime, 'eye_fusion', False):
             payload['model_extensions'][self.model_id].update({
                 'version': 'head-eye-time-window-3',

@@ -1,11 +1,12 @@
 """세션 메모리 전용 다인 보정·점수와 익명 Gaussian 집계."""
 
-from collections import Counter
+from collections import Counter, deque
 from copy import deepcopy
+import math
 
 from video_recognition.head_calibration import HeadCalibration
 from .config import ModelConfig
-from .gaussian import GaussianRuntime, gaussian_angle_score
+from .gaussian import GaussianRuntime, gaussian_angle_score, gaussian_window_score
 from .input_adapter import HeadAngles, parse_feature_window
 
 
@@ -55,6 +56,7 @@ class MultiFaceGaussianRuntime:
                 changed = True
                 person['calibration'].start()
                 person['runtime'].reset()
+                person['window_samples'].clear()
                 person['components'] = {}
                 person['row'].update(calibration_status='collecting', status='calibrating',
                                      current_direction_score=None, score=None,
@@ -75,6 +77,7 @@ class MultiFaceGaussianRuntime:
         calibration.start()
         return dict(calibration=calibration, runtime=GaussianRuntime(self.config),
                     last_seen=timestamp, last_valid_ms=None, present=False, track=None, components={},
+                    window_samples=deque(),
                     row=dict(id=identity, status='calibrating', calibration_status='collecting',
                              current_direction_score=None, score=None,
                              activity_state='activity_unavailable', activity_down_start_ms=None,
@@ -93,6 +96,7 @@ class MultiFaceGaussianRuntime:
         except (KeyError, TypeError, ValueError):
             for person in self._people.values():
                 person['runtime'].reset()
+                person['window_samples'].clear()
                 person['components'].clear()
                 person['present'] = False
                 person['row'].update(status='unavailable', score=None,
@@ -148,6 +152,7 @@ class MultiFaceGaussianRuntime:
                     (timestamp < last_valid or timestamp - last_valid > self.calibration_grace_ms)):
                 calibration.start()
                 person['runtime'].reset()
+                person['window_samples'].clear()
                 person['components'].clear()
             # 불량 입력으로 완료된 개인 기준을 삭제하지 않는다.
             if input_reason is None:
@@ -203,6 +208,12 @@ class MultiFaceGaussianRuntime:
                                  reason_codes=list(result['reason_codes']) + (['eye_observation_unavailable']
                                      if self.eye_fusion and eye is None else []))
             outputs.append({**result, '_fused': fused_current, '_held': bool(held), '_recent': fused_recent})
+            primitive = result.get('gaussian_observation')
+            if self.eye_fusion:
+                primitive = (None, None, fused_current) if fused_current is not None else None
+            self._record_window_sample(person, timestamp,
+                                       fused_current is not None if self.eye_fusion else result['angles'] is not None,
+                                       primitive)
         for identity, person in self._people.items():
             if identity not in active:
                 person['components'].clear()
@@ -211,6 +222,7 @@ class MultiFaceGaussianRuntime:
                 if counts[identity] > 1:
                     person['calibration'].start()
                     person['runtime'].reset()
+                    person['window_samples'].clear()
                 elif timestamp - person['last_seen'] > self.calibration_grace_ms:
                     person['runtime'].reset()
                 elif was_present:
@@ -225,6 +237,7 @@ class MultiFaceGaussianRuntime:
                                      activity_state='activity_unavailable', activity_down_start_ms=None,
                                      activity_down_duration_seconds=None,
                                      reason_codes=['identity_not_observed'])
+                self._record_window_sample(person, timestamp, False, None)
         if self.eye_fusion:
             # 같은 시각의 머리·눈 점수만 결합해 publisher에서 최근 구간을 한 번 집계한다.
             primitives = [(None, None, r['_fused'], r['_held']) for r in outputs if r['_fused'] is not None]
@@ -266,11 +279,57 @@ class MultiFaceGaussianRuntime:
             self.latest['reason_codes'].append('no_scoreable_observation')
         return self.latest
 
+    def _record_window_sample(self, person, timestamp, observable, primitive):
+        """하위 집계용 원시 점수만 메모리에 유지한다. 개인 키/이력은 발행하지 않는다."""
+        samples = person['window_samples']
+        if samples and timestamp <= samples[-1][0]:
+            samples.clear()
+        samples.append((timestamp, observable, primitive))
+        cutoff = timestamp - round(self.config.window_seconds * 1000)
+        # 구간 왼쪽 경계를 가로지르는 관측 하나는 유지한다.
+        while len(samples) > 1 and samples[1][0] <= cutoff:
+            samples.popleft()
+
+    @staticmethod
+    def _lower_20_fields(scores):
+        values = sorted(value for value in scores if isinstance(value, (int, float))
+                        and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100)
+        count = max(1, math.ceil(len(values) * 0.2)) if values else 0
+        return dict(lower_20_mean_score=round(sum(values[:count]) / count, 1) if count else None,
+                    lower_20_count=count, lower_20_valid_count=len(values))
+
+    def _lower_20_window(self, start, end):
+        """같은 발행 구간의 개인별 시간 집계 후 하위 인원을 선정한다.
+
+        미검출/보류 또는 관측 유지 상한을 지난 대상은 제외한다. 과거 이동평균을
+        다시 평균하지 않고 기존 선형 시간 적분과 개인별 품질 gate를 재사용한다.
+        """
+        scores = []
+        hold_ms = round(self.config.max_observation_hold_seconds * 1000)
+        for person in self._people.values():
+            samples = [sample for sample in person['window_samples'] if sample[0] < end]
+            if not samples:
+                continue
+            timestamp, observable, primitive = samples[-1]
+            if not observable or primitive is None or end - timestamp > hold_ms:
+                continue
+            segments = []
+            for index, (timestamp, observable, primitive) in enumerate(samples):
+                stop = min(end, timestamp + hold_ms,
+                           samples[index + 1][0] if index + 1 < len(samples) else end)
+                if stop > timestamp:
+                    segments.append((timestamp, stop, observable, None, primitive))
+            value = gaussian_window_score(segments, start, end, self.config)['score']
+            if value is not None:
+                scores.append(value)
+        return self._lower_20_fields(scores)
+
     def aggregate_window(self, segments, start, end):
         """개별 원시 점수를 한 번 계산하여 사람·시간 최근성으로 합친다.
 
         품질 gate는 관측 가능한 벽시계 시간, 점수 분모는 유효 사람·시간이다.
-        익명 각도만 받으므로 ID별 이력이나 누락 인원수를 추정하지 않는다.
+        기존 전체 점수는 익명 각도로 계산한다. 추가 하위 지표만 실행 메모리의
+        개인별 원시 표본을 사용하며 키나 개인별 결과를 발행하지 않는다.
         """
         duration = end - start
         window = round(self.config.window_seconds * 1000)
@@ -307,4 +366,5 @@ class MultiFaceGaussianRuntime:
             reasons.append('no_scoreable_time')
         return dict(score=round(numerator / denominator, 1) if not reasons else None,
                     observable_duration_ms=observable_ms, scoreable_duration_ms=scoreable_ms,
-                    scoreable_person_duration_ms=person_ms, held_duration_ms=held_ms, reason_codes=reasons)
+                    scoreable_person_duration_ms=person_ms, held_duration_ms=held_ms, reason_codes=reasons,
+                    **(self._lower_20_window(start, end) if not reasons else self._lower_20_fields([])))
