@@ -24,6 +24,8 @@ flowchart LR
     E --> J[세션 JSON]
 ```
 
+[합성 세션 예시](examples/session.json)는 [계약 테스트](../README.md#자동-테스트와-ci)에서 검증합니다.
+
 ## 2. 역할별 입출력
 
 | 담당 | 입력 | 출력 | 상대 파트와 합의할 것 |

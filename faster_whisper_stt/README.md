@@ -123,6 +123,8 @@ video_recognition/.venv/Scripts/python.exe -m faster_whisper_stt.live_demo --win
 
 `--target-process-id`는 선택한 프로세스 트리의 소리만 받는 `native/process_loopback.exe`가 필요합니다. Visual Studio 2022 C++ 빌드 도구가 있는 Windows에서 `faster_whisper_stt/native/build_process_loopback.ps1`로 빌드합니다. 프런트는 이 경로를 쓰지 않고 기본 출력 장치 전체 소리를 받습니다.
 
+같은 음원으로 전사 결과를 비교할 때는 입력 장치와 모델(small 또는 base)을 기록하세요. 실제 음원은 기준 전사 대비 문자 오류율(CER)과 발화 종료부터 확정 전사 표시까지의 지연을 비교할 수 있습니다.
+
 ## 테스트
 
 ```powershell

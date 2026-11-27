@@ -34,7 +34,7 @@ python -m venv video_recognition/.venv
 video_recognition/.venv/Scripts/python.exe -m pip install -r video_recognition/requirements-integrated.txt
 ```
 
-MediaPipe 공식 Face Landmarker 모델은 `models/face_landmarker.task`에 준비했습니다. 모델 파일을 커밋하고 원격에 올리면 저장소를 내려받을 때 함께 제공됩니다. 파일 출처는 [MediaPipe 공식 모델](https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task)입니다. 다른 `.task` 모델도 Git에 추가할 수 있으며, `.venv`는 계속 제외됩니다.
+MediaPipe 공식 Face Landmarker 모델은 `models/face_landmarker.task`에 준비했습니다. 저장소를 내려받을 때 함께 제공됩니다. 파일 출처는 [MediaPipe 공식 모델](https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task)입니다. 다른 `.task` 모델도 Git에 추가할 수 있으며, `.venv`는 계속 제외됩니다.
 
 ## 수업 창 실행
 

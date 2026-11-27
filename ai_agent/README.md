@@ -73,6 +73,8 @@ video_recognition/.venv/Scripts/python.exe -m unittest ai_agent.tests.test_assis
 
 `python -m unittest ai_agent.tests.test_personal_api`는 HTTP 요청을 가짜 응답으로 대체하며 외부 API를 호출하지 않습니다. 실제 키·모델의 동작과 결과 품질은 각 제공자에서 별도로 확인해야 합니다.
 
+로컬 제안을 확인하려면 텍스트가 들어 있는 PDF나 PPTX를 올리고, 자료에 있는 용어가 포함된 확정 전사에서 추천 파일과 페이지 번호를 확인합니다.
+
 ## 검증 상태와 한계
 
 - **확인한 것**
