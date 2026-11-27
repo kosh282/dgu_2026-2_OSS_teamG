@@ -188,6 +188,7 @@ class LiveLayoutTests(unittest.TestCase):
                          ['정면 기준 재보정', '수업 종료'])
         self.assertTrue(any(item.type == 'caption' and '진행 시간' in item.value for item in header.children.values()))
         self.assertTrue(any(item.type == 'subheader' and item.value == '공통 타임라인' for item in timeline_columns[0]))
+        self.assertTrue(any(item.type == 'radio' and item.key == 'live-score-mode' for item in timeline_columns[0]))
         self.assertTrue(any(item.type == 'metric' and item.label == '최근 평균 관찰 점수' for item in timeline_columns[1]))
         footer = next(item for item in overview.children.values()
                       if item.type == 'caption' and '점수 상태:' in item.value)
@@ -278,6 +279,36 @@ class LiveLayoutTests(unittest.TestCase):
             display.return_value = current
             self.app.run()
             self.assertEqual(toast.call_count, 3)
+
+    def test_live_score_mode_can_switch_without_changing_session_data(self):
+        snapshot = self.live.service.get_dashboard_snapshot(self.live.sid)
+        current = {'state': 'current', 'value': 60, 'window': None, 'age_ms': 0}
+        with patch.object(self.live.service, 'get_dashboard_snapshot', return_value=snapshot), \
+             patch('frontend.dashboard_data.live_score_display', return_value=current) as display, \
+             patch('frontend.dashboard_data.lower_20_score', return_value=42):
+            self.app.run()
+            self.assertEqual(next(m for m in self.app.metric if m.label == '최근 평균 관찰 점수').value, '60점')
+            self.app.radio(key='live-score-mode').set_value('색상 단계').run()
+            self.assertFalse(self.app.exception)
+            self.assertEqual(next(m for m in self.app.metric if m.label == '최근 평균 관찰 점수').value, '주의')
+            self.assertEqual(next(m for m in self.app.metric if m.label == '하위 20% 평균').value, '경계')
+            for value, label in ((59.9, '경계'), (80, '정상')):
+                display.return_value = {**current, 'value': value}
+                self.app.run()
+                self.assertEqual(next(m for m in self.app.metric if m.label == '최근 평균 관찰 점수').value, label)
+            display.return_value = {'state': 'held', 'value': 80, 'window': {'end_ms': 0}, 'age_ms': 6000}
+            self.app.run()
+            self.assertEqual(next(m for m in self.app.metric if m.label == '최근 평균 관찰 점수').value, '관측 보류')
+            self.assertTrue(any(item.type == 'flex_container' and item.proto.id.endswith('-score-band-unknown')
+                                for item in self.app))
+            display.return_value = {'state': 'unavailable', 'value': None, 'window': None, 'age_ms': None}
+            self.app.run()
+            self.assertIn(next(m for m in self.app.metric if m.label == '최근 평균 관찰 점수').value,
+                          ('측정 불가', '집계 대기'))
+            display.return_value = {'state': 'held', 'value': 80, 'window': {'end_ms': 0}, 'age_ms': 6000}
+            self.app.radio(key='live-score-mode').set_value('숫자 점수').run()
+            self.assertEqual(next(m for m in self.app.metric if m.label == '최근 평균 관찰 점수').value, '80점')
+        self.assertEqual(self.live.service.get_dashboard_snapshot(self.live.sid), snapshot)
 
     def test_long_content_and_empty_content_keep_the_same_card_geometry(self):
         self.app.run()

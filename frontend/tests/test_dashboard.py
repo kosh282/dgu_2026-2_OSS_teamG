@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, lower_20_score, overlap, review_range_options, score, score_band, suggestion_phase, transcript_score_link, sort_review_transcripts,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_band_chart_data, live_band_chart_spec, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, lower_20_score, overlap, review_range_options, score, score_band, score_band_label, suggestion_phase, transcript_score_link, sort_review_transcripts,
                                      related_suggestions, suggestion_anchors, suggestion_in_range)
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -23,6 +23,19 @@ class DashboardTests(unittest.TestCase):
                          ['unknown', 'red', 'red', 'yellow', 'yellow', 'green', 'green'])
         self.assertEqual(live_chart_spec(low_score=True)['layer'][2]['mark']['color'], '#c62828')
         self.assertEqual(live_chart_spec(low_score=False)['layer'][2]['mark']['color'], '#2457d6')
+
+    def test_live_band_chart_does_not_expose_scores(self):
+        self.assertEqual([score_band_label(value) for value in (None, 0, 59.9, 60, 79.9, 80, 100)],
+                         ['관측 불가', '경계', '경계', '주의', '주의', '정상', '정상'])
+        windows = [dict(event_id=str(i), start_ms=i*1000, end_ms=(i+1)*1000,
+                        payload={'model_output': {'value': value}}, quality={'status': 'valid'})
+                   for i, value in enumerate((59.9, 60, 80, None))]
+        data = live_band_chart_data(windows, [], 4000)
+        self.assertNotIn('value', data.columns)
+        bands = data[data['kind'] == 'score']['band']
+        self.assertEqual(bands.iloc[:3].tolist(), ['경계', '주의', '정상'])
+        self.assertTrue(bands.isna().iloc[-1])
+        self.assertNotIn("'field': 'value'", repr(live_band_chart_spec()))
 
     def test_live_score_reason_prioritizes_failure_and_explains_observation(self):
         rows = [{'calibration_status': 'collecting', 'reason_codes': ['eye_observation_unavailable']}]

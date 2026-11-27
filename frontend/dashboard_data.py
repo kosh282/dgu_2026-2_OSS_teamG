@@ -232,6 +232,42 @@ def score_band(value):
     return 'yellow' if value < 80 else 'green'
 
 
+def score_band_label(value):
+    """고정 표시 구간의 이름이며 관찰 불가는 별도로 유지한다."""
+    return {'red': '경계', 'yellow': '주의', 'green': '정상', 'unknown': '관측 불가'}[score_band(value)]
+
+
+def live_band_chart_data(windows, notes, duration, *, start_ms=0):
+    """정확한 점수를 포함하지 않는 단계별 타임라인 데이터."""
+    data = live_chart_data(windows, notes, duration, start_ms=start_ms)
+    data['band'] = [score_band_label(value) if kind == 'score' and pd.notna(value)
+                    else '메모' if kind == 'note' else None
+                    for kind, value in zip(data['kind'], data['value'])]
+    return data.drop(columns=['value'])
+
+
+def live_band_chart_spec():
+    """수치 축 없이 단계와 메모, 관측 불가 구간을 표시한다."""
+    spec = live_chart_spec()
+    x = spec['layer'][0]['encoding']['x']
+    y = {'field': 'band', 'type': 'ordinal',
+         'sort': ['정상', '주의', '경계', '메모'],
+         'axis': {'title': None, 'gridColor': '#e6e9ed'}}
+    spec['layer'] = [spec['layer'][0], spec['layer'][1],
+        {'transform': [{'filter': "datum.kind === 'score'"}],
+         'mark': {'type': 'line', 'interpolate': 'step-after', 'color': '#2457d6',
+                  'point': {'size': 30}, 'invalid': 'break-paths-show-domains'},
+         'encoding': {'x': x, 'y': y, 'order': {'field': 'sequence', 'type': 'quantitative'},
+                      'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
+                                  {'field': 'band', 'type': 'nominal', 'title': '관찰 단계'}]}},
+        {'transform': [{'filter': "datum.kind === 'note'"}],
+         'mark': {'type': 'point', 'filled': True, 'color': '#1f2328', 'size': 49},
+         'encoding': {'x': x, 'y': y,
+                      'tooltip': [{'field': 'time_label', 'type': 'nominal', 'title': '수업 시간'},
+                                  {'field': 'text', 'type': 'nominal', 'title': '메모'}]}}]
+    return spec
+
+
 def live_chart_spec(*, low_score=False):
     """데이터와 분리된 고정 차트 설정으로 실시간 갱신 시 요소를 유지한다."""
     time_axis = {

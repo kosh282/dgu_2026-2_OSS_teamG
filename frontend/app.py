@@ -14,7 +14,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from frontend.dashboard_data import (SessionFiles, chart, clock, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, lower_20_score, overlap, review_range_options, score, score_band, suggestion_phase, sort_review_transcripts,
+from frontend.dashboard_data import (SessionFiles, chart, clock, live_band_chart_data, live_band_chart_spec, live_chart_data, live_chart_spec, live_score_display, live_score_unavailable_reason, lower_20_score, overlap, review_range_options, score, score_band, score_band_label, suggestion_phase, sort_review_transcripts,
                                      suggestion_anchors, suggestion_in_range)
 
 st.set_page_config(page_title='교수자 대시보드', page_icon='📊', layout='wide')
@@ -462,7 +462,7 @@ def preparation():
             st.caption('수업 제목과 동의를 확인하세요. 영상 분석을 사용하면 수업 창 선택이 필요합니다.')
 
 
-def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, value, stale, on_calibrate):
+def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, value, stale, on_calibrate, *, hide_scores=False):
     """라이브 카드와 같은 시점의 관측값으로 상세 상태를 그린다."""
     model_status=snapshot['status'].get('model')
     st.caption('관측 가능한 얼굴 기준의 관찰 점수 · 집중도나 이해도가 아닙니다.')
@@ -475,7 +475,7 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
                      if row.get('status') not in ('missing','unavailable','not_observable')
                      and isinstance(row.get('head_score'), (int,float))
                      and not isinstance(row.get('head_score'), bool)]
-        if model_status == 'running' and age is not None and age <= 1000 and head_values:
+        if not hide_scores and model_status == 'running' and age is not None and age <= 1000 and head_values:
             st.caption(f"참고: 현재 머리 방향 평균 {sum(head_values)/len(head_values):.1f}점 · 저장 구간 점수와 집계 기준이 다릅니다")
     stt_stats=diagnostics['stt']
     if stt_stats:
@@ -527,9 +527,9 @@ def live_diagnostics(live, snapshot, result, diagnostics, rows, latest_window, v
                     'missing':'관측 불가','not_observable':'관측 불가','unavailable':'관측 불가'}
             st.dataframe([{('임시 ID' if reid else '임시 위치 트랙'):row['id'], '상태':states.get(row['status'],row['status']),
                 '정면 보정':{'ready':'완료','collecting':'수집 중','waiting':'대기'}.get(row['calibration_status'],row['calibration_status']),
-                '현재 결합 점수':row['current_direction_score'],
+                **({} if hide_scores else {'현재 결합 점수':row['current_direction_score'],
                 '현재 머리 점수':row.get('current_head_score'), '현재 눈 점수':row.get('current_eye_score'),
-                '결합에 사용한 머리':row.get('effective_head_score'), '결합에 사용한 눈':row.get('effective_eye_score'),
+                '결합에 사용한 머리':row.get('effective_head_score'), '결합에 사용한 눈':row.get('effective_eye_score')}),
                 '이전 값 사용':', '.join(f"{name} ({age / 1000:.1f}초 전)" for name, age in row.get('held_component_ages_ms', {}).items()),
                 '눈 관측률':row.get('eye_coverage'),
                 '눈 상태':row.get('eye_state'), '눈 감김 확인 시간(초)':row.get('eye_closed_seconds'),
@@ -615,6 +615,7 @@ def live_page():
     # 카드와 도구를 한 갱신 단위에 고정해 서로 다른 시점의 화면이 섞이지 않게 한다.
     @st.fragment(run_every=1 if live.is_running() else None)
     def panel():
+        band_mode=st.session_state.get('live-score-mode', '숫자 점수') == '색상 단계'
         snapshot=live.service.get_dashboard_snapshot(live.sid)
         duration=snapshot['session']['duration_ms']
         running=live.is_running()
@@ -635,7 +636,8 @@ def live_page():
         low_score=current_value is not None and current_value <= threshold
         low_score_notified=st.session_state.low_score_notified
         if running and low_score and not low_score_notified.get(live.sid,False):
-            st.toast(f'**관찰 점수 알림**\n\n설정 기준 {threshold}점 이하입니다. 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.',
+            alert=('설정한 알림 기준 이하입니다.' if band_mode else f'설정 기준 {threshold}점 이하입니다.')
+            st.toast(f'**관찰 점수 알림**\n\n{alert} 관측 상태와 수업 흐름을 확인하세요. 이 점수는 집중도를 뜻하지 않습니다.',
                      icon=':material/warning:')
             low_score_notified[live.sid]=True
         elif current_value is not None and not low_score:
@@ -692,33 +694,47 @@ def live_page():
                                                         latest_window,snapshot.get('status_messages',{}).get('model'))
                     detail='점수 상태: '+reason
                     if display_score['state']=='held':
-                        detail+=f" · {clock(display_score['window']['end_ms'])} 기준 이전 점수 임시 표시"
-                    elif previous_window is not None:
+                        detail+=(f" · {clock(display_score['window']['end_ms'])} 이후 현재 관측 보류" if band_mode else
+                                 f" · {clock(display_score['window']['end_ms'])} 기준 이전 점수 임시 표시")
+                    elif previous_window is not None and not band_mode:
                         detail+=f" · 이전 점수 {score(previous_window):g}점 ({clock(previous_window['end_ms'])} 기준, 현재 관측 보류)"
                 else:
                     detail=f"최근 구간 {clock(latest_window['start_ms'])}–{clock(latest_window['end_ms'])} · 관측 가능한 얼굴의 참고 점수"
                 timeline_title,summary=st.columns(2,gap='small',**column_options)
-                timeline_title.subheader('공통 타임라인')
+                with timeline_title, st.container(**({'gap':None} if card_options else {})):
+                    st.subheader('공통 타임라인')
+                    st.radio('라이브 관찰 표시 방식', ['숫자 점수', '색상 단계'], horizontal=True,
+                             key='live-score-mode', help='수업 중 언제든지 전환할 수 있습니다.')
                 display_value=display_score['value']
                 with summary:
                     with st.container(key='score-band-'+score_band(current_value)):
-                        st.metric('최근 평균 관찰 점수',f'{display_value:g}점' if display_value is not None else
-                                  ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+                        summary_value=(score_band_label(current_value) if current_value is not None else
+                                       '관측 보류' if display_score['state']=='held' else
+                                       '측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기') if band_mode else (
+                                       f'{display_value:g}점' if display_value is not None else
+                                       ('측정 불가' if latest_window or model_status in ('stopped','unavailable') else '집계 대기'))
+                        st.metric('최근 평균 관찰 점수', summary_value)
                     lower_value=lower_20_score(display_score['window']) if display_score['state'] in ('current','held') else None
                     lower_band=score_band(lower_value if display_score['state']=='current' else None)
                     with st.container(key='lower-score-band-'+lower_band):
-                        st.metric('하위 20% 평균', f'{lower_value:g}점' if lower_value is not None else '점수 없음')
+                        lower_display=(score_band_label(lower_value) if lower_value is not None and display_score['state']=='current'
+                                       else '관측 보류' if display_score['state']=='held' else '점수 없음') if band_mode else (
+                                       f'{lower_value:g}점' if lower_value is not None else '점수 없음')
+                        st.metric('하위 20% 평균', lower_display)
                 if display_score['state']=='held':
-                    summary.caption(f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전")
+                    summary.caption('현재 관측 보류' if band_mode else f"이전 점수 유지 · {display_score['age_ms']/1000:.1f}초 전")
                 st.caption(detail,help=detail,**caption_options)
                 chart_range=st.selectbox('그래프 범위',['최근 1분','최근 5분','최근 10분','전체 수업'],index=1,
                                          key='live-chart-range',label_visibility='collapsed')
                 range_ms={'최근 1분':60000,'최근 5분':300000,'최근 10분':600000}.get(chart_range)
                 start_ms=max(0,duration-range_ms) if range_ms else 0
-                chart_spec=live_chart_spec(low_score=low_score); chart_spec['height']=225
-                st.vega_lite_chart(live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms,display_score=display_score),chart_spec,
+                chart_spec=live_band_chart_spec() if band_mode else live_chart_spec(low_score=low_score)
+                chart_spec['height']=225
+                chart_data=(live_band_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms) if band_mode else
+                            live_chart_data(windows,snapshot['notes'],duration,start_ms=start_ms,display_score=display_score))
+                st.vega_lite_chart(chart_data,chart_spec,
                                    use_container_width=True,key='live-chart')
-                if display_score['state']=='held':
+                if display_score['state']=='held' and not band_mode:
                     st.caption('◆ 이전 점수 임시 유지 · 회색은 관측 보류 구간')
                 if not windows:
                     st.caption('첫 점수 구간 집계 대기 중입니다.' if model_status not in ('stopped','unavailable')
@@ -829,7 +845,9 @@ def live_page():
                     st.caption(f"로그 {'수집 중' if monitoring else '중지'} · {monitor.path}")
 
             with st.expander('분석 상세 상태'):
-                live_diagnostics(live,snapshot,result,diagnostics,rows,latest_window,value,stale,calibrate)
+                live_diagnostics(live,snapshot,result,diagnostics,rows,latest_window,value,stale,calibrate,hide_scores=band_mode)
+                if band_mode:
+                    st.caption('별도 개발자 창에는 진단용 숫자 점수가 표시될 수 있습니다.')
                 st.caption('성능 로그는 5초마다 CPU·메모리·처리 지연과 상태만 기록합니다. 전사 내용, 영상·음성, 얼굴 특징과 점수는 저장하지 않습니다.')
             if not running:
                 persist_live()
