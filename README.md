@@ -71,6 +71,18 @@ flowchart LR
 
 ## 설치
 
+### 설치 스크립트
+
+Windows에 Python 3.14를 설치한 뒤, 내려받은 저장소 루트에서 PowerShell로 실행합니다.
+
+```powershell
+.\scripts\setup-dev.ps1
+```
+
+[설치 스크립트](scripts/setup-dev.ps1)가 `video_recognition/.venv`를 만들거나 기존 Python 3.14 환경을 재사용하고, 아래 수동 설치와 같은 순서로 패키지를 설치합니다. 의존성이 바뀌면 같은 명령을 다시 실행할 수 있습니다. 설치 후에는 [실행 및 사용](#실행-및-사용)의 명령으로 앱을 시작합니다.
+
+### 수동 설치
+
 Windows에서 저장소 루트 폴더를 열고 PowerShell에서 실행합니다. Python 3.14 환경을 기준으로 의존성을 고정했습니다.
 
 ```powershell
