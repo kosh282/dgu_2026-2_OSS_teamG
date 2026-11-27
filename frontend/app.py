@@ -314,7 +314,7 @@ def preparation():
             model_enabled=st.checkbox('관찰 점수 사용',value=True,key='model_enabled',disabled=running or not video_enabled)
             reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
                 key='reidentification_enabled',disabled=running or not video_enabled)
-            st.caption('점수는 Gaussian 모델입니다. 재식별을 켜면 임시 ID별로, 끄면 단기 위치 트랙별로 계산합니다. 위치 트랙은 사람을 식별하지 않습니다.')
+            st.caption('얼굴 재식별은 기본 꺼짐입니다. 기본 모드는 단기 위치 트랙별로 점수를 계산합니다. 위치 트랙은 사람을 식별하지 않습니다. 재식별을 켜면 세션 내 임시 ID별로 계산합니다.')
             st.caption('관찰 점수는 머리 방향을 사용합니다. 눈 관측값은 별도로 표시하며 점수에 결합하지 않습니다.')
             if reidentification_enabled and video_enabled:
                 st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
@@ -322,7 +322,7 @@ def preparation():
                     st.warning('재식별 패키지 설치가 필요합니다: python -m pip install -r video_recognition/requirements-reidentification.txt. 준비에 실패하면 개인별 점수는 보류됩니다.')
             windows=st.session_state.get('class_window_list', [])
             window_error=None
-            window_audio_target=(st.session_state.get('stt_enabled',False)
+            window_audio_target=(st.session_state.get('stt_enabled',True)
                                  and st.session_state.get('stt_source','loopback')=='loopback')
             refresh_windows=st.button('창 목록 새로고침',disabled=running or not (video_enabled or window_audio_target))
             if (video_enabled or window_audio_target) and sys.platform == 'win32' and ('class_window_list' not in st.session_state or refresh_windows):
@@ -360,7 +360,7 @@ def preparation():
                         capture.close()
         with st.container(border=True):
             st.subheader('2  수업 음성 입력')
-            stt_enabled=st.checkbox('실시간 음성 전사 사용',key='stt_enabled',disabled=running)
+            stt_enabled=st.checkbox('실시간 음성 전사 사용',value=True,key='stt_enabled',disabled=running)
             audio_source=st.selectbox(
                 '음성 입력 방식', ['loopback','microphone'],
                 format_func=lambda value: '시스템 출력 음성 (루프백)' if value=='loopback' else '교수자 마이크',
@@ -385,7 +385,8 @@ def preparation():
             else:
                 st.caption('선택 입력은 수업 세션의 공통 시계로 전사해 계약 이벤트로 전달합니다. 원본 음성 파일은 저장하지 않습니다.')
         with st.container(border=True):
-            st.subheader('3  강의 자료 · 강의 조교 (선택)')
+            st.subheader('3  강의 자료 · 강의 조교')
+            st.caption('강의 조교는 수업 시작 시 기본으로 실행됩니다. 강의 자료 업로드와 외부 AI 사용은 선택 사항입니다.')
             uploaded=st.file_uploader('PDF · PPTX 강의 자료',type=['pdf','ppt','pptx'],accept_multiple_files=True,key='materials',disabled=running)
             index,errors=material_index(uploaded)
             material_summary(index,errors)
