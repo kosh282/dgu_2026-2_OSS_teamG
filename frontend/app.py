@@ -315,7 +315,7 @@ def preparation():
             reidentification_enabled=st.checkbox('세션 내 얼굴 재식별 사용',value=False,
                 key='reidentification_enabled',disabled=running or not video_enabled)
             st.caption('얼굴 재식별은 기본 꺼짐입니다. 기본 모드는 단기 위치 트랙별로 점수를 계산합니다. 위치 트랙은 사람을 식별하지 않습니다. 재식별을 켜면 세션 내 임시 ID별로 계산합니다.')
-            st.caption('관찰 점수는 머리 방향을 사용합니다. 눈 관측값은 별도로 표시하며 점수에 결합하지 않습니다.')
+            st.caption('관찰 점수는 정면 기준 머리 방향(70%)과 눈 감김 상태(30%)를 결합한 참고 지표입니다.')
             if reidentification_enabled and video_enabled:
                 st.caption('임시 ID·개인별 점수는 현재 수업 화면에만 표시하고 저장하지 않습니다. 처음 확인될 때 모두 정면을 약 3초 유지해 주세요.')
                 if importlib.util.find_spec('insightface') is None:
